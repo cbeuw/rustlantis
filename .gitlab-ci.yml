@@ -1,0 +1,5 @@
+compile:
+  image: cbeuw/rustlantis-env:latest 
+  stage: build
+  script:
+    - cargo build
