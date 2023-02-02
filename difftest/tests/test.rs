@@ -1,33 +1,21 @@
 #![feature(byte_slice_trim_ascii)]
+#![feature(is_some_and)]
 
-use core::panic;
-use std::{collections::HashMap, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, path::PathBuf, str::FromStr, ffi::OsStr, os::unix::prelude::OsStrExt};
 
-use clap::{Arg, Command};
 use config::Config;
-use difftest::{
-    backend::{Backend, Cranelift, Miri, LLVM},
-    run_diff_test,
-};
+use difftest::{run_diff_test, backend::{Backend, LLVM, Miri, Cranelift}};
 
-fn main() {
-    env_logger::init();
-
-    let matches = Command::new("difftest")
-        .arg(Arg::new("file").required(true))
-        .get_matches();
-    let source = matches.get_one::<String>("file").expect("required");
-    let source = PathBuf::from_str(source).expect("source is a valid path");
-
-    // Initialise backends
-    // TODO: extract this out into a function
+#[test]
+fn correct_mir() {
     let settings = Config::builder()
         .add_source(config::File::with_name("config.toml"))
         .add_source(config::Environment::default())
         .build()
         .unwrap();
-
+    
     let mut backends: HashMap<&'static str, Box<dyn Backend>> = HashMap::default();
+
     if let Ok(clif_dir) = settings.get_string("cranelift_dir") {
         let clif = Cranelift::from_repo(clif_dir);
         match clif {
@@ -46,5 +34,10 @@ fn main() {
 
     backends.insert("llvm", Box::new(LLVM {}));
 
-    run_diff_test(&source, &backends);
+    let results = run_diff_test(&PathBuf::from_str("tests/inputs/simple.rs").unwrap(), &backends);
+    for (class, names) in &results {
+        println!("{}: {class:?}", names.join(", "));
+    }
+    assert!(results.len() == 1);
+    assert!(results[0].0.as_ref().is_ok_and(|output| output.status.success() && OsStr::from_bytes(output.stdout.trim_ascii_end()) == "5\n"))
 }
