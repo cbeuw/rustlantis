@@ -52,32 +52,7 @@ pub struct Miri {
 }
 
 impl Miri {
-    pub fn from_repo<P: AsRef<Path>>(miri_dir: P) -> Result<Self, BackendInitError> {
-        let miri_dir = miri_dir.as_ref();
-
-        debug!("Setting up miri toolchain");
-        let output = Command::new(miri_dir.join("miri"))
-            .arg("toolchain")
-            .output()
-            .expect("can run miri toolchain and get output");
-        if !output.status.success() {
-            let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
-            return Err(BackendInitError(stderr));
-        }
-
-        debug!("Building Miri under {}", miri_dir.to_string_lossy());
-        let output = Command::new(miri_dir.join("miri"))
-            .arg("build")
-            .arg("--release")
-            .env_remove("RUSTUP_TOOLCHAIN") // In case this was set by cargo run
-            .current_dir(miri_dir)
-            .output()
-            .expect("can run miri build and get output");
-        if !output.status.success() {
-            let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
-            return Err(BackendInitError(stderr));
-        }
-
+    fn find_sysroot(miri_dir: &Path) -> Result<OsString, BackendInitError> {
         let output = Command::new(miri_dir.join("target/release/cargo-miri"))
             .arg("miri")
             .arg("setup")
@@ -88,8 +63,43 @@ impl Miri {
             return Err(BackendInitError("failed to find sysroot".to_owned()));
         }
         let sysroot = OsStr::from_bytes(output.stdout.trim_ascii_end()).to_owned();
-
         debug!("Miri sysroot at {}", sysroot.to_string_lossy());
+        Ok(sysroot)
+    }
+
+    pub fn from_repo<P: AsRef<Path>>(miri_dir: P) -> Result<Self, BackendInitError> {
+        let miri_dir = miri_dir.as_ref();
+
+        // Detect if Miri already built
+        if !Path::exists(&miri_dir.join("target/release/cargo-miri"))
+            || !Path::exists(&miri_dir.join("target/release/miri"))
+        {
+            // Otherwise, build it ourselves
+            debug!("Setting up miri toolchain");
+            let output = Command::new(miri_dir.join("miri"))
+                .arg("toolchain")
+                .output()
+                .expect("can run miri toolchain and get output");
+            if !output.status.success() {
+                let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
+                return Err(BackendInitError(stderr));
+            }
+
+            debug!("Building Miri under {}", miri_dir.to_string_lossy());
+            let output = Command::new(miri_dir.join("miri"))
+                .arg("build")
+                .arg("--release")
+                .env_remove("RUSTUP_TOOLCHAIN") // In case this was set by cargo run
+                .current_dir(miri_dir)
+                .output()
+                .expect("can run miri build and get output");
+            if !output.status.success() {
+                let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
+                return Err(BackendInitError(stderr));
+            }
+        }
+
+        let sysroot = Self::find_sysroot(miri_dir)?;
 
         Ok(Self {
             binary: miri_dir.join("target/release/miri"),
@@ -130,27 +140,29 @@ impl Cranelift {
     pub fn from_repo<P: AsRef<Path>>(clif_dir: P) -> Result<Self, BackendInitError> {
         let clif_dir = clif_dir.as_ref();
 
-        debug!("Setting up cranelift");
-        let output = Command::new(clif_dir.join("y.rs"))
-            .arg("prepare")
-            .env_remove("RUSTUP_TOOLCHAIN") // In case this was set by cargo run
-            .current_dir(clif_dir)
-            .output()
-            .expect("can run y.rs prepare and get output");
-        if !output.status.success() {
-            let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
-            return Err(BackendInitError(stderr));
-        }
+        if !Path::exists(&clif_dir.join("dist/rustc-clif")) {
+            debug!("Setting up cranelift");
+            let output = Command::new(clif_dir.join("y.rs"))
+                .arg("prepare")
+                .env_remove("RUSTUP_TOOLCHAIN") // In case this was set by cargo run
+                .current_dir(clif_dir)
+                .output()
+                .expect("can run y.rs prepare and get output");
+            if !output.status.success() {
+                let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
+                return Err(BackendInitError(stderr));
+            }
 
-        let output = Command::new(clif_dir.join("y.rs"))
-            .arg("build")
-            .env_remove("RUSTUP_TOOLCHAIN") // In case this was set by cargo run
-            .current_dir(clif_dir)
-            .output()
-            .expect("can run y.rs build and get output");
-        if !output.status.success() {
-            let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
-            return Err(BackendInitError(stderr));
+            let output = Command::new(clif_dir.join("y.rs"))
+                .arg("build")
+                .env_remove("RUSTUP_TOOLCHAIN") // In case this was set by cargo run
+                .current_dir(clif_dir)
+                .output()
+                .expect("can run y.rs build and get output");
+            if !output.status.success() {
+                let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
+                return Err(BackendInitError(stderr));
+            }
         }
 
         Ok(Cranelift {
