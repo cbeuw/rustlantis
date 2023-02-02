@@ -1,4 +1,3 @@
-#![feature(byte_slice_trim_ascii)]
 #![feature(is_some_and)]
 
 use std::{collections::HashMap, path::PathBuf, str::FromStr, ffi::OsStr, os::unix::prelude::OsStrExt};
@@ -39,5 +38,5 @@ fn correct_mir() {
         println!("{}: {class:?}", names.join(", "));
     }
     assert!(results.len() == 1);
-    assert!(results[0].0.as_ref().is_ok_and(|output| output.status.success() && OsStr::from_bytes(output.stdout.trim_ascii_end()) == "5\n"))
+    assert!(results[0].0.as_ref().is_ok_and(|output| output.status.success() && OsStr::from_bytes(output.stdout.as_slice()) == "5\n"))
 }
