@@ -1,6 +1,5 @@
 use std::{
     ffi::{OsStr, OsString},
-    os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
     process::{self, Command},
 };
@@ -60,9 +59,21 @@ impl Miri {
             .output()
             .expect("can run cargo-miri setup --print-sysroot");
         if !output.status.success() {
-            return Err(BackendInitError("failed to find sysroot".to_owned()));
+            return Err(BackendInitError(format!(
+                "failed to find sysroot: {output:?}"
+            )));
         }
-        let sysroot = OsStr::from_bytes(output.stdout.trim_ascii_end()).to_owned();
+        let sysroot;
+        #[cfg(unix)]
+        {
+            use std::os::unix::prelude::OsStrExt;
+            sysroot = OsStr::from_bytes(output.stdout.trim_ascii_end()).to_owned();
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::prelude::OsStrExt;
+            sysroot = OsStr::from_wide(output.stdout.trim_ascii_end()).to_owned();
+        }
         debug!("Miri sysroot at {}", sysroot.to_string_lossy());
         Ok(sysroot)
     }
@@ -81,8 +92,9 @@ impl Miri {
                 .output()
                 .expect("can run miri toolchain and get output");
             if !output.status.success() {
-                let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
-                return Err(BackendInitError(stderr));
+                return Err(BackendInitError(format!(
+                    "failed to set up Miri toolchain: {output:?}"
+                )));
             }
 
             debug!("Building Miri under {}", miri_dir.to_string_lossy());
@@ -94,8 +106,9 @@ impl Miri {
                 .output()
                 .expect("can run miri build and get output");
             if !output.status.success() {
-                let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
-                return Err(BackendInitError(stderr));
+                return Err(BackendInitError(format!(
+                    "failed to build Miri: {output:?}"
+                )));
             }
         } else {
             debug!("Detected built Miri under {}", miri_dir.to_string_lossy());
@@ -151,8 +164,9 @@ impl Cranelift {
                 .output()
                 .expect("can run y.rs prepare and get output");
             if !output.status.success() {
-                let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
-                return Err(BackendInitError(stderr));
+                return Err(BackendInitError(format!(
+                    "failed to prepare Cranelift: {output:?}"
+                )));
             }
 
             let output = Command::new(clif_dir.join("y.rs"))
@@ -162,8 +176,9 @@ impl Cranelift {
                 .output()
                 .expect("can run y.rs build and get output");
             if !output.status.success() {
-                let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
-                return Err(BackendInitError(stderr));
+                return Err(BackendInitError(format!(
+                    "failed to build Cranelift: {output:?}"
+                )));
             }
         } else {
             debug!("Found built Cranelift under {}", clif_dir.to_string_lossy());
