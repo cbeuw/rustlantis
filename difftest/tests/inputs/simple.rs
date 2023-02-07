@@ -3,7 +3,7 @@
 extern crate core;
 use core::intrinsics::mir::*;
 
-#[custom_mir(dialect = "built")]
+#[custom_mir(dialect = "runtime", phase = "optimized")]
 pub fn simple(x: i32) -> i32 {
     mir!(
         let temp1: i32;
