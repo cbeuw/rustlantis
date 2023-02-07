@@ -97,6 +97,8 @@ impl Miri {
                 let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
                 return Err(BackendInitError(stderr));
             }
+        } else {
+            debug!("Detected built Miri under {}", miri_dir.to_string_lossy());
         }
 
         let sysroot = Self::find_sysroot(miri_dir)?;
@@ -141,7 +143,7 @@ impl Cranelift {
         let clif_dir = clif_dir.as_ref();
 
         if !Path::exists(&clif_dir.join("dist/rustc-clif")) {
-            debug!("Setting up cranelift");
+            debug!("Setting up cranelift under {}", clif_dir.to_string_lossy());
             let output = Command::new(clif_dir.join("y.rs"))
                 .arg("prepare")
                 .env_remove("RUSTUP_TOOLCHAIN") // In case this was set by cargo run
@@ -163,6 +165,8 @@ impl Cranelift {
                 let stderr = String::from_utf8(output.stderr).expect("command output is utf-8");
                 return Err(BackendInitError(stderr));
             }
+        } else {
+            debug!("Found built Cranelift under {}", clif_dir.to_string_lossy());
         }
 
         Ok(Cranelift {

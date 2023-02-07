@@ -4,4 +4,4 @@ compile:
   stage: build
   script:
     - cargo build
-    - cargo test
+    - RUST_LOG=debug cargo test
