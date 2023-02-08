@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::vec::{Idx, IndexVec};
 
 macro_rules! declare_id {
@@ -17,17 +19,17 @@ macro_rules! declare_id {
         }
     };
 }
+pub struct Body {
+    pub basic_blocks: IndexVec<BasicBlock, BasicBlockData>,
+    pub local_decls: IndexVec<Local, LocalDecl>,
+
+    arg_count: usize,
+}
 
 declare_id!(BasicBlock);
 pub struct BasicBlockData {
     pub statements: Vec<Statement>,
     pub terminator: Option<Terminator>,
-}
-
-impl BasicBlock {
-    pub fn identifier(&self) -> String {
-        format!("bb{}", self.index())
-    }
 }
 
 declare_id!(Local);
@@ -40,20 +42,6 @@ pub struct LocalDecl {
     /// If this local is a temporary and `is_block_tail` is `Some`,
     /// The type of this local.
     pub ty: Ty,
-}
-
-impl Local {
-    pub fn identifier(&self) -> String {
-        if self.index() == 0 {
-            "RET".to_owned()
-        } else {
-            format!("_{}", self.index())
-        }
-    }
-}
-pub struct Body {
-    pub basic_blocks: IndexVec<BasicBlock, BasicBlockData>,
-    pub locals: IndexVec<Local, LocalDecl>,
 }
 
 pub struct Place {
@@ -81,15 +69,14 @@ pub enum Terminator {
         value: Operand,
         target: BasicBlock,
     },
-    // define!("mir_call", fn Call<T>(place: T, goto: BasicBlock, call: T));
-    Call {
-        destination: Place,
-        target: BasicBlock,
-        // TODO: this probably isn't a place
-        func: Place,
-        args: Vec<Operand>,
-    },
-
+    // TODO: define!("mir_call", fn Call<T>(place: T, goto: BasicBlock, call: T));
+    // Call {
+    //     destination: Place,
+    //     target: BasicBlock,
+    //     // TODO: this probably isn't a place
+    //     func: Place,
+    //     args: Vec<Operand>,
+    // },
     /// Switches based on the computed value.
     ///
     /// First, evaluates the `discr` operand. The type of the operand must be a signed or unsigned
@@ -110,19 +97,8 @@ pub struct SwitchTargets {
     otherwise: BasicBlock,
 }
 
-impl SwitchTargets {
-    pub fn match_arms(&self) -> String {
-        let mut arms: String = self
-            .branches
-            .iter()
-            .map(|(val, bb)| format!("{val} => {},\n", bb.identifier()))
-            .collect();
-        arms.push_str(&format!("_ => {}", self.otherwise.identifier()));
-        arms
-    }
-}
-
 pub enum Rvalue {
+    UnaryOp(UnOp, Operand),
     BinaryOp(BinOp, Operand, Operand),
     // define!("mir_checked", fn Checked<T>(binop: T) -> (T, bool));
     CheckedBinaryOp(BinOp, Operand, Operand),
@@ -155,23 +131,15 @@ pub enum Statement {
     SetDiscriminant(Place, u32),
 }
 
+#[derive(Clone, Copy)]
 pub enum Mutability {
     // N.B. Order is deliberate, so that Not < Mut
     Not,
     Mut,
 }
 
-impl Mutability {
-    /// Returns `""` (empty string) or `"mut "` depending on the mutability.
-    pub fn prefix_str(&self) -> &'static str {
-        match self {
-            Mutability::Mut => "mut ",
-            Mutability::Not => "",
-        }
-    }
-}
-
-enum IntTy {
+#[derive(Clone, Copy)]
+pub enum IntTy {
     Isize,
     I8,
     I16,
@@ -180,6 +148,7 @@ enum IntTy {
     I128,
 }
 
+#[derive(Clone, Copy)]
 pub enum UintTy {
     Usize,
     U8,
@@ -189,17 +158,107 @@ pub enum UintTy {
     U128,
 }
 
+#[derive(Clone, Copy)]
 pub enum FloatTy {
     F32,
     F64,
 }
 
+#[derive(Clone, Copy)]
 pub enum Ty {
     Bool,
     Char,
     Int(IntTy),
     Uint(UintTy),
     Float(FloatTy),
+}
+
+#[derive(Clone, Copy)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    BitXor,
+    BitAnd,
+    BitOr,
+    Shl,
+    Shr,
+    Eq,
+    Lt,
+    Le,
+    Ne,
+    Ge,
+    Gt,
+    Offset,
+}
+
+#[derive(Clone, Copy)]
+pub enum UnOp {
+    Not,
+    Neg,
+}
+
+impl SwitchTargets {
+    pub fn match_arms(&self) -> String {
+        let mut arms: String = self
+            .branches
+            .iter()
+            .map(|(val, bb)| format!("{val} => {},\n", bb.identifier()))
+            .collect();
+        arms.push_str(&format!("_ => {}", self.otherwise.identifier()));
+        arms
+    }
+}
+
+impl LocalDecl {
+    pub fn new_mut(ty: Ty) -> Self {
+        Self {
+            mutability: Mutability::Mut,
+            ty,
+        }
+    }
+}
+
+impl Local {
+    pub const RET: Self = Self(0);
+    pub fn identifier(&self) -> String {
+        if *self == Self::RET {
+            "RET".to_owned()
+        } else {
+            format!("_{}", self.index())
+        }
+    }
+}
+impl Body {
+    pub fn new(args: &[Ty], return_ty: Ty) -> Self {
+        let mut locals = IndexVec::new();
+        locals.push(LocalDecl::new_mut(return_ty));
+        args.iter().for_each(|ty| {
+            locals.push(LocalDecl::new_mut(*ty));
+        });
+        Self {
+            basic_blocks: IndexVec::new(),
+            local_decls: locals,
+
+            arg_count: args.len(),
+        }
+    }
+
+    pub fn declare_new_var(&mut self, mutability: Mutability, ty: Ty) -> Local {
+        self.local_decls.push(LocalDecl { mutability, ty })
+    }
+
+    pub fn new_basic_block(&mut self, bb: BasicBlockData) -> BasicBlock {
+        self.basic_blocks.push(bb)
+    }
+}
+
+impl BasicBlock {
+    pub fn identifier(&self) -> String {
+        format!("bb{}", self.index())
+    }
 }
 
 impl Ty {
@@ -231,25 +290,23 @@ impl Ty {
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum BinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Rem,
-    BitXor,
-    BitAnd,
-    BitOr,
-    Shl,
-    Shr,
-    Eq,
-    Lt,
-    Le,
-    Ne,
-    Ge,
-    Gt,
-    Offset,
+impl fmt::Debug for Ty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+impl Mutability {
+    /// Returns `""` (empty string) or `"mut "` depending on the mutability.
+    pub fn prefix_str(&self) -> &'static str {
+        match self {
+            Mutability::Mut => "mut ",
+            Mutability::Not => "",
+        }
+    }
+}
+
+impl Place {
+    pub const RETURN_SLOT: Self = Self { local: Local::RET };
 }
 
 impl BinOp {
@@ -272,6 +329,15 @@ impl BinOp {
             BinOp::Ge => ">=",
             BinOp::Gt => ">",
             BinOp::Offset => panic!("offset is not a real infix operator"),
+        }
+    }
+}
+
+impl UnOp {
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            UnOp::Not => "!",
+            UnOp::Neg => "-",
         }
     }
 }

@@ -22,6 +22,7 @@ impl Serialize for Operand {
 impl Serialize for Rvalue {
     fn serialize(&self) -> String {
         match self {
+            Rvalue::UnaryOp(op, a) => format!("{}{}", op.symbol(), a.serialize()),
             Rvalue::BinaryOp(op, a, b) => match op {
                 BinOp::Offset => format!("{}.offset({})", a.serialize(), b.serialize()),
                 _ => format!("{} {} {}", a.serialize(), op.symbol(), b.serialize()),
@@ -77,25 +78,25 @@ impl Serialize for Terminator {
                 value.serialize(),
                 target.identifier()
             ),
-            Terminator::Call {
-                destination,
-                target,
-                func,
-                args,
-            } => {
-                let args_list: String = args
-                    .iter()
-                    .map(|arg| arg.serialize())
-                    .intersperse(", ".to_owned())
-                    .collect();
-                format!(
-                    "Call({}, {}, {}({})",
-                    destination.serialize(),
-                    target.identifier(),
-                    func.serialize(),
-                    args_list
-                )
-            }
+            // Terminator::Call {
+            //     destination,
+            //     target,
+            //     func,
+            //     args,
+            // } => {
+            //     let args_list: String = args
+            //         .iter()
+            //         .map(|arg| arg.serialize())
+            //         .intersperse(", ".to_owned())
+            //         .collect();
+            //     format!(
+            //         "Call({}, {}, {}({})",
+            //         destination.serialize(),
+            //         target.identifier(),
+            //         func.serialize(),
+            //         args_list
+            //     )
+            // }
             Terminator::SwitchInt { discr, targets } => {
                 let arms = targets.match_arms();
                 format!("match {} {{\n{}\n}}", discr.serialize(), arms)
@@ -121,9 +122,9 @@ impl Serialize for BasicBlockData {
 impl Serialize for Body {
     fn serialize(&self) -> String {
         let mut body: String = self
-            .locals
+            .local_decls
             .iter_enumerated()
-            .filter(|(idx, _)| idx.index() != 0)
+            .filter(|(idx, _)| *idx != Local::RET)
             .map(|(idx, decl)| {
                 format!(
                     "let {}_{}: {};\n",
@@ -145,5 +146,29 @@ impl Serialize for Body {
             bbs.map(|(idx, bb)| format!("{} = {{\n{}\n}}", idx.identifier(), bb.serialize()));
         body.extend(rest);
         body
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{syntax::*, vec::Idx};
+
+    #[test]
+    fn serialize_body() {
+        let mut body = Body::new(&vec![Ty::Bool], Ty::Bool);
+        let statements = vec![Statement::Assign(
+            Place::RETURN_SLOT,
+            Rvalue::UnaryOp(
+                UnOp::Not,
+                Operand::Copy(Place {
+                    local: Local::new(1),
+                }),
+            ),
+        )];
+        let terminator = Some(Terminator::Return);
+        body.new_basic_block(BasicBlockData {
+            statements,
+            terminator,
+        });
     }
 }
