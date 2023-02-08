@@ -24,7 +24,33 @@ pub struct BasicBlockData {
     pub terminator: Option<Terminator>,
 }
 
+impl BasicBlock {
+    pub fn identifier(&self) -> String {
+        format!("bb{}", self.index())
+    }
+}
+
 declare_id!(Local);
+pub struct LocalDecl {
+    /// Whether this is a mutable binding (i.e., `let x` or `let mut x`).
+    ///
+    /// Temporaries and the return place are always mutable.
+    pub mutability: Mutability,
+
+    /// If this local is a temporary and `is_block_tail` is `Some`,
+    /// The type of this local.
+    pub ty: Ty,
+}
+
+impl Local {
+    pub fn identifier(&self) -> String {
+        if self.index() == 0 {
+            "RET".to_owned()
+        } else {
+            format!("_{}", self.index())
+        }
+    }
+}
 pub struct Body {
     pub basic_blocks: IndexVec<BasicBlock, BasicBlockData>,
     pub locals: IndexVec<Local, LocalDecl>,
@@ -59,6 +85,7 @@ pub enum Terminator {
     Call {
         destination: Place,
         target: BasicBlock,
+        // TODO: this probably isn't a place
         func: Place,
         args: Vec<Operand>,
     },
@@ -81,6 +108,18 @@ pub enum Terminator {
 pub struct SwitchTargets {
     branches: Vec<(u128, BasicBlock)>,
     otherwise: BasicBlock,
+}
+
+impl SwitchTargets {
+    pub fn match_arms(&self) -> String {
+        let mut arms: String = self
+            .branches
+            .iter()
+            .map(|(val, bb)| format!("{val} => {},\n", bb.identifier()))
+            .collect();
+        arms.push_str(&format!("_ => {}", self.otherwise.identifier()));
+        arms
+    }
 }
 
 pub enum Rvalue {
@@ -122,7 +161,17 @@ pub enum Mutability {
     Mut,
 }
 
-pub enum IntTy {
+impl Mutability {
+    /// Returns `""` (empty string) or `"mut "` depending on the mutability.
+    pub fn prefix_str(&self) -> &'static str {
+        match self {
+            Mutability::Mut => "mut ",
+            Mutability::Not => "",
+        }
+    }
+}
+
+enum IntTy {
     Isize,
     I8,
     I16,
@@ -153,17 +202,36 @@ pub enum Ty {
     Float(FloatTy),
 }
 
-pub struct LocalDecl {
-    /// Whether this is a mutable binding (i.e., `let x` or `let mut x`).
-    ///
-    /// Temporaries and the return place are always mutable.
-    pub mutability: Mutability,
-
-    /// If this local is a temporary and `is_block_tail` is `Some`,
-    /// The type of this local.
-    pub ty: Ty,
+impl Ty {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Ty::Bool => "bool",
+            Ty::Char => "char",
+            Ty::Int(size) => match size {
+                IntTy::Isize => "isize",
+                IntTy::I8 => "i8",
+                IntTy::I16 => "i16",
+                IntTy::I32 => "i32",
+                IntTy::I64 => "i64",
+                IntTy::I128 => "i128",
+            },
+            Ty::Uint(size) => match size {
+                UintTy::Usize => "usize",
+                UintTy::U8 => "u8",
+                UintTy::U16 => "u16",
+                UintTy::U32 => "u32",
+                UintTy::U64 => "u64",
+                UintTy::U128 => "u128",
+            },
+            Ty::Float(size) => match size {
+                FloatTy::F32 => "f32",
+                FloatTy::F64 => "f64",
+            },
+        }
+    }
 }
 
+#[derive(Clone, Copy)]
 pub enum BinOp {
     Add,
     Sub,
@@ -182,4 +250,28 @@ pub enum BinOp {
     Ge,
     Gt,
     Offset,
+}
+
+impl BinOp {
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Rem => "%",
+            BinOp::BitXor => "^",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
+            BinOp::Eq => "==",
+            BinOp::Lt => "<",
+            BinOp::Le => "<=",
+            BinOp::Ne => "!=",
+            BinOp::Ge => ">=",
+            BinOp::Gt => ">",
+            BinOp::Offset => panic!("offset is not a real infix operator"),
+        }
+    }
 }
