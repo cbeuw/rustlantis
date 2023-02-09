@@ -2,5 +2,6 @@
 
 members = [
     "difftest",
-    "mirgen",
+    "mir",
+    "fuzz",
 ]

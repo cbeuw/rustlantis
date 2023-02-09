@@ -122,10 +122,9 @@ impl Serialize for BasicBlockData {
 impl Serialize for Body {
     fn serialize(&self) -> String {
         let mut body: String = self
-            .local_decls
-            .iter_enumerated()
-            .filter(|(idx, _)| *idx != Local::RET)
-            .map(|(idx, decl)| {
+            .vars_iter()
+            .map(|idx| {
+                let decl = &self.local_decls[idx];
                 format!(
                     "let {}_{}: {};\n",
                     &decl.mutability.prefix_str(),
@@ -145,7 +144,18 @@ impl Serialize for Body {
         let rest =
             bbs.map(|(idx, bb)| format!("{} = {{\n{}\n}}", idx.identifier(), bb.serialize()));
         body.extend(rest);
-        body
+        format!("mir! {{\n{body}\n}}")
+    }
+}
+
+impl Serialize for Program {
+    fn serialize(&self) -> String {
+        let mut program = Program::HEADER.to_string();
+        program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
+            format!("{}\nfn {}({}) -> {} {{\n{}\n}}\n", Program::FUNCTION_ATTRIBUTE, idx.identifier(), body.args_list(), body.return_ty().name(), body.serialize())
+        }));
+        program.push_str(Program::MAIN);
+        program
     }
 }
 

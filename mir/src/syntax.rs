@@ -19,6 +19,12 @@ macro_rules! declare_id {
         }
     };
 }
+
+pub struct Program {
+    pub functions: IndexVec<Function, Body>,
+}
+
+declare_id!(Function);
 pub struct Body {
     pub basic_blocks: IndexVec<BasicBlock, BasicBlockData>,
     pub local_decls: IndexVec<Local, LocalDecl>,
@@ -200,6 +206,29 @@ pub enum UnOp {
     Neg,
 }
 
+impl Program {
+    // TODO: match fn0's param
+    pub const MAIN: &str = "pub fn main(){fn0(true);}";
+    pub const FUNCTION_ATTRIBUTE: &str = "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
+    pub const HEADER: &str = "#![feature(custom_mir, core_intrinsics)]\nextern crate core;\nuse core::intrinsics::mir::*;\n";
+
+    pub fn new() -> Self {
+        Self {
+            functions: IndexVec::default(),
+        }
+    }
+
+    pub fn push_fn(&mut self, body: Body) -> Function {
+        self.functions.push(body)
+    }
+}
+
+impl Function {
+    pub fn identifier(&self) -> String {
+        format!("fn{}", self.index())
+    }
+}
+
 impl SwitchTargets {
     pub fn match_arms(&self) -> String {
         let mut arms: String = self
@@ -231,10 +260,12 @@ impl Local {
         }
     }
 }
+
 impl Body {
     pub fn new(args: &[Ty], return_ty: Ty) -> Self {
         let mut locals = IndexVec::new();
         locals.push(LocalDecl::new_mut(return_ty));
+        // TODO: args shouldn't always be mut
         args.iter().for_each(|ty| {
             locals.push(LocalDecl::new_mut(*ty));
         });
@@ -244,6 +275,35 @@ impl Body {
 
             arg_count: args.len(),
         }
+    }
+
+    pub fn args_list(&self) -> String {
+        self.args_iter()
+            .map(|arg| {
+                let decl = &self.local_decls[arg];
+                format!(
+                    "{}{}: {}",
+                    decl.mutability.prefix_str(),
+                    arg.identifier(),
+                    decl.ty.name()
+                )
+            })
+            .intersperse(",".to_string())
+            .collect()
+    }
+
+    /// Returns an iterator over function arguments
+    pub fn args_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
+        (1..self.arg_count + 1).map(Local::new)
+    }
+
+    /// Returns an iterator over locals defined in the function body
+    pub fn vars_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
+        (self.arg_count + 1..self.local_decls.len()).map(Local::new)
+    }
+
+    pub fn return_ty(&self) -> Ty {
+        self.local_decls[Local::RET].ty
     }
 
     pub fn declare_new_var(&mut self, mutability: Mutability, ty: Ty) -> Local {

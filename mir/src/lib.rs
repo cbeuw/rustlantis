@@ -1,5 +1,5 @@
 #![feature(iter_intersperse)]
 
-mod serialize;
-mod syntax;
+pub mod serialize;
+pub mod syntax;
 mod vec;
