@@ -8,3 +8,7 @@ edition = "2021"
 [dependencies]
 mir = { path = "../mir" }
 difftest = { path = "../difftest" }
+petgraph = "0.6.3"
+rand = { version = "0.8.5", features = ["small_rng"] }
+log = "0.4.17"
+env_logger = "0.10.0"
