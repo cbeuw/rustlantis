@@ -104,6 +104,7 @@ pub struct SwitchTargets {
 }
 
 pub enum Rvalue {
+    Use(Operand),
     UnaryOp(UnOp, Operand),
     BinaryOp(BinOp, Operand, Operand),
     // define!("mir_checked", fn Checked<T>(binop: T) -> (T, bool));
@@ -116,10 +117,16 @@ pub enum Rvalue {
     Discriminant(Place),
 }
 
+pub enum Constant {
+    Int(u128),
+    Bool(bool),
+}
+
 pub enum Operand {
     Copy(Place),
     // define!("mir_move", fn Move<T>(place: T) -> T);
     Move(Place),
+    Constant(Constant, Ty),
     // TODO: the following
     // define!("mir_static", fn Static<T>(s: T) -> &'static T);
     // define!("mir_static_mut", fn StaticMut<T>(s: T) -> *mut T);
@@ -177,6 +184,7 @@ pub enum Ty {
     Int(IntTy),
     Uint(UintTy),
     Float(FloatTy),
+    // TODO: more types
 }
 
 #[derive(Clone, Copy)]

@@ -15,6 +15,12 @@ impl Serialize for Operand {
         match self {
             Operand::Copy(place) => place.serialize(),
             Operand::Move(place) => format!("Move({})", place.serialize()),
+            Operand::Constant(con, ty) => {
+                match con {
+                    Constant::Int(i) => format!("{i}_{}", ty.name()),
+                    Constant::Bool(b) => b.to_string(),
+                }
+            }
         }
     }
 }
@@ -22,6 +28,7 @@ impl Serialize for Operand {
 impl Serialize for Rvalue {
     fn serialize(&self) -> String {
         match self {
+            Rvalue::Use(a) => a.serialize(),
             Rvalue::UnaryOp(op, a) => format!("{}{}", op.symbol(), a.serialize()),
             Rvalue::BinaryOp(op, a, b) => match op {
                 BinOp::Offset => format!("{}.offset({})", a.serialize(), b.serialize()),
