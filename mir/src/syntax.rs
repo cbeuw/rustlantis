@@ -144,14 +144,14 @@ pub enum Statement {
     SetDiscriminant(Place, u32),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mutability {
     // N.B. Order is deliberate, so that Not < Mut
     Not,
     Mut,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum IntTy {
     Isize,
     I8,
@@ -161,7 +161,7 @@ pub enum IntTy {
     I128,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum UintTy {
     Usize,
     U8,
@@ -171,13 +171,13 @@ pub enum UintTy {
     U128,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FloatTy {
     F32,
     F64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Ty {
     Bool,
     Char,
@@ -300,6 +300,15 @@ impl Body {
             .collect()
     }
 
+    pub fn vars_and_args_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
+        (1..self.local_decls.len()).map(Local::new)
+    }
+
+    pub fn vars_and_args_decl_iter(&self) -> impl Iterator<Item = (Local, &LocalDecl)> + ExactSizeIterator {
+        self.vars_and_args_iter().map(|local| (local, &self.local_decls[local]))
+
+    }
+
     /// Returns an iterator over function arguments
     pub fn args_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
         (1..self.arg_count + 1).map(Local::new)
@@ -308,6 +317,10 @@ impl Body {
     /// Returns an iterator over locals defined in the function body
     pub fn vars_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
         (self.arg_count + 1..self.local_decls.len()).map(Local::new)
+    }
+    
+    pub fn vars_decl_iter(&self) -> impl Iterator<Item = (Local, &LocalDecl)> + ExactSizeIterator {
+        self.vars_iter().map(|local| (local, &self.local_decls[local]))
     }
 
     pub fn return_ty(&self) -> Ty {
