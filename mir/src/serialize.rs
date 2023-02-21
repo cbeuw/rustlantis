@@ -4,9 +4,41 @@ pub trait Serialize {
     fn serialize(&self) -> String;
 }
 
+impl Serialize for Ty {
+    fn serialize(&self) -> String {
+        match *self {
+            Self::BOOL => "bool".to_owned(),
+            Self::CHAR => "char".to_owned(),
+            Self::ISIZE => "isize".to_owned(),
+            Self::I8 => "i8".to_owned(),
+            Self::I16 => "i16".to_owned(),
+            Self::I32 => "i32".to_owned(),
+            Self::I64 => "i64".to_owned(),
+            Self::I128 => "i128".to_owned(),
+            Self::USIZE => "usize".to_owned(),
+            Self::U8 => "u8".to_owned(),
+            Self::U16 => "u16".to_owned(),
+            Self::U32 => "u32".to_owned(),
+            Self::U64 => "u64".to_owned(),
+            Self::U128 => "u128".to_owned(),
+            Self::F32 => "f32".to_owned(),
+            Self::F64 => "f64".to_owned(),
+            _ => format!("ty{}", self.index())
+        }
+    }
+}
+
 impl Serialize for Place {
     fn serialize(&self) -> String {
-        self.local.identifier()
+        let str = self.local.identifier();
+        self.projection.iter().fold(str, |acc, proj| {
+            match proj {
+                ProjectionElem::Deref => format!("*({acc})"),
+                ProjectionElem::Field(_) => todo!(),
+                ProjectionElem::Index(_) => todo!(),
+                ProjectionElem::Downcast(_) => todo!(),
+            }
+        })
     }
 }
 
@@ -17,10 +49,11 @@ impl Serialize for Operand {
             Operand::Move(place) => format!("Move({})", place.serialize()),
             Operand::Constant(con, ty) => {
                 match con {
-                    Constant::Int(i) => format!("{i}_{}", ty.name()),
+                    Constant::Int(i) => format!("{i}_{}", ty.serialize()),
                     Constant::Bool(b) => b.to_string(),
                 }
-            }
+            },
+            Operand::Hole => unreachable!("no hole left at serialization stage"),
         }
     }
 }
@@ -46,6 +79,7 @@ impl Serialize for Rvalue {
             Rvalue::Len(place) => format!("Len({})", place.serialize()),
             Rvalue::Retag(place) => format!("Retag({})", place.serialize()),
             Rvalue::Discriminant(place) => format!("Discriminant({})", place.serialize()),
+            Rvalue::Hole => unreachable!("no hole left at serialization stage"),
         }
     }
 }
@@ -136,7 +170,7 @@ impl Serialize for Body {
                     "let {}_{}: {};\n",
                     &decl.mutability.prefix_str(),
                     idx.index(),
-                    decl.ty.name()
+                    decl.ty.serialize()
                 )
             })
             .collect();
@@ -159,7 +193,7 @@ impl Serialize for Program {
     fn serialize(&self) -> String {
         let mut program = Program::HEADER.to_string();
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
-            format!("{}\nfn {}({}) -> {} {{\n{}\n}}\n", Program::FUNCTION_ATTRIBUTE, idx.identifier(), body.args_list(), body.return_ty().name(), body.serialize())
+            format!("{}\nfn {}({}) -> {} {{\n{}\n}}\n", Program::FUNCTION_ATTRIBUTE, idx.identifier(), body.args_list(), body.return_ty().serialize(), body.serialize())
         }));
         program.push_str(Program::MAIN);
         program
@@ -172,14 +206,12 @@ mod tests {
 
     #[test]
     fn serialize_body() {
-        let mut body = Body::new(&vec![Ty::Bool], Ty::Bool);
+        let mut body = Body::new(&vec![Ty::BOOL], Ty::BOOL);
         let statements = vec![Statement::Assign(
             Place::RETURN_SLOT,
             Rvalue::UnaryOp(
                 UnOp::Not,
-                Operand::Copy(Place {
-                    local: Local::new(1),
-                }),
+                Operand::Copy(Place::from_local(Local::new(1))),
             ),
         )];
         let terminator = Some(Terminator::Return);

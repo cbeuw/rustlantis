@@ -1,6 +1,7 @@
-use std::fmt;
-
-use crate::vec::{Idx, IndexVec};
+use crate::{
+    serialize::Serialize,
+    vec::{Idx, IndexVec},
+};
 
 macro_rules! declare_id {
     ($name: ident) => {
@@ -20,8 +21,30 @@ macro_rules! declare_id {
     };
 }
 
+declare_id!(Ty);
 pub struct Program {
     pub functions: IndexVec<Function, Body>,
+    pub tys: IndexVec<Ty, TyData>,
+}
+
+impl Ty {
+    // Primitives
+    pub const BOOL: Self = Self(0);
+    pub const CHAR: Self = Self(1);
+    pub const ISIZE: Self = Self(2);
+    pub const I8: Self = Self(3);
+    pub const I16: Self = Self(4);
+    pub const I32: Self = Self(5);
+    pub const I64: Self = Self(6);
+    pub const I128: Self = Self(7);
+    pub const USIZE: Self = Self(8);
+    pub const U8: Self = Self(9);
+    pub const U16: Self = Self(10);
+    pub const U32: Self = Self(11);
+    pub const U64: Self = Self(12);
+    pub const U128: Self = Self(13);
+    pub const F32: Self = Self(14);
+    pub const F64: Self = Self(15);
 }
 
 declare_id!(Function);
@@ -38,6 +61,12 @@ pub struct BasicBlockData {
     pub terminator: Option<Terminator>,
 }
 
+impl BasicBlockData {
+    pub fn insert_statement(&mut self, stmt: Statement) {
+        self.statements.push(stmt);
+    }
+}
+
 declare_id!(Local);
 pub struct LocalDecl {
     /// Whether this is a mutable binding (i.e., `let x` or `let mut x`).
@@ -50,9 +79,30 @@ pub struct LocalDecl {
     pub ty: Ty,
 }
 
+pub struct FieldIdx(u32);
+declare_id!(VariantIdx);
+
 pub struct Place {
     pub local: Local,
+    pub projection: Vec<ProjectionElem>,
     // TODO: mir_field and mir_variant
+}
+
+impl Place {
+    pub const fn from_local(local: Local) -> Self {
+        Place {
+            local,
+            projection: vec![],
+        }
+    }
+}
+
+pub enum ProjectionElem {
+    Deref,
+    Field(FieldIdx),
+    Index(Local),
+    Downcast(VariantIdx),
+    // TODO: ConstantIndex, Subslice
 }
 
 pub enum Terminator {
@@ -104,6 +154,7 @@ pub struct SwitchTargets {
 }
 
 pub enum Rvalue {
+    Hole,
     Use(Operand),
     UnaryOp(UnOp, Operand),
     BinaryOp(BinOp, Operand, Operand),
@@ -123,6 +174,7 @@ pub enum Constant {
 }
 
 pub enum Operand {
+    Hole,
     Copy(Place),
     // define!("mir_move", fn Move<T>(place: T) -> T);
     Move(Place),
@@ -177,14 +229,25 @@ pub enum FloatTy {
     F64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Ty {
+#[derive(PartialEq, Eq)]
+pub enum TyData {
     Bool,
     Char,
     Int(IntTy),
     Uint(UintTy),
     Float(FloatTy),
+    Adt(Adt),
     // TODO: more types
+}
+
+#[derive(PartialEq, Eq)]
+pub struct VariantDef {
+    // TODO: finish this
+}
+
+#[derive(PartialEq, Eq)]
+pub struct Adt {
+    variants: IndexVec<VariantIdx, VariantDef>,
 }
 
 #[derive(Clone, Copy)]
@@ -217,12 +280,33 @@ pub enum UnOp {
 impl Program {
     // TODO: match fn0's param
     pub const MAIN: &str = "pub fn main(){fn0(true);}";
-    pub const FUNCTION_ATTRIBUTE: &str = "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
+    pub const FUNCTION_ATTRIBUTE: &str =
+        "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
     pub const HEADER: &str = "#![feature(custom_mir, core_intrinsics)]\nextern crate core;\nuse core::intrinsics::mir::*;\n";
 
     pub fn new() -> Self {
+        // Important: the order here must match the const definitions in Ty
+        let tys = IndexVec::from_iter([
+            TyData::Bool,
+            TyData::Char,
+            TyData::Int(IntTy::Isize),
+            TyData::Int(IntTy::I8),
+            TyData::Int(IntTy::I16),
+            TyData::Int(IntTy::I32),
+            TyData::Int(IntTy::I64),
+            TyData::Int(IntTy::I128),
+            TyData::Uint(UintTy::Usize),
+            TyData::Uint(UintTy::U8),
+            TyData::Uint(UintTy::U16),
+            TyData::Uint(UintTy::U32),
+            TyData::Uint(UintTy::U64),
+            TyData::Uint(UintTy::U128),
+            TyData::Float(FloatTy::F32),
+            TyData::Float(FloatTy::F64),
+        ]);
         Self {
             functions: IndexVec::default(),
+            tys,
         }
     }
 
@@ -293,7 +377,7 @@ impl Body {
                     "{}{}: {}",
                     decl.mutability.prefix_str(),
                     arg.identifier(),
-                    decl.ty.name()
+                    decl.ty.serialize()
                 )
             })
             .intersperse(",".to_string())
@@ -304,9 +388,11 @@ impl Body {
         (1..self.local_decls.len()).map(Local::new)
     }
 
-    pub fn vars_and_args_decl_iter(&self) -> impl Iterator<Item = (Local, &LocalDecl)> + ExactSizeIterator {
-        self.vars_and_args_iter().map(|local| (local, &self.local_decls[local]))
-
+    pub fn vars_and_args_decl_iter(
+        &self,
+    ) -> impl Iterator<Item = (Local, &LocalDecl)> + ExactSizeIterator {
+        self.vars_and_args_iter()
+            .map(|local| (local, &self.local_decls[local]))
     }
 
     /// Returns an iterator over function arguments
@@ -318,9 +404,10 @@ impl Body {
     pub fn vars_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
         (self.arg_count + 1..self.local_decls.len()).map(Local::new)
     }
-    
+
     pub fn vars_decl_iter(&self) -> impl Iterator<Item = (Local, &LocalDecl)> + ExactSizeIterator {
-        self.vars_iter().map(|local| (local, &self.local_decls[local]))
+        self.vars_iter()
+            .map(|local| (local, &self.local_decls[local]))
     }
 
     pub fn return_ty(&self) -> Ty {
@@ -342,40 +429,6 @@ impl BasicBlock {
     }
 }
 
-impl Ty {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Ty::Bool => "bool",
-            Ty::Char => "char",
-            Ty::Int(size) => match size {
-                IntTy::Isize => "isize",
-                IntTy::I8 => "i8",
-                IntTy::I16 => "i16",
-                IntTy::I32 => "i32",
-                IntTy::I64 => "i64",
-                IntTy::I128 => "i128",
-            },
-            Ty::Uint(size) => match size {
-                UintTy::Usize => "usize",
-                UintTy::U8 => "u8",
-                UintTy::U16 => "u16",
-                UintTy::U32 => "u32",
-                UintTy::U64 => "u64",
-                UintTy::U128 => "u128",
-            },
-            Ty::Float(size) => match size {
-                FloatTy::F32 => "f32",
-                FloatTy::F64 => "f64",
-            },
-        }
-    }
-}
-
-impl fmt::Debug for Ty {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
 impl Mutability {
     /// Returns `""` (empty string) or `"mut "` depending on the mutability.
     pub fn prefix_str(&self) -> &'static str {
@@ -387,7 +440,7 @@ impl Mutability {
 }
 
 impl Place {
-    pub const RETURN_SLOT: Self = Self { local: Local::RET };
+    pub const RETURN_SLOT: Self = Self::from_local(Local::RET);
 }
 
 impl BinOp {

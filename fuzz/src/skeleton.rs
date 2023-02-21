@@ -84,8 +84,8 @@ pub fn build_skeleton(rng: &mut impl Rng) -> DiGraph<Dom, ()> {
     // similarly, we connect each dominator from one random lower node (except for dom0 where there are no lower nodes), then randomly pick lower nodes to connect from
 
     for set in dom_sets.iter() {
-        // Connect dominator to at least one lower node (dom or non-dom)
         {
+            // Connect dominator to at least one lower node (dom or non-dom)
             let dom = set[0];
             // If this is None then dom is dom0 so it has no incoming edges
             let lower_nodes = nodes.iter().take_while(|&&idx| idx < dom);
@@ -93,16 +93,17 @@ pub fn build_skeleton(rng: &mut impl Rng) -> DiGraph<Dom, ()> {
                 graph.add_edge(lower, dom, ());
             }
             // Then randomly connect dominator from more lower nodes
-            // TODO: geometric or choose_multiple
-            for &lower in lower_nodes {
-                if rng.gen_bool(EXTRA_INCOMING_EDGE_RATE) {
-                    graph.update_edge(lower, dom, ());
-                }
-            }
+            // TODO: binomial or choose_multiple
+            // for &lower in lower_nodes {
+            //     if rng.gen_bool(EXTRA_INCOMING_EDGE_RATE) {
+            //         graph.update_edge(lower, dom, ());
+            //     }
+            // }
+            // TODO: the caller needs a node to return to, how to handle this?
         }
 
         for &node in &set[1..] {
-            // Connect each non-dom node in set with at least one lower node (dom or non-dom)
+            // Connect each non-dom node in set with at least one lower node in set (dom or non-dom)
             let set_lower_nodes = set.iter().take_while(|&&idx| idx < node);
             let &lower = set_lower_nodes
                 .clone()
@@ -110,12 +111,12 @@ pub fn build_skeleton(rng: &mut impl Rng) -> DiGraph<Dom, ()> {
                 .expect("non-dom nodes always have lower in-set nodes");
             graph.add_edge(lower, node, ());
             // Then randomly connect dominator from more lower nodes
-            // TODO: geometric or choose_multiple
-            for &lower in set_lower_nodes {
-                if rng.gen_bool(EXTRA_INCOMING_EDGE_RATE) {
-                    graph.update_edge(lower, node, ());
-                }
-            }
+            // TODO: binomial or choose_multiple
+            // for &lower in set_lower_nodes {
+            //     if rng.gen_bool(EXTRA_INCOMING_EDGE_RATE / 3.) {
+            //         graph.update_edge(lower, node, ());
+            //     }
+            // }
         }
     }
 
