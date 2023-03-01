@@ -1,5 +1,6 @@
 use crate::{
     serialize::Serialize,
+    ty::TyCtxt,
     vec::{Idx, IndexVec},
 };
 
@@ -24,7 +25,7 @@ macro_rules! declare_id {
 declare_id!(Ty);
 pub struct Program {
     pub functions: IndexVec<Function, Body>,
-    pub tys: IndexVec<Ty, TyData>,
+    pub tcx: TyCtxt,
 }
 
 impl Ty {
@@ -47,11 +48,12 @@ impl Ty {
     pub const F64: Self = Self(15);
 }
 
+pub type LocalDecls = IndexVec<Local, LocalDecl>;
+
 declare_id!(Function);
 pub struct Body {
     pub basic_blocks: IndexVec<BasicBlock, BasicBlockData>,
-    pub local_decls: IndexVec<Local, LocalDecl>,
-
+    pub local_decls: LocalDecls,
     arg_count: usize,
 }
 
@@ -94,6 +96,16 @@ impl Place {
             local,
             projection: vec![],
         }
+    }
+
+    pub fn ty(&self, tcx: &TyCtxt, local_decls: &LocalDecls) -> Ty {
+        // TODO: projection
+        local_decls[self.local].ty
+    }
+
+    pub fn tykind<'tcx>(&self, tcx: &'tcx TyCtxt, local_decls: &LocalDecls) -> &'tcx TyKind {
+        let ty = local_decls[self.local].ty;
+        tcx.tykind(ty)
     }
 }
 
@@ -230,14 +242,25 @@ pub enum FloatTy {
 }
 
 #[derive(PartialEq, Eq)]
-pub enum TyData {
+pub enum TyKind {
     Bool,
     Char,
     Int(IntTy),
     Uint(UintTy),
     Float(FloatTy),
     Adt(Adt),
+    RawPtr(Ty, Mutability),
+    Tuple(Vec<Ty>),
     // TODO: more types
+}
+
+impl TyKind {
+    pub fn try_unwrap_pair(&self) -> Option<(Ty, Ty)> {
+        match self {
+            TyKind::Tuple(tys) if tys.len() == 2 => Some((tys[0], tys[1])),
+            _ => None
+        }
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -285,28 +308,9 @@ impl Program {
     pub const HEADER: &str = "#![feature(custom_mir, core_intrinsics)]\nextern crate core;\nuse core::intrinsics::mir::*;\n";
 
     pub fn new() -> Self {
-        // Important: the order here must match the const definitions in Ty
-        let tys = IndexVec::from_iter([
-            TyData::Bool,
-            TyData::Char,
-            TyData::Int(IntTy::Isize),
-            TyData::Int(IntTy::I8),
-            TyData::Int(IntTy::I16),
-            TyData::Int(IntTy::I32),
-            TyData::Int(IntTy::I64),
-            TyData::Int(IntTy::I128),
-            TyData::Uint(UintTy::Usize),
-            TyData::Uint(UintTy::U8),
-            TyData::Uint(UintTy::U16),
-            TyData::Uint(UintTy::U32),
-            TyData::Uint(UintTy::U64),
-            TyData::Uint(UintTy::U128),
-            TyData::Float(FloatTy::F32),
-            TyData::Float(FloatTy::F64),
-        ]);
         Self {
             functions: IndexVec::default(),
-            tys,
+            tcx: TyCtxt::new(),
         }
     }
 
