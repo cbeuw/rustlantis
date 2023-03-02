@@ -1,4 +1,4 @@
-use crate::{syntax::*, vec::Idx};
+use crate::{syntax::*, ty::TyCtxt, vec::Idx};
 
 pub trait Serialize {
     fn serialize(&self) -> String;
@@ -6,6 +6,7 @@ pub trait Serialize {
 
 impl Serialize for Ty {
     fn serialize(&self) -> String {
+        let tcx: &TyCtxt = todo!();
         match *self {
             Self::BOOL => "bool".to_owned(),
             Self::CHAR => "char".to_owned(),
@@ -23,7 +24,31 @@ impl Serialize for Ty {
             Self::U128 => "u128".to_owned(),
             Self::F32 => "f32".to_owned(),
             Self::F64 => "f64".to_owned(),
-            _ => format!("ty{}", self.index())
+            non_prm => {
+                let tykind = tcx.tykind(non_prm);
+                match tykind {
+                    // User-defined type
+                    &TyKind::Adt(_) => format!("ty{}", self.index()),
+                    // Pointer types
+                    &TyKind::RawPtr(ty, mutability) => {
+                        format!("*{} {}", mutability.prefix_str(), ty.serialize())
+                    }
+                    // Sequence types
+                    &TyKind::Tuple(elems) => {
+                        if elems.len() == 1 {
+                            format!("({},)", elems[0].serialize())
+                        } else {
+                            let inner: String = elems
+                                .iter()
+                                .map(|ty| ty.serialize())
+                                .intersperse(", ".to_string())
+                                .collect();
+                            format!("({inner})")
+                        }
+                    }
+                    _ => unreachable!("primitives are already handled"),
+                }
+            }
         }
     }
 }
@@ -31,13 +56,11 @@ impl Serialize for Ty {
 impl Serialize for Place {
     fn serialize(&self) -> String {
         let str = self.local.identifier();
-        self.projection.iter().fold(str, |acc, proj| {
-            match proj {
-                ProjectionElem::Deref => format!("*({acc})"),
-                ProjectionElem::Field(_) => todo!(),
-                ProjectionElem::Index(_) => todo!(),
-                ProjectionElem::Downcast(_) => todo!(),
-            }
+        self.projection.iter().fold(str, |acc, proj| match proj {
+            ProjectionElem::Deref => format!("*({acc})"),
+            ProjectionElem::Field(_) => todo!(),
+            ProjectionElem::Index(_) => todo!(),
+            ProjectionElem::Downcast(_) => todo!(),
         })
     }
 }
@@ -47,11 +70,9 @@ impl Serialize for Operand {
         match self {
             Operand::Copy(place) => place.serialize(),
             Operand::Move(place) => format!("Move({})", place.serialize()),
-            Operand::Constant(con, ty) => {
-                match con {
-                    Constant::Int(i) => format!("{i}_{}", ty.serialize()),
-                    Constant::Bool(b) => b.to_string(),
-                }
+            Operand::Constant(con, ty) => match con {
+                Constant::Int(i) => format!("{i}_{}", ty.serialize()),
+                Constant::Bool(b) => b.to_string(),
             },
             Operand::Hole => unreachable!("no hole left at serialization stage"),
         }
@@ -193,7 +214,14 @@ impl Serialize for Program {
     fn serialize(&self) -> String {
         let mut program = Program::HEADER.to_string();
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
-            format!("{}\nfn {}({}) -> {} {{\n{}\n}}\n", Program::FUNCTION_ATTRIBUTE, idx.identifier(), body.args_list(), body.return_ty().serialize(), body.serialize())
+            format!(
+                "{}\nfn {}({}) -> {} {{\n{}\n}}\n",
+                Program::FUNCTION_ATTRIBUTE,
+                idx.identifier(),
+                body.args_list(),
+                body.return_ty().serialize(),
+                body.serialize()
+            )
         }));
         program.push_str(Program::MAIN);
         program
@@ -209,10 +237,7 @@ mod tests {
         let mut body = Body::new(&vec![Ty::BOOL], Ty::BOOL);
         let statements = vec![Statement::Assign(
             Place::RETURN_SLOT,
-            Rvalue::UnaryOp(
-                UnOp::Not,
-                Operand::Copy(Place::from_local(Local::new(1))),
-            ),
+            Rvalue::UnaryOp(UnOp::Not, Operand::Copy(Place::from_local(Local::new(1)))),
         )];
         let terminator = Some(Terminator::Return);
         body.new_basic_block(BasicBlockData {
