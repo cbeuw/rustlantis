@@ -64,6 +64,14 @@ pub struct BasicBlockData {
 }
 
 impl BasicBlockData {
+    /// An empty basic block
+    pub fn new() -> Self {
+        Self {
+            statements: vec![],
+            terminator: None,
+        }
+    }
+
     pub fn insert_statement(&mut self, stmt: Statement) {
         self.statements.push(stmt);
     }
@@ -180,9 +188,10 @@ pub enum Rvalue {
     Discriminant(Place),
 }
 
-pub enum Constant {
+pub enum Literal {
     Int(u128),
     Bool(bool),
+    Char(char),
 }
 
 pub enum Operand {
@@ -190,7 +199,7 @@ pub enum Operand {
     Copy(Place),
     // define!("mir_move", fn Move<T>(place: T) -> T);
     Move(Place),
-    Constant(Constant, Ty),
+    Constant(Literal, Ty),
     // TODO: the following
     // define!("mir_static", fn Static<T>(s: T) -> &'static T);
     // define!("mir_static_mut", fn StaticMut<T>(s: T) -> *mut T);
@@ -258,7 +267,7 @@ impl TyKind {
     pub fn try_unwrap_pair(&self) -> Option<(Ty, Ty)> {
         match self {
             TyKind::Tuple(tys) if tys.len() == 2 => Some((tys[0], tys[1])),
-            _ => None
+            _ => None,
         }
     }
 }

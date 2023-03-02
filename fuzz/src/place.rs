@@ -23,9 +23,10 @@ impl<'ctx> PlaceSelector<'ctx> {
     }
 
     pub fn mutable(self) -> Self {
-        let candidates = Box::new(self.candidates.filter(|&local| {
-            self.ctx.current_decls()[local].mutability == Mutability::Mut
-        }));
+        let candidates = Box::new(
+            self.candidates
+                .filter(|&local| self.ctx.current_decls()[local].mutability == Mutability::Mut),
+        );
         Self { candidates, ..self }
     }
 
@@ -50,8 +51,10 @@ impl<'ctx> PlaceSelector<'ctx> {
         F: Fn(Ty) -> bool + 'ctx,
     {
         let candidates = Box::new(
-            self.candidates.filter(move |&local| predicate(self.ctx.current_decls()[local].ty)));
-        Self { candidates, ..self}
+            self.candidates
+                .filter(move |&local| predicate(self.ctx.current_decls()[local].ty)),
+        );
+        Self { candidates, ..self }
     }
 
     pub fn except(self, exclude: &'ctx Place) -> Self {
