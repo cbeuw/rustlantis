@@ -6,47 +6,40 @@ pub trait Serialize {
 
 impl Serialize for Ty {
     fn serialize(&self) -> String {
-        let tcx: &TyCtxt = todo!();
-        match *self {
-            Self::BOOL => "bool".to_owned(),
-            Self::CHAR => "char".to_owned(),
-            Self::ISIZE => "isize".to_owned(),
-            Self::I8 => "i8".to_owned(),
-            Self::I16 => "i16".to_owned(),
-            Self::I32 => "i32".to_owned(),
-            Self::I64 => "i64".to_owned(),
-            Self::I128 => "i128".to_owned(),
-            Self::USIZE => "usize".to_owned(),
-            Self::U8 => "u8".to_owned(),
-            Self::U16 => "u16".to_owned(),
-            Self::U32 => "u32".to_owned(),
-            Self::U64 => "u64".to_owned(),
-            Self::U128 => "u128".to_owned(),
-            Self::F32 => "f32".to_owned(),
-            Self::F64 => "f64".to_owned(),
-            non_prm => {
-                let tykind = tcx.tykind(non_prm);
-                match tykind {
-                    // User-defined type
-                    &TyKind::Adt(_) => format!("ty{}", self.index()),
-                    // Pointer types
-                    &TyKind::RawPtr(ty, mutability) => {
-                        format!("*{} {}", mutability.prefix_str(), ty.serialize())
-                    }
-                    // Sequence types
-                    &TyKind::Tuple(elems) => {
-                        if elems.len() == 1 {
-                            format!("({},)", elems[0].serialize())
-                        } else {
-                            let inner: String = elems
-                                .iter()
-                                .map(|ty| ty.serialize())
-                                .intersperse(", ".to_string())
-                                .collect();
-                            format!("({inner})")
-                        }
-                    }
-                    _ => unreachable!("primitives are already handled"),
+        match self {
+            &Self::BOOL => "bool".to_owned(),
+            &Self::CHAR => "char".to_owned(),
+            &Self::ISIZE => "isize".to_owned(),
+            &Self::I8 => "i8".to_owned(),
+            &Self::I16 => "i16".to_owned(),
+            &Self::I32 => "i32".to_owned(),
+            &Self::I64 => "i64".to_owned(),
+            &Self::I128 => "i128".to_owned(),
+            &Self::USIZE => "usize".to_owned(),
+            &Self::U8 => "u8".to_owned(),
+            &Self::U16 => "u16".to_owned(),
+            &Self::U32 => "u32".to_owned(),
+            &Self::U64 => "u64".to_owned(),
+            &Self::U128 => "u128".to_owned(),
+            &Self::F32 => "f32".to_owned(),
+            &Self::F64 => "f64".to_owned(),
+            // User-defined type
+            Self::Adt(_) => todo!(),
+            // Pointer types
+            Self::RawPtr(ty, mutability) => {
+                format!("*{} {}", mutability.prefix_str(), ty.serialize())
+            }
+            // Sequence types
+            Self::Tuple(elems) => {
+                if elems.len() == 1 {
+                    format!("({},)", elems[0].serialize())
+                } else {
+                    let inner: String = elems
+                        .iter()
+                        .map(|ty| ty.serialize())
+                        .intersperse(", ".to_string())
+                        .collect();
+                    format!("({inner})")
                 }
             }
         }
@@ -70,9 +63,10 @@ impl Serialize for Operand {
         match self {
             Operand::Copy(place) => place.serialize(),
             Operand::Move(place) => format!("Move({})", place.serialize()),
-            Operand::Constant(con, ty) => match con {
-                Constant::Int(i) => format!("{i}_{}", ty.serialize()),
-                Constant::Bool(b) => b.to_string(),
+            Operand::Constant(lit, ty) => match lit {
+                Literal::Int(i) => format!("{i}_{}", ty.serialize()),
+                Literal::Bool(b) => b.to_string(),
+                Literal::Char(c) => format!("'\\u{{{:x}}}'", u32::from(*c)),
             },
             Operand::Hole => unreachable!("no hole left at serialization stage"),
         }

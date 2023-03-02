@@ -22,30 +22,9 @@ macro_rules! declare_id {
     };
 }
 
-declare_id!(Ty);
 pub struct Program {
     pub functions: IndexVec<Function, Body>,
     pub tcx: TyCtxt,
-}
-
-impl Ty {
-    // Primitives
-    pub const BOOL: Self = Self(0);
-    pub const CHAR: Self = Self(1);
-    pub const ISIZE: Self = Self(2);
-    pub const I8: Self = Self(3);
-    pub const I16: Self = Self(4);
-    pub const I32: Self = Self(5);
-    pub const I64: Self = Self(6);
-    pub const I128: Self = Self(7);
-    pub const USIZE: Self = Self(8);
-    pub const U8: Self = Self(9);
-    pub const U16: Self = Self(10);
-    pub const U32: Self = Self(11);
-    pub const U64: Self = Self(12);
-    pub const U128: Self = Self(13);
-    pub const F32: Self = Self(14);
-    pub const F64: Self = Self(15);
 }
 
 pub type LocalDecls = IndexVec<Local, LocalDecl>;
@@ -106,14 +85,9 @@ impl Place {
         }
     }
 
-    pub fn ty(&self, tcx: &TyCtxt, local_decls: &LocalDecls) -> Ty {
+    pub fn ty(&self, local_decls: &LocalDecls) -> Ty {
         // TODO: projection
-        local_decls[self.local].ty
-    }
-
-    pub fn tykind<'tcx>(&self, tcx: &'tcx TyCtxt, local_decls: &LocalDecls) -> &'tcx TyKind {
-        let ty = local_decls[self.local].ty;
-        tcx.tykind(ty)
+        local_decls[self.local].ty.clone()
     }
 }
 
@@ -250,34 +224,55 @@ pub enum FloatTy {
     F64,
 }
 
-#[derive(PartialEq, Eq)]
-pub enum TyKind {
+declare_id!(UDTy);
+#[derive(PartialEq, Eq, Clone)]
+pub enum Ty {
+    // Primitives
     Bool,
     Char,
     Int(IntTy),
     Uint(UintTy),
     Float(FloatTy),
-    Adt(Adt),
-    RawPtr(Ty, Mutability),
+    // Composite
+    RawPtr(Box<Ty>, Mutability),
     Tuple(Vec<Ty>),
+    // User-defined
+    Adt(Adt),
     // TODO: more types
 }
 
-impl TyKind {
+impl Ty {
+    pub const BOOL: Self = Ty::Bool;
+    pub const CHAR: Self = Ty::Char;
+    pub const ISIZE: Self = Ty::Int(IntTy::Isize);
+    pub const I8: Self = Ty::Int(IntTy::I8);
+    pub const I16: Self = Ty::Int(IntTy::I16);
+    pub const I32: Self = Ty::Int(IntTy::I32);
+    pub const I64: Self = Ty::Int(IntTy::I64);
+    pub const I128: Self = Ty::Int(IntTy::I128);
+    pub const USIZE: Self = Ty::Uint(UintTy::Usize);
+    pub const U8: Self = Ty::Uint(UintTy::U8);
+    pub const U16: Self = Ty::Uint(UintTy::U16);
+    pub const U32: Self = Ty::Uint(UintTy::U32);
+    pub const U64: Self = Ty::Uint(UintTy::U64);
+    pub const U128: Self = Ty::Uint(UintTy::U128);
+    pub const F32: Self = Ty::Float(FloatTy::F32);
+    pub const F64: Self = Ty::Float(FloatTy::F64);
+
     pub fn try_unwrap_pair(&self) -> Option<(Ty, Ty)> {
         match self {
-            TyKind::Tuple(tys) if tys.len() == 2 => Some((tys[0], tys[1])),
+            Ty::Tuple(tys) if tys.len() == 2 => Some((tys[0].clone(), tys[1].clone())),
             _ => None,
         }
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct VariantDef {
     // TODO: finish this
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct Adt {
     variants: IndexVec<VariantIdx, VariantDef>,
 }
@@ -372,7 +367,7 @@ impl Body {
         locals.push(LocalDecl::new_mut(return_ty));
         // TODO: args shouldn't always be mut
         args.iter().for_each(|ty| {
-            locals.push(LocalDecl::new_mut(*ty));
+            locals.push(LocalDecl::new_mut(ty.clone()));
         });
         Self {
             basic_blocks: IndexVec::new(),
@@ -424,7 +419,7 @@ impl Body {
     }
 
     pub fn return_ty(&self) -> Ty {
-        self.local_decls[Local::RET].ty
+        self.local_decls[Local::RET].ty.clone()
     }
 
     pub fn declare_new_var(&mut self, mutability: Mutability, ty: Ty) -> Local {

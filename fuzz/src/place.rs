@@ -1,4 +1,4 @@
-use mir::syntax::{Local, LocalDecl, Mutability, Place, Ty, TyKind};
+use mir::syntax::{Local, LocalDecl, Mutability, Place, Ty};
 use rand::{seq::IteratorRandom, Rng};
 
 use crate::generation::GenerationCtx;
@@ -52,7 +52,7 @@ impl<'ctx> PlaceSelector<'ctx> {
     {
         let candidates = Box::new(
             self.candidates
-                .filter(move |&local| predicate(self.ctx.current_decls()[local].ty)),
+                .filter(move |&local| predicate(self.ctx.current_decls()[local].ty.clone())),
         );
         Self { candidates, ..self }
     }
