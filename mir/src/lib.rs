@@ -2,4 +2,5 @@
 
 pub mod serialize;
 pub mod syntax;
-mod vec;
+pub mod ty;
+pub mod vec;

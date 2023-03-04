@@ -48,8 +48,8 @@ impl Serialize for Ty {
 
 impl Serialize for Place {
     fn serialize(&self) -> String {
-        let str = self.local.identifier();
-        self.projection.iter().fold(str, |acc, proj| match proj {
+        let str = self.local().identifier();
+        self.projection().iter().fold(str, |acc, proj| match proj {
             ProjectionElem::Deref => format!("*({acc})"),
             ProjectionElem::Field(_) => todo!(),
             ProjectionElem::Index(_) => todo!(),

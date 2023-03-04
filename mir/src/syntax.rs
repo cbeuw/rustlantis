@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use crate::{
     serialize::Serialize,
     ty::TyCtxt,
@@ -71,23 +73,39 @@ pub struct LocalDecl {
 pub struct FieldIdx(u32);
 declare_id!(VariantIdx);
 
-pub struct Place {
-    pub local: Local,
-    pub projection: Vec<ProjectionElem>,
-    // TODO: mir_field and mir_variant
+pub enum Place {
+    Hole,
+    Place {
+        local: Local,
+        projection: Vec<ProjectionElem>,
+        // TODO: mir_field and mir_variant
+    },
 }
-
 impl Place {
     pub const fn from_local(local: Local) -> Self {
-        Place {
+        Place::Place {
             local,
             projection: vec![],
         }
     }
 
+    pub fn local(&self) -> Local {
+        match self {
+            Place::Place { local, .. } => *local,
+            Place::Hole => panic!("place is a hole"),
+        }
+    }
+
+    pub fn projection(&self) -> &Vec<ProjectionElem> {
+        match self {
+            Place::Place { projection, .. } => projection,
+            Place::Hole => panic!("place is a hole"),
+        }
+    }
+
     pub fn ty(&self, local_decls: &LocalDecls) -> Ty {
         // TODO: projection
-        local_decls[self.local].ty.clone()
+        local_decls[self.local()].ty.clone()
     }
 }
 
@@ -259,6 +277,26 @@ impl Ty {
     pub const F32: Self = Ty::Float(FloatTy::F32);
     pub const F64: Self = Ty::Float(FloatTy::F64);
 
+    pub const INTS: [Self; 6] = [
+        Self::ISIZE,
+        Self::I8,
+        Self::I16,
+        Self::I32,
+        Self::I64,
+        Self::I128,
+    ];
+
+    pub const UINTS: [Self; 6] = [
+        Self::USIZE,
+        Self::U8,
+        Self::U16,
+        Self::U32,
+        Self::U64,
+        Self::U128,
+    ];
+
+    pub const FLOATS: [Self; 2] = [Self::F32, Self::F64];
+
     pub fn try_unwrap_pair(&self) -> Option<(Ty, Ty)> {
         match self {
             Ty::Tuple(tys) if tys.len() == 2 => Some((tys[0].clone(), tys[1].clone())),
@@ -279,6 +317,7 @@ pub struct Adt {
 
 #[derive(Clone, Copy)]
 pub enum BinOp {
+    Hole,
     Add,
     Sub,
     Mul,
@@ -300,6 +339,7 @@ pub enum BinOp {
 
 #[derive(Clone, Copy)]
 pub enum UnOp {
+    Hole,
     Not,
     Neg,
 }
@@ -311,6 +351,7 @@ impl Program {
         "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
     pub const HEADER: &str = "#![feature(custom_mir, core_intrinsics)]\nextern crate core;\nuse core::intrinsics::mir::*;\n";
 
+    // A new, empty function
     pub fn new() -> Self {
         Self {
             functions: IndexVec::default(),
@@ -471,6 +512,7 @@ impl BinOp {
             BinOp::Ge => ">=",
             BinOp::Gt => ">",
             BinOp::Offset => panic!("offset is not a real infix operator"),
+            BinOp::Hole => panic!("op is a hole"),
         }
     }
 }
@@ -480,6 +522,7 @@ impl UnOp {
         match self {
             UnOp::Not => "!",
             UnOp::Neg => "-",
+            UnOp::Hole => panic!("op is a hole"),
         }
     }
 }

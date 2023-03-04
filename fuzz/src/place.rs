@@ -59,7 +59,7 @@ impl<'ctx> PlaceSelector<'ctx> {
 
     pub fn except(self, exclude: &'ctx Place) -> Self {
         // TODO: More granular place discrimination
-        let candidates = Box::new(self.candidates.filter(|&local| local != exclude.local));
+        let candidates = Box::new(self.candidates.filter(|&local| local != exclude.local()));
         Self { candidates, ..self }
     }
 

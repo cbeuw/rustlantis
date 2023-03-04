@@ -1,20 +1,27 @@
-use std::{borrow::BorrowMut, cell::RefCell, mem::variant_count};
+use std::{borrow::BorrowMut, cell::RefCell, fmt, mem::variant_count};
 
 use mir::syntax::{
     BasicBlock, BasicBlockData, BinOp, Body, FloatTy, Function, IntTy, Literal, Local, LocalDecls,
     Mutability, Operand, Place, Program, Rvalue, Statement, Ty, UintTy, UnOp,
 };
+use mir::vec::Idx;
 use rand::{
     seq::{IteratorRandom, SliceRandom},
-    Rng, RngCore,
+    Rng, RngCore, SeedableRng,
 };
 
 use crate::place::PlaceSelector;
 
-#[derive(Debug)]
 enum SelectionError {
     Exhausted,
-    NoPossibleOp,
+
+    GiveUp,
+}
+
+impl fmt::Debug for SelectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        todo!()
+    }
 }
 
 type Result<Node> = std::result::Result<Node, SelectionError>;
@@ -25,7 +32,6 @@ pub struct GenerationCtx {
     current_function: Function,
     current_bb: BasicBlock,
 }
-
 
 trait GenerateOperand {
     fn choose_operand(&self, cur_stmt: &mut Statement) -> Result<()>;
@@ -39,24 +45,31 @@ impl GenerateOperand for GenerationCtx {
         };
 
         let local_decls = self.current_decls();
+        let lhs_ty = lhs.ty(local_decls);
         let mut rng = self.rng.borrow_mut();
         match rvalue {
             Rvalue::Use(hole) => {
                 let place = PlaceSelector::locals_and_args(self)
                     .except(&lhs)
-                    .of_ty(lhs.ty(local_decls))
+                    .of_ty(lhs_ty)
                     .select(&mut *rng)
                     .ok_or(SelectionError::Exhausted)?;
                 // TODO: non-copy operands
                 *hole = Operand::Copy(place);
             }
             Rvalue::UnaryOp(op, hole) => {
-                let place = PlaceSelector::locals_and_args(self)
+                if let Some(place) = PlaceSelector::locals_and_args(self)
                     .except(&lhs)
-                    .of_ty(lhs.ty(local_decls))
+                    .of_ty(lhs_ty.clone())
                     .select(&mut *rng)
-                    .ok_or(SelectionError::Exhausted)?;
-                *hole = Operand::Copy(place);
+                {
+                    *hole = Operand::Copy(place);
+                } else {
+                    let literal = self
+                        .generate_literal(lhs_ty.clone())
+                        .ok_or(SelectionError::GiveUp)?;
+                    *hole = Operand::Constant(literal, lhs_ty.clone());
+                }
             }
             Rvalue::BinaryOp(op, hole_a, hole_b) => {
                 use BinOp::*;
@@ -130,6 +143,7 @@ impl GenerateOperand for GenerationCtx {
                         *hole_a = Operand::Copy(place_a);
                         *hole_b = Operand::Copy(place_b);
                     }
+                    _ => unreachable!(),
                 }
             }
             _ => todo!(),
@@ -139,14 +153,14 @@ impl GenerateOperand for GenerationCtx {
 }
 
 trait GenerateRvalue {
-    fn generate_use(&self, cur_stmt: &mut Statement) -> Result<()>;
-    fn generate_unary_op(&self, cur_stmt: &mut Statement) -> Result<()>;
-    fn generate_binary_op(&self, cur_stmt: &mut Statement) -> Result<()>;
-    fn generate_checked_binary_op(&self, cur_stmt: &mut Statement) -> Result<()>;
-    fn generate_len(&self, cur_stmt: &mut Statement) -> Result<()>;
-    fn generate_retag(&self, cur_stmt: &mut Statement) -> Result<()>;
-    fn generate_discriminant(&self, cur_stmt: &mut Statement) -> Result<()>;
-    fn generate_rvalue(&self, cur_stmt: &mut Statement) -> Result<()>;
+    fn generate_use(&mut self, cur_stmt: &mut Statement) -> Result<()>;
+    fn generate_unary_op(&mut self, cur_stmt: &mut Statement) -> Result<()>;
+    fn generate_binary_op(&mut self, cur_stmt: &mut Statement) -> Result<()>;
+    fn generate_checked_binary_op(&mut self, cur_stmt: &mut Statement) -> Result<()>;
+    // fn generate_len(&self, cur_stmt: &mut Statement) -> Result<()>;
+    // fn generate_retag(&self, cur_stmt: &mut Statement) -> Result<()>;
+    // fn generate_discriminant(&self, cur_stmt: &mut Statement) -> Result<()>;
+    fn generate_rvalue(&mut self, cur_stmt: &mut Statement) -> Result<()>;
 }
 
 impl GenerateRvalue for GenerationCtx {
@@ -155,7 +169,7 @@ impl GenerateRvalue for GenerationCtx {
     - Type matches with lhs
     - LHS and RHS do not alias
      */
-    fn generate_use(&self, cur_stmt: &mut Statement) -> Result<()> {
+    fn generate_use(&mut self, cur_stmt: &mut Statement) -> Result<()> {
         let (lhs, hole) = match cur_stmt {
             Statement::Assign(lhs, hole) => (lhs, hole),
             _ => unreachable!("Rvalue only appears in Statement::Assign"),
@@ -165,7 +179,7 @@ impl GenerateRvalue for GenerationCtx {
         Ok(())
     }
 
-    fn generate_unary_op(&self, cur_stmt: &mut Statement) -> Result<()> {
+    fn generate_unary_op(&mut self, cur_stmt: &mut Statement) -> Result<()> {
         let (lhs, hole) = match cur_stmt {
             Statement::Assign(lhs, hole) => (lhs, hole),
             _ => unreachable!("Rvalue only appears in Statement::Assign"),
@@ -180,13 +194,13 @@ impl GenerateRvalue for GenerationCtx {
             _ => &[][..],
         }
         .choose(&mut *self.rng.borrow_mut())
-        .ok_or(SelectionError::NoPossibleOp)?;
+        .ok_or(SelectionError::GiveUp)?;
         *hole = Rvalue::UnaryOp(*unop, Operand::Hole);
         self.choose_operand(cur_stmt)?;
         Ok(())
     }
 
-    fn generate_binary_op(&self, cur_stmt: &mut Statement) -> Result<()> {
+    fn generate_binary_op(&mut self, cur_stmt: &mut Statement) -> Result<()> {
         let (lhs, hole) = match cur_stmt {
             Statement::Assign(lhs, hole) => (lhs, hole),
             _ => unreachable!("Rvalue only appears in Statement::Assign"),
@@ -203,13 +217,13 @@ impl GenerateRvalue for GenerationCtx {
             _ => &[][..],
         }
         .choose(&mut *self.rng.borrow_mut())
-        .ok_or(SelectionError::NoPossibleOp)?;
+        .ok_or(SelectionError::GiveUp)?;
         *hole = Rvalue::BinaryOp(*binop, Operand::Hole, Operand::Hole);
         self.choose_operand(cur_stmt)?;
         Ok(())
     }
 
-    fn generate_checked_binary_op(&self, cur_stmt: &mut Statement) -> Result<()> {
+    fn generate_checked_binary_op(&mut self, cur_stmt: &mut Statement) -> Result<()> {
         let (lhs, hole) = match cur_stmt {
             Statement::Assign(lhs, hole) => (lhs, hole),
             _ => unreachable!("Rvalue only appears in Statement::Assign"),
@@ -218,6 +232,7 @@ impl GenerateRvalue for GenerationCtx {
         use BinOp::*;
         use Ty::*;
         let lhs_ty = lhs.ty(self.current_decls());
+
         if let Some((ret, Ty::BOOL)) = lhs_ty.try_unwrap_pair() {
             let bin_op = match ret {
                 Float(_) => &[Add, Sub, Mul][..],
@@ -225,50 +240,63 @@ impl GenerateRvalue for GenerationCtx {
                 _ => &[][..],
             }
             .choose(&mut *self.rng.borrow_mut())
-            .ok_or(SelectionError::NoPossibleOp)?;
+            .ok_or(SelectionError::GiveUp)?;
             *hole = Rvalue::CheckedBinaryOp(*bin_op, Operand::Hole, Operand::Hole);
 
             self.choose_operand(cur_stmt)?;
             Ok(())
         } else {
-            Err(SelectionError::NoPossibleOp)
+            Err(SelectionError::GiveUp)
         }
     }
 
-    fn generate_len(&self, cur_stmt: &mut Statement) -> Result<()> {
-        todo!()
-    }
+    // fn generate_len(&self, cur_stmt: &mut Statement) -> Result<()> {
+    //     todo!()
+    // }
 
-    fn generate_retag(&self, cur_stmt: &mut Statement) -> Result<()> {
-        todo!()
-    }
+    // fn generate_retag(&self, cur_stmt: &mut Statement) -> Result<()> {
+    //     todo!()
+    // }
 
-    fn generate_discriminant(&self, cur_stmt: &mut Statement) -> Result<()> {
-        todo!()
-    }
+    // fn generate_discriminant(&self, cur_stmt: &mut Statement) -> Result<()> {
+    //     todo!()
+    // }
 
-    fn generate_rvalue(&self, cur_stmt: &mut Statement) -> Result<()> {
-        match self
-            .rng
-            .borrow_mut()
-            .gen_range(0..variant_count::<Rvalue>())
-        {
-            0 => self.generate_use(cur_stmt)?, // TODO: try other variants if one doesn't work
-            1 => self.generate_unary_op(cur_stmt)?,
-            2 => self.generate_binary_op(cur_stmt)?,
-            3 => self.generate_checked_binary_op(cur_stmt)?,
-            _ => todo!(),
-        };
-        Ok(())
+    fn generate_rvalue(&mut self, cur_stmt: &mut Statement) -> Result<()> {
+        let mut choices: Vec<fn(&mut GenerationCtx, &mut Statement) -> Result<()>> = vec![
+            Self::generate_use,
+            Self::generate_unary_op,
+            Self::generate_binary_op,
+            Self::generate_checked_binary_op,
+            // Self::generate_len,
+            // Self::generate_retag,
+            // Self::generate_discriminant,
+        ];
+
+        loop {
+            let (i, choice) = choices
+                .iter()
+                .enumerate()
+                .choose(&mut *self.rng.borrow_mut())
+                .ok_or(SelectionError::GiveUp)?;
+            let res = choice(self, cur_stmt);
+            match res {
+                Ok(()) => return Ok(()),
+                Err(SelectionError::GiveUp) => {
+                    choices.remove(i);
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }
 
 trait GenerateStatement {
     fn generate_assign(&mut self) -> Result<Statement>;
-    fn generate_storage_live(&self) -> Result<Statement>;
-    fn generate_storage_dead(&self) -> Result<Statement>;
-    fn generate_deinit(&self) -> Result<Statement>;
-    fn generate_set_discriminant(&self) -> Result<Statement>;
+    // fn generate_storage_live(&self) -> Result<Statement>;
+    // fn generate_storage_dead(&self) -> Result<Statement>;
+    // fn generate_deinit(&self) -> Result<Statement>;
+    // fn generate_set_discriminant(&self) -> Result<Statement>;
     fn choose_statement(&mut self);
 }
 
@@ -287,43 +315,62 @@ impl GenerateStatement for GenerationCtx {
         Ok(statement)
     }
 
-    fn generate_storage_live(&self) -> Result<Statement> {
-        todo!()
-    }
+    // fn generate_storage_live(&self) -> Result<Statement> {
+    //     todo!()
+    // }
 
-    fn generate_storage_dead(&self) -> Result<Statement> {
-        todo!()
-    }
+    // fn generate_storage_dead(&self) -> Result<Statement> {
+    //     todo!()
+    // }
 
-    fn generate_deinit(&self) -> Result<Statement> {
-        todo!()
-    }
+    // fn generate_deinit(&self) -> Result<Statement> {
+    //     todo!()
+    // }
 
-    fn generate_set_discriminant(&self) -> Result<Statement> {
-        todo!()
-    }
+    // fn generate_set_discriminant(&self) -> Result<Statement> {
+    //     todo!()
+    // }
     fn choose_statement(&mut self) {
-        let statement = match self
-            .rng
-            .get_mut()
-            .gen_range(0..variant_count::<Statement>())
-        {
-            0 => self.generate_assign(),
-            1 => self.generate_storage_live(),
-            2 => self.generate_storage_dead(),
-            3 => self.generate_deinit(),
-            4 => self.generate_set_discriminant(),
-            _ => unreachable!("Statement does not have these many variants"),
-        }
-        .unwrap();
-        // TODO: retry another statement
+        let mut choices: Vec<fn(&mut GenerationCtx) -> Result<Statement>> = vec![
+            Self::generate_assign,
+            // Self::generate_storage_live,
+            // Self::generate_storage_dead,
+            // Self::generate_deinit,
+            // Self::generate_set_discriminant,
+        ];
+        let statement = loop {
+            let (i, choice) = choices
+                .iter()
+                .enumerate()
+                .choose(&mut *self.rng.borrow_mut())
+                .unwrap(); // Deadend
+            let res = choice(self);
+            match res {
+                Ok(stmt) => break stmt,
+                Err(SelectionError::GiveUp) => {
+                    choices.remove(i);
+                }
+                _ => unreachable!(),
+            }
+        };
         self.current_bb_mut().insert_statement(statement);
     }
 }
 
 impl GenerationCtx {
+    pub fn new() -> Self {
+        let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(0)));
+        // TODO: don't zero-initialize current_function and current_bb
+        Self {
+            rng,
+            program: Program::new(),
+            current_function: Function::new(0),
+            current_bb: BasicBlock::new(0),
+        }
+    }
+
     fn choose_ty(&self, rng: &mut impl Rng) -> Ty {
-        match rng.gen_range(0..variant_count::<Ty>()) {
+        match rng.gen_range(0..=6) {
             0 => Ty::Bool,
             1 => Ty::Char,
             2 => Ty::Int(match rng.gen_range(0..variant_count::<IntTy>()) {
@@ -382,13 +429,24 @@ impl GenerationCtx {
         &self.current_fn().local_decls
     }
 
-    fn generate_literal(&self, ty: Ty) {
+    fn generate_literal(&self, ty: Ty) -> Option<Literal> {
         let mut rng = self.rng.borrow_mut();
-        let literal = match ty {
+        let lit = match ty {
             Ty::BOOL => Literal::Bool(rng.gen_bool(0.5)),
             Ty::CHAR => Literal::Char(char::from_u32(rng.gen_range(0..=0xD7FF)).unwrap()),
-            _ => todo!(),
+            Ty::USIZE => Literal::Int(
+                rng.gen_range(usize::MIN..=usize::MAX)
+                    .try_into()
+                    .expect("usize isn't greater than 128 bits"),
+            ),
+            Ty::U8 => Literal::Int(rng.gen_range(u8::MIN..=u8::MAX).into()),
+            Ty::U16 => Literal::Int(rng.gen_range(u16::MIN..=u16::MAX).into()),
+            Ty::U32 => Literal::Int(rng.gen_range(u32::MIN..=u32::MAX).into()),
+            Ty::U64 => Literal::Int(rng.gen_range(u64::MIN..=u64::MAX).into()),
+            Ty::U128 => Literal::Int(rng.gen_range(u128::MIN..=u128::MAX)),
+            _ => return None,
         };
+        Some(lit)
     }
 
     pub fn generate(&mut self) {
