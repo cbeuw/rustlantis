@@ -46,17 +46,6 @@ impl<'ctx> PlaceSelector<'ctx> {
         Self { candidates, ..self }
     }
 
-    pub fn filter_by_ty<F>(self, predicate: F) -> Self
-    where
-        F: Fn(Ty) -> bool + 'ctx,
-    {
-        let candidates = Box::new(
-            self.candidates
-                .filter(move |&local| predicate(self.ctx.current_decls()[local].ty.clone())),
-        );
-        Self { candidates, ..self }
-    }
-
     pub fn except(self, exclude: &'ctx Place) -> Self {
         // TODO: More granular place discrimination
         let candidates = Box::new(self.candidates.filter(|&local| local != exclude.local()));

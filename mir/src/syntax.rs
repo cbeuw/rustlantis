@@ -2,7 +2,6 @@ use std::ops::Deref;
 
 use crate::{
     serialize::Serialize,
-    ty::TyCtxt,
     vec::{Idx, IndexVec},
 };
 
@@ -26,7 +25,6 @@ macro_rules! declare_id {
 
 pub struct Program {
     pub functions: IndexVec<Function, Body>,
-    pub tcx: TyCtxt,
 }
 
 pub type LocalDecls = IndexVec<Local, LocalDecl>;
@@ -209,14 +207,14 @@ pub enum Statement {
     SetDiscriminant(Place, u32),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mutability {
     // N.B. Order is deliberate, so that Not < Mut
     Not,
     Mut,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntTy {
     Isize,
     I8,
@@ -226,7 +224,7 @@ pub enum IntTy {
     I128,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UintTy {
     Usize,
     U8,
@@ -236,14 +234,14 @@ pub enum UintTy {
     U128,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FloatTy {
     F32,
     F64,
 }
 
-declare_id!(UDTy);
-#[derive(PartialEq, Eq, Clone)]
+declare_id!(TyId);
+#[derive(PartialEq, Eq, Clone, Hash)]
 pub enum Ty {
     // Primitives
     Bool,
@@ -305,12 +303,12 @@ impl Ty {
     }
 }
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, Hash)]
 pub struct VariantDef {
     // TODO: finish this
 }
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, Hash)]
 pub struct Adt {
     variants: IndexVec<VariantIdx, VariantDef>,
 }
@@ -355,7 +353,6 @@ impl Program {
     pub fn new() -> Self {
         Self {
             functions: IndexVec::default(),
-            tcx: TyCtxt::new(),
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::{syntax::*, ty::TyCtxt, vec::Idx};
+use crate::{syntax::*,  vec::Idx};
 
 pub trait Serialize {
     fn serialize(&self) -> String;

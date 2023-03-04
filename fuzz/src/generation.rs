@@ -11,6 +11,7 @@ use rand::{
 };
 
 use crate::place::PlaceSelector;
+use crate::ty::TyCtxt;
 
 enum SelectionError {
     Exhausted,
@@ -29,6 +30,7 @@ type Result<Node> = std::result::Result<Node, SelectionError>;
 pub struct GenerationCtx {
     rng: RefCell<Box<dyn RngCore>>,
     program: Program,
+    tcx: TyCtxt,
     current_function: Function,
     current_bb: BasicBlock,
 }
@@ -97,18 +99,25 @@ impl GenerateOperand for GenerationCtx {
                             .of_ty(lhs.ty(local_decls))
                             .select(&mut *rng)
                             .ok_or(SelectionError::Exhausted)?;
+                        let b_tys: Vec<Ty> = self
+                            .tcx
+                            .iter()
+                            .filter(|ty| matches!(ty, Ty::Uint(..) | Ty::Int(..)))
+                            .cloned()
+                            .collect();
                         let place_b = PlaceSelector::locals_and_args(self)
                             .except(&lhs)
-                            .filter_by_ty(|ty| matches!(ty, Ty::Uint(..) | Ty::Int(..)))
+                            .of_tys(&b_tys)
                             .select(&mut *rng)
                             .ok_or(SelectionError::Exhausted)?;
                         *hole_a = Operand::Copy(place_a);
                         *hole_b = Operand::Copy(place_b);
                     }
                     Eq | Lt | Le | Ne | Ge | Gt => {
-                        let place_a = PlaceSelector::locals_and_args(self)
-                            .except(&lhs)
-                            .filter_by_ty(|ty| {
+                        let tys: Vec<Ty> = self
+                            .tcx
+                            .iter()
+                            .filter(|ty| {
                                 matches!(
                                     ty,
                                     Ty::Bool
@@ -119,6 +128,11 @@ impl GenerateOperand for GenerationCtx {
                                         | Ty::RawPtr(..)
                                 )
                             })
+                            .cloned()
+                            .collect();
+                        let place_a = PlaceSelector::locals_and_args(self)
+                            .except(&lhs)
+                            .of_tys(&tys)
                             .select(&mut *rng)
                             .ok_or(SelectionError::Exhausted)?;
                         let place_b = PlaceSelector::locals_and_args(self)
@@ -130,9 +144,15 @@ impl GenerateOperand for GenerationCtx {
                         *hole_b = Operand::Copy(place_b);
                     }
                     Offset => {
+                        let tys: Vec<Ty> = self
+                            .tcx
+                            .iter()
+                            .filter(|ty| matches!(ty, Ty::RawPtr(..)))
+                            .cloned()
+                            .collect();
                         let place_a = PlaceSelector::locals_and_args(self)
                             .except(&lhs)
-                            .filter_by_ty(|ty| matches!(ty, Ty::RawPtr(..)))
+                            .of_tys(&tys)
                             .select(&mut *rng)
                             .ok_or(SelectionError::Exhausted)?;
                         let place_b = PlaceSelector::locals_and_args(self)
@@ -306,7 +326,7 @@ impl GenerateStatement for GenerationCtx {
             .mutable()
             .select(&mut *self.rng.borrow_mut());
         let lhs = lhs.unwrap_or_else(|| {
-            let ty = self.choose_ty(&mut *self.rng.borrow_mut());
+            let ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
             let local = self.current_fn_mut().declare_new_var(Mutability::Mut, ty);
             Place::from_local(local)
         });
@@ -360,56 +380,14 @@ impl GenerateStatement for GenerationCtx {
 impl GenerationCtx {
     pub fn new() -> Self {
         let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(0)));
+        let tcx = TyCtxt::new(&mut *rng.borrow_mut());
         // TODO: don't zero-initialize current_function and current_bb
         Self {
             rng,
+            tcx,
             program: Program::new(),
             current_function: Function::new(0),
             current_bb: BasicBlock::new(0),
-        }
-    }
-
-    fn choose_ty(&self, rng: &mut impl Rng) -> Ty {
-        match rng.gen_range(0..=6) {
-            0 => Ty::Bool,
-            1 => Ty::Char,
-            2 => Ty::Int(match rng.gen_range(0..variant_count::<IntTy>()) {
-                0 => IntTy::Isize,
-                1 => IntTy::I8,
-                2 => IntTy::I16,
-                3 => IntTy::I32,
-                4 => IntTy::I64,
-                5 => IntTy::I128,
-                _ => unreachable!(),
-            }),
-            3 => Ty::Uint(match rng.gen_range(0..variant_count::<UintTy>()) {
-                0 => UintTy::Usize,
-                1 => UintTy::U8,
-                2 => UintTy::U16,
-                3 => UintTy::U32,
-                4 => UintTy::U64,
-                5 => UintTy::U128,
-                _ => unreachable!(),
-            }),
-            4 => Ty::Float(match rng.gen_range(0..variant_count::<FloatTy>()) {
-                0 => FloatTy::F32,
-                1 => FloatTy::F64,
-                _ => unreachable!(),
-            }),
-            5 => Ty::RawPtr(
-                Box::new(self.choose_ty(rng)),
-                if rng.gen_bool(0.5) {
-                    Mutability::Mut
-                } else {
-                    Mutability::Not
-                },
-            ),
-            6 => Ty::Tuple({
-                let tuple_count = rng.gen_range(1..=16);
-                (0..tuple_count).map(|_| self.choose_ty(rng)).collect()
-            }),
-            7 => Ty::Adt(todo!()),
-            _ => unreachable!(),
         }
     }
 
@@ -452,10 +430,10 @@ impl GenerationCtx {
     pub fn generate(&mut self) {
         let argc = self.rng.get_mut().gen_range(0..=16);
         let arg_tys: Vec<Ty> = (0..argc)
-            .map(|_| self.choose_ty(&mut *self.rng.borrow_mut()))
+            .map(|_| self.tcx.choose_ty(&mut *self.rng.borrow_mut()))
             .collect();
 
-        let mut body = Body::new(&arg_tys, self.choose_ty(&mut *self.rng.borrow_mut()));
+        let mut body = Body::new(&arg_tys, self.tcx.choose_ty(&mut *self.rng.borrow_mut()));
         let starting_bb = body.new_basic_block(BasicBlockData::new());
         let new_fn = self.program.push_fn(body);
         self.current_function = new_fn;

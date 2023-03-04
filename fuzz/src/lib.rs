@@ -5,4 +5,5 @@
 
 mod place;
 mod skeleton;
+mod ty;
 mod generation;
