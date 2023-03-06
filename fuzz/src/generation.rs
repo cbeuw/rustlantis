@@ -1,5 +1,7 @@
 use std::{borrow::BorrowMut, cell::RefCell, fmt, mem::variant_count};
 
+use log::debug;
+use mir::serialize::Serialize;
 use mir::syntax::{
     BasicBlock, BasicBlockData, BinOp, Body, FloatTy, Function, IntTy, Literal, Local, LocalDecls,
     Mutability, Operand, Place, Program, Rvalue, Statement, Ty, UintTy, UnOp,
@@ -14,8 +16,6 @@ use crate::place::PlaceSelector;
 use crate::ty::TyCtxt;
 
 enum SelectionError {
-    Exhausted,
-
     GiveUp,
 }
 
@@ -36,139 +36,37 @@ pub struct GenerationCtx {
 }
 
 trait GenerateOperand {
-    fn choose_operand(&self, cur_stmt: &mut Statement) -> Result<()>;
+    fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand>;
 }
 
 impl GenerateOperand for GenerationCtx {
-    fn choose_operand(&self, cur_stmt: &mut Statement) -> Result<()> {
-        let (lhs, rvalue) = match cur_stmt {
-            Statement::Assign(lhs, rvalue) => (lhs, rvalue),
-            _ => unreachable!("Operand does not appear in non-assign statements"),
-        };
-
-        let local_decls = self.current_decls();
-        let lhs_ty = lhs.ty(local_decls);
-        let mut rng = self.rng.borrow_mut();
-        match rvalue {
-            Rvalue::Use(hole) => {
-                let place = PlaceSelector::locals_and_args(self)
-                    .except(&lhs)
-                    .of_ty(lhs_ty)
-                    .select(&mut *rng)
-                    .ok_or(SelectionError::Exhausted)?;
-                // TODO: non-copy operands
-                *hole = Operand::Copy(place);
+    fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand> {
+        let place = PlaceSelector::locals_and_args(self)
+            .except(excluded)
+            .of_tys(tys)
+            .select(&mut *self.rng.borrow_mut());
+        if let Some(place) = place {
+            if self.tcx.is_copy(&place.ty(self.current_decls())) {
+                Ok(Operand::Copy(place))
+            } else {
+                Ok(Operand::Move(place))
             }
-            Rvalue::UnaryOp(op, hole) => {
-                if let Some(place) = PlaceSelector::locals_and_args(self)
-                    .except(&lhs)
-                    .of_ty(lhs_ty.clone())
-                    .select(&mut *rng)
-                {
-                    *hole = Operand::Copy(place);
-                } else {
-                    let literal = self
-                        .generate_literal(lhs_ty.clone())
-                        .ok_or(SelectionError::GiveUp)?;
-                    *hole = Operand::Constant(literal, lhs_ty.clone());
-                }
+        } else {
+            // TODO: allow array and tuple literals
+            let literalble: Vec<Ty> = tys.iter().filter(|ty| ty.is_primitive()).cloned().collect();
+            if literalble.is_empty() {
+                Err(SelectionError::GiveUp)
+            } else {
+                let selected = literalble
+                    .iter()
+                    .choose(&mut *self.rng.borrow_mut())
+                    .unwrap();
+                let literal = self
+                    .generate_literal(selected)
+                    .expect("can always generate a literal of a literalble type");
+                Ok(Operand::Constant(literal, selected.clone()))
             }
-            Rvalue::BinaryOp(op, hole_a, hole_b) => {
-                use BinOp::*;
-                match op {
-                    Add | Sub | Mul | Div | Rem | BitXor | BitAnd | BitOr => {
-                        // Both operand same type as lhs
-                        let place_a = PlaceSelector::locals_and_args(self)
-                            .except(&lhs)
-                            .of_ty(lhs.ty(local_decls))
-                            .select(&mut *rng)
-                            .ok_or(SelectionError::Exhausted)?;
-                        let place_b = PlaceSelector::locals_and_args(self)
-                            .except(&lhs)
-                            .of_ty(lhs.ty(local_decls))
-                            .select(&mut *rng)
-                            .ok_or(SelectionError::Exhausted)?;
-                        // As the types are all integers or floats which are Copy, Move/Copy
-                        // probably doesn't make much difference
-                        *hole_a = Operand::Copy(place_a);
-                        *hole_b = Operand::Copy(place_b);
-                    }
-                    Shl | Shr => {
-                        let place_a = PlaceSelector::locals_and_args(self)
-                            .except(&lhs)
-                            .of_ty(lhs.ty(local_decls))
-                            .select(&mut *rng)
-                            .ok_or(SelectionError::Exhausted)?;
-                        let b_tys: Vec<Ty> = self
-                            .tcx
-                            .iter()
-                            .filter(|ty| matches!(ty, Ty::Uint(..) | Ty::Int(..)))
-                            .cloned()
-                            .collect();
-                        let place_b = PlaceSelector::locals_and_args(self)
-                            .except(&lhs)
-                            .of_tys(&b_tys)
-                            .select(&mut *rng)
-                            .ok_or(SelectionError::Exhausted)?;
-                        *hole_a = Operand::Copy(place_a);
-                        *hole_b = Operand::Copy(place_b);
-                    }
-                    Eq | Lt | Le | Ne | Ge | Gt => {
-                        let tys: Vec<Ty> = self
-                            .tcx
-                            .iter()
-                            .filter(|ty| {
-                                matches!(
-                                    ty,
-                                    Ty::Bool
-                                        | Ty::Char
-                                        | Ty::Int(..)
-                                        | Ty::Uint(..)
-                                        | Ty::Float(..)
-                                        | Ty::RawPtr(..)
-                                )
-                            })
-                            .cloned()
-                            .collect();
-                        let place_a = PlaceSelector::locals_and_args(self)
-                            .except(&lhs)
-                            .of_tys(&tys)
-                            .select(&mut *rng)
-                            .ok_or(SelectionError::Exhausted)?;
-                        let place_b = PlaceSelector::locals_and_args(self)
-                            .except(&lhs)
-                            .of_ty(place_a.ty(local_decls))
-                            .select(&mut *rng)
-                            .ok_or(SelectionError::Exhausted)?;
-                        *hole_a = Operand::Copy(place_a);
-                        *hole_b = Operand::Copy(place_b);
-                    }
-                    Offset => {
-                        let tys: Vec<Ty> = self
-                            .tcx
-                            .iter()
-                            .filter(|ty| matches!(ty, Ty::RawPtr(..)))
-                            .cloned()
-                            .collect();
-                        let place_a = PlaceSelector::locals_and_args(self)
-                            .except(&lhs)
-                            .of_tys(&tys)
-                            .select(&mut *rng)
-                            .ok_or(SelectionError::Exhausted)?;
-                        let place_b = PlaceSelector::locals_and_args(self)
-                            .except(&lhs)
-                            .of_tys(&[Ty::USIZE, Ty::ISIZE][..])
-                            .select(&mut *rng)
-                            .ok_or(SelectionError::Exhausted)?;
-                        *hole_a = Operand::Copy(place_a);
-                        *hole_b = Operand::Copy(place_b);
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            _ => todo!(),
         }
-        Ok(())
     }
 }
 
@@ -190,16 +88,19 @@ impl GenerateRvalue for GenerationCtx {
     - LHS and RHS do not alias
      */
     fn generate_use(&mut self, cur_stmt: &mut Statement) -> Result<()> {
+        debug!("generating a use rvalue");
         let (lhs, hole) = match cur_stmt {
             Statement::Assign(lhs, hole) => (lhs, hole),
             _ => unreachable!("Rvalue only appears in Statement::Assign"),
         };
-        *hole = Rvalue::Use(Operand::Hole);
-        self.choose_operand(cur_stmt)?;
+
+        let operand = self.choose_operand(&[lhs.ty(self.current_decls())], lhs)?;
+        *hole = Rvalue::Use(operand);
         Ok(())
     }
 
     fn generate_unary_op(&mut self, cur_stmt: &mut Statement) -> Result<()> {
+        debug!("generating a unary op rvalue");
         let (lhs, hole) = match cur_stmt {
             Statement::Assign(lhs, hole) => (lhs, hole),
             _ => unreachable!("Rvalue only appears in Statement::Assign"),
@@ -215,12 +116,14 @@ impl GenerateRvalue for GenerationCtx {
         }
         .choose(&mut *self.rng.borrow_mut())
         .ok_or(SelectionError::GiveUp)?;
-        *hole = Rvalue::UnaryOp(*unop, Operand::Hole);
-        self.choose_operand(cur_stmt)?;
+
+        let operand = self.choose_operand(&[lhs_ty], lhs)?;
+        *hole = Rvalue::UnaryOp(*unop, operand);
         Ok(())
     }
 
     fn generate_binary_op(&mut self, cur_stmt: &mut Statement) -> Result<()> {
+        debug!("generating a binary op rvalue");
         let (lhs, hole) = match cur_stmt {
             Statement::Assign(lhs, hole) => (lhs, hole),
             _ => unreachable!("Rvalue only appears in Statement::Assign"),
@@ -238,12 +141,79 @@ impl GenerateRvalue for GenerationCtx {
         }
         .choose(&mut *self.rng.borrow_mut())
         .ok_or(SelectionError::GiveUp)?;
-        *hole = Rvalue::BinaryOp(*binop, Operand::Hole, Operand::Hole);
-        self.choose_operand(cur_stmt)?;
+
+        let (l, r) = match *binop {
+            Add | Sub | Mul | Div | Rem | BitXor | BitAnd | BitOr => {
+                // Both operand same type as lhs
+                let l = self.choose_operand(&[lhs_ty.clone()], lhs)?;
+                let r = self.choose_operand(&[lhs_ty], lhs)?;
+                // As the types are all integers or floats which are Copy, Move/Copy
+                // probably doesn't make much difference
+                (l, r)
+            }
+            Shl | Shr => {
+                // left operand same type as lhs, right can be uint or int
+                let l = self.choose_operand(&[lhs_ty], lhs)?;
+                // TODO: use a compile time concat
+                let r = self.choose_operand(
+                    &[
+                        Ty::ISIZE,
+                        Ty::I8,
+                        Ty::I16,
+                        Ty::I32,
+                        Ty::I64,
+                        Ty::I128,
+                        Ty::USIZE,
+                        Ty::U8,
+                        Ty::U16,
+                        Ty::U32,
+                        Ty::U64,
+                        Ty::U128,
+                    ],
+                    lhs,
+                )?;
+                (l, r)
+            }
+            Eq | Lt | Le | Ne | Ge | Gt => {
+                // neither left or right operand needs to be the sme type as lhs
+                let tys: Vec<Ty> = self
+                    .tcx
+                    .iter()
+                    .filter(|ty| {
+                        matches!(
+                            ty,
+                            Ty::Bool
+                                | Ty::Char
+                                | Ty::Int(..)
+                                | Ty::Uint(..)
+                                | Ty::Float(..)
+                                | Ty::RawPtr(..)
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                let l = self.choose_operand(&tys, lhs)?;
+                let r = self.choose_operand(&[l.ty(self.current_decls())], lhs)?;
+                (l, r)
+            }
+            Offset => {
+                let tys: Vec<Ty> = self
+                    .tcx
+                    .iter()
+                    .filter(|ty| matches!(ty, Ty::RawPtr(..)))
+                    .cloned()
+                    .collect();
+                let l = self.choose_operand(&tys, lhs)?;
+                let r = self.choose_operand(&[Ty::USIZE, Ty::ISIZE], lhs)?;
+                (l, r)
+            }
+        };
+        *hole = Rvalue::BinaryOp(*binop, l, r);
         Ok(())
     }
 
     fn generate_checked_binary_op(&mut self, cur_stmt: &mut Statement) -> Result<()> {
+        debug!("generating a checked binary op rvalue");
         let (lhs, hole) = match cur_stmt {
             Statement::Assign(lhs, hole) => (lhs, hole),
             _ => unreachable!("Rvalue only appears in Statement::Assign"),
@@ -261,9 +231,41 @@ impl GenerateRvalue for GenerationCtx {
             }
             .choose(&mut *self.rng.borrow_mut())
             .ok_or(SelectionError::GiveUp)?;
-            *hole = Rvalue::CheckedBinaryOp(*bin_op, Operand::Hole, Operand::Hole);
-
-            self.choose_operand(cur_stmt)?;
+            let (l, r) = match *bin_op {
+                Add | Sub | Mul => {
+                    // Both operand same type as lhs
+                    let l = self.choose_operand(&[lhs_ty.clone()], lhs)?;
+                    let r = self.choose_operand(&[lhs_ty], lhs)?;
+                    // As the types are all integers or floats which are Copy, Move/Copy
+                    // probably doesn't make much difference
+                    (l, r)
+                }
+                Shl | Shr => {
+                    // left operand same type as lhs, right can be uint or int
+                    let l = self.choose_operand(&[lhs_ty], lhs)?;
+                    // TODO: use a compile time concat
+                    let r = self.choose_operand(
+                        &[
+                            Ty::ISIZE,
+                            Ty::I8,
+                            Ty::I16,
+                            Ty::I32,
+                            Ty::I64,
+                            Ty::I128,
+                            Ty::USIZE,
+                            Ty::U8,
+                            Ty::U16,
+                            Ty::U32,
+                            Ty::U64,
+                            Ty::U128,
+                        ],
+                        lhs,
+                    )?;
+                    (l, r)
+                }
+                _ => unreachable!(),
+            };
+            *hole = Rvalue::CheckedBinaryOp(*bin_op, l, r);
             Ok(())
         } else {
             Err(SelectionError::GiveUp)
@@ -305,7 +307,6 @@ impl GenerateRvalue for GenerationCtx {
                 Err(SelectionError::GiveUp) => {
                     choices.remove(i);
                 }
-                _ => unreachable!(),
             }
         }
     }
@@ -330,7 +331,8 @@ impl GenerateStatement for GenerationCtx {
             let local = self.current_fn_mut().declare_new_var(Mutability::Mut, ty);
             Place::from_local(local)
         });
-        let mut statement = Statement::Assign(lhs, Rvalue::Hole);
+        let mut statement = Statement::Assign(lhs.clone(), Rvalue::Hole);
+        debug!("generating an assignment statement with lhs ty {}", lhs.ty(self.current_decls()).serialize());
         self.generate_rvalue(&mut statement)?;
         Ok(statement)
     }
@@ -370,7 +372,6 @@ impl GenerateStatement for GenerationCtx {
                 Err(SelectionError::GiveUp) => {
                     choices.remove(i);
                 }
-                _ => unreachable!(),
             }
         };
         self.current_bb_mut().insert_statement(statement);
@@ -407,9 +408,9 @@ impl GenerationCtx {
         &self.current_fn().local_decls
     }
 
-    fn generate_literal(&self, ty: Ty) -> Option<Literal> {
+    fn generate_literal(&self, ty: &Ty) -> Option<Literal> {
         let mut rng = self.rng.borrow_mut();
-        let lit = match ty {
+        let lit = match *ty {
             Ty::BOOL => Literal::Bool(rng.gen_bool(0.5)),
             Ty::CHAR => Literal::Char(char::from_u32(rng.gen_range(0..=0xD7FF)).unwrap()),
             Ty::USIZE => Literal::Int(
@@ -422,6 +423,7 @@ impl GenerationCtx {
             Ty::U32 => Literal::Int(rng.gen_range(u32::MIN..=u32::MAX).into()),
             Ty::U64 => Literal::Int(rng.gen_range(u64::MIN..=u64::MAX).into()),
             Ty::U128 => Literal::Int(rng.gen_range(u128::MIN..=u128::MAX)),
+            // TODO: signed ints
             _ => return None,
         };
         Some(lit)
@@ -439,7 +441,8 @@ impl GenerationCtx {
         self.current_function = new_fn;
         self.current_bb = starting_bb;
 
-        let statement_count = self.rng.get_mut().gen_range(0..=128);
+        let statement_count = self.rng.get_mut().gen_range(0..=16);
+        debug!("generating a bb with {statement_count} statements");
         (0..statement_count).for_each(|_| self.choose_statement());
     }
 }

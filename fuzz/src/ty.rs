@@ -78,6 +78,11 @@ impl TyCtxt {
     pub fn iter(&self) -> slice::Iter<'_, Ty> {
         self.tys.iter()
     }
+
+    pub fn is_copy(&self, ty: &Ty) -> bool {
+        // TODO: implement this
+        true
+    }
 }
 
 #[cfg(test)]

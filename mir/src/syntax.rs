@@ -68,9 +68,10 @@ pub struct LocalDecl {
     pub ty: Ty,
 }
 
-pub struct FieldIdx(u32);
+declare_id!(FieldIdx);
 declare_id!(VariantIdx);
 
+#[derive(Clone)]
 pub enum Place {
     Hole,
     Place {
@@ -107,6 +108,7 @@ impl Place {
     }
 }
 
+#[derive(Clone)]
 pub enum ProjectionElem {
     Deref,
     Field(FieldIdx),
@@ -185,7 +187,6 @@ pub enum Literal {
 }
 
 pub enum Operand {
-    Hole,
     Copy(Place),
     // define!("mir_move", fn Move<T>(place: T) -> T);
     Move(Place),
@@ -193,6 +194,15 @@ pub enum Operand {
     // TODO: the following
     // define!("mir_static", fn Static<T>(s: T) -> &'static T);
     // define!("mir_static_mut", fn StaticMut<T>(s: T) -> *mut T);
+}
+
+impl Operand {
+    pub fn ty(&self, local_decls: &LocalDecls) -> Ty {
+        match self {
+            Operand::Copy(place) | Operand::Move(place) => place.ty(local_decls),
+            Operand::Constant(_, ty) => ty.clone()
+        }
+    }
 }
 
 pub enum Statement {
@@ -301,6 +311,26 @@ impl Ty {
             _ => None,
         }
     }
+
+    pub fn is_primitive(&self) -> bool {
+        match *self {
+            Self::ISIZE
+            | Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::I64
+            | Self::I128
+            | Self::USIZE
+            | Self::U8
+            | Self::U16
+            | Self::U32
+            | Self::U64
+            | Self::U128
+            | Self::F32
+            | Self::F64 => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Hash)]
@@ -315,7 +345,6 @@ pub struct Adt {
 
 #[derive(Clone, Copy)]
 pub enum BinOp {
-    Hole,
     Add,
     Sub,
     Mul,
@@ -509,7 +538,6 @@ impl BinOp {
             BinOp::Ge => ">=",
             BinOp::Gt => ">",
             BinOp::Offset => panic!("offset is not a real infix operator"),
-            BinOp::Hole => panic!("op is a hole"),
         }
     }
 }

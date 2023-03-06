@@ -1,4 +1,4 @@
-use crate::{syntax::*,  vec::Idx};
+use crate::{syntax::*, vec::Idx};
 
 pub trait Serialize {
     fn serialize(&self) -> String;
@@ -68,7 +68,6 @@ impl Serialize for Operand {
                 Literal::Bool(b) => b.to_string(),
                 Literal::Char(c) => format!("'\\u{{{:x}}}'", u32::from(*c)),
             },
-            Operand::Hole => unreachable!("no hole left at serialization stage"),
         }
     }
 }
