@@ -55,6 +55,16 @@ impl<'ctx> PlaceSelector<'ctx> {
     pub fn select<R: Rng>(self, rng: &mut R) -> Option<Place> {
         self.candidates
             .choose(rng)
-            .map(|local| Place::from_local(local))
+            .map(Place::from_local)
+    }
+}
+
+impl IntoIterator for PlaceSelector<'_> {
+    type Item = Place;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let places: Vec<Place> = self.candidates.map(Place::from_local).collect();
+        places.into_iter()
     }
 }
