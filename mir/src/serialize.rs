@@ -7,6 +7,7 @@ pub trait Serialize {
 impl Serialize for Ty {
     fn serialize(&self) -> String {
         match self {
+            &Self::Unit => "()".to_owned(),
             &Self::BOOL => "bool".to_owned(),
             &Self::CHAR => "char".to_owned(),
             &Self::ISIZE => "isize".to_owned(),
@@ -58,16 +59,35 @@ impl Serialize for Place {
     }
 }
 
+impl Serialize for Literal {
+    fn serialize(&self) -> String {
+        match self {
+            Literal::Uint(i, _) => format!("{i}_{}", self.ty().serialize()),
+            Literal::Int(i, _) => format!("{i}_{}", self.ty().serialize()),
+            Literal::Bool(b) => b.to_string(),
+            Literal::Char(c) => format!("'\\u{{{:x}}}'", u32::from(*c)),
+            Literal::Tuple(elems) => match elems.len() {
+                0 => "()".to_owned(),
+                1 => format!("({},)", elems[0].serialize()),
+                _ => format!(
+                    "({})",
+                    elems
+                        .iter()
+                        .map(|l| l.serialize())
+                        .intersperse(", ".to_owned())
+                        .collect::<String>()
+                ),
+            },
+        }
+    }
+}
+
 impl Serialize for Operand {
     fn serialize(&self) -> String {
         match self {
             Operand::Copy(place) => place.serialize(),
             Operand::Move(place) => format!("Move({})", place.serialize()),
-            Operand::Constant(lit, ty) => match lit {
-                Literal::Int(i) => format!("{i}_{}", ty.serialize()),
-                Literal::Bool(b) => b.to_string(),
-                Literal::Char(c) => format!("'\\u{{{:x}}}'", u32::from(*c)),
-            },
+            Operand::Constant(lit) => lit.serialize(),
         }
     }
 }

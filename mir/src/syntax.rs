@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{ops::Deref, num::TryFromIntError};
 
 use crate::{
     serialize::Serialize,
@@ -181,16 +181,18 @@ pub enum Rvalue {
 }
 
 pub enum Literal {
-    Int(u128),
+    Uint(u128, UintTy),
+    Int(i128, IntTy),
     Bool(bool),
     Char(char),
+    Tuple(Vec<Literal>),
 }
 
 pub enum Operand {
     Copy(Place),
     // define!("mir_move", fn Move<T>(place: T) -> T);
     Move(Place),
-    Constant(Literal, Ty),
+    Constant(Literal),
     // TODO: the following
     // define!("mir_static", fn Static<T>(s: T) -> &'static T);
     // define!("mir_static_mut", fn StaticMut<T>(s: T) -> *mut T);
@@ -200,7 +202,7 @@ impl Operand {
     pub fn ty(&self, local_decls: &LocalDecls) -> Ty {
         match self {
             Operand::Copy(place) | Operand::Move(place) => place.ty(local_decls),
-            Operand::Constant(_, ty) => ty.clone()
+            Operand::Constant(lit) => lit.ty(),
         }
     }
 }
@@ -254,6 +256,7 @@ declare_id!(TyId);
 #[derive(PartialEq, Eq, Clone, Hash)]
 pub enum Ty {
     // Primitives
+    Unit,
     Bool,
     Char,
     Int(IntTy),
@@ -314,20 +317,21 @@ impl Ty {
 
     pub fn is_primitive(&self) -> bool {
         match *self {
-            Self::ISIZE
-            | Self::I8
-            | Self::I16
-            | Self::I32
-            | Self::I64
-            | Self::I128
+            // Self::ISIZE
+            // | Self::I8
+            // | Self::I16
+            // | Self::I32
+            // | Self::I64
+            // | Self::I128
             | Self::USIZE
             | Self::U8
             | Self::U16
             | Self::U32
             | Self::U64
             | Self::U128
-            | Self::F32
-            | Self::F64 => true,
+            // | Self::F32
+            // | Self::F64 => true,
+            | Self::Unit => true,
             _ => false,
         }
     }
@@ -369,6 +373,95 @@ pub enum UnOp {
     Hole,
     Not,
     Neg,
+}
+
+impl Literal {
+    pub fn ty(&self) -> Ty {
+        match self {
+            Literal::Int(_, ty) => Ty::Int(*ty),
+            Literal::Uint(_, ty) => Ty::Uint(*ty),
+            Literal::Bool(_) => Ty::Bool,
+            Literal::Char(_) => Ty::Char,
+            Literal::Tuple(elems) => Ty::Tuple(elems.iter().map(|lit| lit.ty()).collect()),
+        }
+    }
+}
+
+impl From<bool> for Literal {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
+impl From<char> for Literal {
+    fn from(value: char) -> Self {
+        Self::Char(value)
+    }
+}
+
+impl From<u8> for Literal {
+    fn from(value: u8) -> Self {
+        Self::Uint(value as u128, UintTy::U8)
+    }
+}
+impl From<u16> for Literal {
+    fn from(value: u16) -> Self {
+        Self::Uint(value as u128, UintTy::U16)
+    }
+}
+impl From<u32> for Literal {
+    fn from(value: u32) -> Self {
+        Self::Uint(value as u128, UintTy::U32)
+    }
+}
+impl From<u64> for Literal {
+    fn from(value: u64) -> Self {
+        Self::Uint(value as u128, UintTy::U64)
+    }
+}
+impl From<u128> for Literal {
+    fn from(value: u128) -> Self {
+        Self::Uint(value as u128, UintTy::U128)
+    }
+}
+impl TryFrom<usize> for Literal {
+    type Error = TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        Ok(Self::Uint(value.try_into()?, UintTy::Usize))
+    }
+}
+impl From<i8> for Literal {
+    fn from(value: i8) -> Self {
+        Self::Int(value as i128, IntTy::I8)
+    }
+}
+impl From<i16> for Literal {
+    fn from(value: i16) -> Self {
+        Self::Int(value as i128, IntTy::I16)
+    }
+}
+impl From<i32> for Literal {
+    fn from(value: i32) -> Self {
+        Self::Int(value as i128, IntTy::I32)
+    }
+}
+impl From<i64> for Literal {
+    fn from(value: i64) -> Self {
+        Self::Int(value as i128, IntTy::I64)
+    }
+}
+impl From<i128> for Literal {
+    fn from(value: i128) -> Self {
+        Self::Int(value as i128, IntTy::I128)
+    }
+}
+impl TryFrom<isize> for Literal {
+    type Error = TryFromIntError;
+
+    fn try_from(value: isize) -> Result<Self, Self::Error> {
+        Ok(Self::Int(value.try_into()?, IntTy::I128))
+    }
 }
 
 impl Program {

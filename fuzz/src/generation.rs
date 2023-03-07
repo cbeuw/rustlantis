@@ -7,10 +7,7 @@ use mir::syntax::{
     Mutability, Operand, Place, Program, Rvalue, Statement, Ty, UintTy, UnOp,
 };
 use mir::vec::Idx;
-use rand::{
-    seq::{IteratorRandom, SliceRandom},
-    Rng, RngCore, SeedableRng,
-};
+use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
 
 use crate::place::PlaceSelector;
 use crate::ty::TyCtxt;
@@ -60,7 +57,7 @@ impl GenerateOperand for GenerationCtx {
                 let literal = self
                     .generate_literal(selected)
                     .expect("can always generate a literal of a literalble type");
-                Ok(Operand::Constant(literal, selected.clone()))
+                Ok(Operand::Constant(literal))
             }
         })
     }
@@ -401,20 +398,28 @@ impl GenerationCtx {
 
     fn generate_literal(&self, ty: &Ty) -> Option<Literal> {
         let mut rng = self.rng.borrow_mut();
-        let lit = match *ty {
-            Ty::BOOL => Literal::Bool(rng.gen_bool(0.5)),
-            Ty::CHAR => Literal::Char(char::from_u32(rng.gen_range(0..=0xD7FF)).unwrap()),
-            Ty::USIZE => Literal::Int(
-                rng.gen_range(usize::MIN..=usize::MAX)
-                    .try_into()
-                    .expect("usize isn't greater than 128 bits"),
-            ),
-            Ty::U8 => Literal::Int(rng.gen_range(u8::MIN..=u8::MAX).into()),
-            Ty::U16 => Literal::Int(rng.gen_range(u16::MIN..=u16::MAX).into()),
-            Ty::U32 => Literal::Int(rng.gen_range(u32::MIN..=u32::MAX).into()),
-            Ty::U64 => Literal::Int(rng.gen_range(u64::MIN..=u64::MAX).into()),
-            Ty::U128 => Literal::Int(rng.gen_range(u128::MIN..=u128::MAX)),
-            // TODO: signed ints
+        let lit: Literal = match *ty {
+            Ty::Bool => rng.gen_bool(0.5).into(),
+            // TODO: another range
+            Ty::Char => char::from_u32(rng.gen_range(0..=0xD7FF)).unwrap().into(),
+            Ty::USIZE => rng
+                .gen_range(usize::MIN..=usize::MAX)
+                .try_into()
+                .expect("usize isn't greater than 128 bits"),
+            Ty::U8 => rng.gen_range(u8::MIN..=u8::MAX).into(),
+            Ty::U16 => rng.gen_range(u16::MIN..=u16::MAX).into(),
+            Ty::U32 => rng.gen_range(u32::MIN..=u32::MAX).into(),
+            Ty::U64 => rng.gen_range(u64::MIN..=u64::MAX).into(),
+            Ty::U128 => rng.gen_range(u128::MIN..=u128::MAX).into(),
+            Ty::ISIZE => rng
+                .gen_range(isize::MIN..=isize::MAX)
+                .try_into()
+                .expect("isize isn't greater than 128 bits"),
+            Ty::I8 => rng.gen_range(i8::MIN..=i8::MAX).into(),
+            Ty::I16 => rng.gen_range(i16::MIN..=i16::MAX).into(),
+            Ty::I32 => rng.gen_range(i32::MIN..=i32::MAX).into(),
+            Ty::I64 => rng.gen_range(i64::MIN..=i64::MAX).into(),
+            Ty::I128 => rng.gen_range(i128::MIN..=i128::MAX).into(),
             _ => return None,
         };
         Some(lit)
