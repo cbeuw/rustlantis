@@ -110,6 +110,7 @@ impl Serialize for Rvalue {
                     b.serialize()
                 ),
             },
+            Rvalue::Cast(a, target) => format!("{} as {}", a.serialize(), target.serialize()),
             Rvalue::Len(place) => format!("Len({})", place.serialize()),
             Rvalue::Retag(place) => format!("Retag({})", place.serialize()),
             Rvalue::Discriminant(place) => format!("Discriminant({})", place.serialize()),

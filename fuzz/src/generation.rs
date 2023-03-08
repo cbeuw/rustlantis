@@ -68,6 +68,7 @@ trait GenerateRvalue {
     fn generate_unary_op(&self, cur_stmt: &mut Statement) -> Result<()>;
     fn generate_binary_op(&self, cur_stmt: &mut Statement) -> Result<()>;
     fn generate_checked_binary_op(&self, cur_stmt: &mut Statement) -> Result<()>;
+    fn generate_cast(&self, cur_stmt: &mut Statement) -> Result<()>;
     // fn generate_len(&self, cur_stmt: &mut Statement) -> Result<()>;
     // fn generate_retag(&self, cur_stmt: &mut Statement) -> Result<()>;
     // fn generate_discriminant(&self, cur_stmt: &mut Statement) -> Result<()>;
@@ -263,6 +264,45 @@ impl GenerateRvalue for GenerationCtx {
         }
     }
 
+    fn generate_cast(&self, cur_stmt: &mut Statement) -> Result<()> {
+        debug!("generating a cast rvalue");
+        let (lhs, hole) = match cur_stmt {
+            Statement::Assign(lhs, hole) => (lhs, hole),
+            _ => unreachable!("Rvalue only appears in Statement::Assign"),
+        };
+
+        let target_ty = lhs.ty(self.current_decls());
+        let source_tys = match target_ty {
+            // TODO: no int to ptr cast for now
+            Ty::Int(..) | Ty::Uint(..) | Ty::Float(..) => {
+                &[
+                    Ty::ISIZE,
+                    Ty::I8,
+                    Ty::I16,
+                    Ty::I32,
+                    Ty::I64,
+                    Ty::I128,
+                    Ty::USIZE,
+                    Ty::U8,
+                    Ty::U16,
+                    Ty::U32,
+                    Ty::U64,
+                    Ty::U128,
+                    Ty::F32,
+                    Ty::F64,
+                    Ty::Char,
+                    Ty::Bool
+                ]
+            }
+            _ => &[][..],
+        };
+        *hole = self.make_choice(source_tys.into_iter(), |source_ty| {
+            let source = self.choose_operand(&[source_ty.clone()], lhs)?;
+            Ok(Rvalue::Cast(source, source_ty.clone()))
+        })?;
+        Ok(())
+    }
+
     // fn generate_len(&self, cur_stmt: &mut Statement) -> Result<()> {
     //     todo!()
     // }
@@ -281,6 +321,7 @@ impl GenerateRvalue for GenerationCtx {
             Self::generate_unary_op,
             Self::generate_binary_op,
             Self::generate_checked_binary_op,
+            Self::generate_cast,
             // Self::generate_len,
             // Self::generate_retag,
             // Self::generate_discriminant,
@@ -426,10 +467,7 @@ impl GenerationCtx {
     }
 
     pub fn generate(&mut self) {
-        let argc = self.rng.get_mut().gen_range(0..=16);
-        let arg_tys: Vec<Ty> = (0..argc)
-            .map(|_| self.tcx.choose_ty(&mut *self.rng.borrow_mut()))
-            .collect();
+        let arg_tys = vec![Ty::I32];
 
         let mut body = Body::new(&arg_tys, self.tcx.choose_ty(&mut *self.rng.borrow_mut()));
         let starting_bb = body.new_basic_block(BasicBlockData::new());

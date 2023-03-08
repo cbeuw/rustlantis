@@ -1,4 +1,4 @@
-use std::{ops::Deref, num::TryFromIntError};
+use std::num::TryFromIntError;
 
 use crate::{
     serialize::Serialize,
@@ -170,6 +170,7 @@ pub enum Rvalue {
     Use(Operand),
     UnaryOp(UnOp, Operand),
     BinaryOp(BinOp, Operand, Operand),
+    Cast(Operand, Ty),
     // define!("mir_checked", fn Checked<T>(binop: T) -> (T, bool));
     CheckedBinaryOp(BinOp, Operand, Operand),
     // define!("mir_len", fn Len<T>(place: T) -> usize);
@@ -466,7 +467,7 @@ impl TryFrom<isize> for Literal {
 
 impl Program {
     // TODO: match fn0's param
-    pub const MAIN: &str = "pub fn main(){fn0(true);}";
+    pub const MAIN: &str = "pub fn main(){fn0(42);}";
     pub const FUNCTION_ATTRIBUTE: &str =
         "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
     pub const HEADER: &str = "#![feature(custom_mir, core_intrinsics)]\nextern crate core;\nuse core::intrinsics::mir::*;\n";
