@@ -55,6 +55,7 @@ impl Serialize for Place {
             ProjectionElem::Field(_) => todo!(),
             ProjectionElem::Index(_) => todo!(),
             ProjectionElem::Downcast(_) => todo!(),
+            ProjectionElem::ConstantIndex { offset } => format!("{acc}[{offset}]"),
         })
     }
 }
@@ -131,6 +132,7 @@ impl Serialize for Statement {
             Statement::SetDiscriminant(place, discr) => {
                 format!("SetDiscriminant({}, {discr})", place.serialize())
             }
+            Statement::Nop => String::default(),
         }
     }
 }
@@ -186,6 +188,7 @@ impl Serialize for BasicBlockData {
         let mut stmts: String = self
             .statements
             .iter()
+            .filter(|stmt| !matches!(stmt, Statement::Nop))
             .map(|stmt| format!("{};\n", stmt.serialize()))
             .collect();
         if let Some(term) = &self.terminator {

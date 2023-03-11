@@ -77,7 +77,6 @@ pub enum Place {
     Place {
         local: Local,
         projection: Vec<ProjectionElem>,
-        // TODO: mir_field and mir_variant
     },
 }
 impl Place {
@@ -114,7 +113,8 @@ pub enum ProjectionElem {
     Field(FieldIdx),
     Index(Local),
     Downcast(VariantIdx),
-    // TODO: ConstantIndex, Subslice
+    ConstantIndex{offset: u64},
+    // TODO: Subslice
 }
 
 pub enum Terminator {
@@ -218,6 +218,7 @@ pub enum Statement {
     Deinit(Place),
     // define!("mir_set_discriminant", fn SetDiscriminant<T>(place: T, index: u32));
     SetDiscriminant(Place, u32),
+    Nop,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -553,6 +554,10 @@ impl Body {
             .collect()
     }
 
+    pub fn is_arg(&self, local: Local) -> bool {
+        (1..self.arg_count).contains(&local.index())
+    }
+
     pub fn vars_and_args_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
         (1..self.local_decls.len()).map(Local::new)
     }
@@ -567,6 +572,11 @@ impl Body {
     /// Returns an iterator over function arguments
     pub fn args_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
         (1..self.arg_count + 1).map(Local::new)
+    }
+
+    pub fn args_decl_iter(&self) -> impl Iterator<Item = (Local, &LocalDecl)> + ExactSizeIterator {
+        self.args_iter()
+            .map(|local| (local, &self.local_decls[local]))
     }
 
     /// Returns an iterator over locals defined in the function body

@@ -4,6 +4,6 @@
 #![feature(variant_count)]
 
 mod place;
-mod skeleton;
 mod ty;
 mod generation;
+mod ptable;
