@@ -1,10 +1,16 @@
 #![feature(is_sorted)]
 #![feature(exact_size_is_empty)]
 #![feature(iter_advance_by)]
-mod skeleton;
+#![feature(variant_count)]
+mod generation;
+mod place;
+mod ptable;
+mod ty;
 
-use crate::skeleton::build_skeleton;
-use mir::{syntax::*, serialize::Serialize};
+use std::env::args;
+
+use crate::generation::GenerationCtx;
+use mir::{serialize::Serialize, syntax::*};
 use petgraph::dot::Dot;
 use rand::{rngs::SmallRng, SeedableRng};
 
@@ -31,8 +37,13 @@ fn main() {
 
     // println!("{}", program.serialize());
 
-    let mut rng = SmallRng::seed_from_u64(0);
-    let skeleton = build_skeleton(&mut rng);
-    let dot = Dot::new(&skeleton);
-    println!("{dot:?}");
+    // let mut rng = SmallRng::seed_from_u64(0);
+    // let skeleton = build_skeleton(&mut rng);
+    // let dot = Dot::new(&skeleton);
+    // println!("{dot:?}");
+
+    let seed: u64 = args().skip(1).next().unwrap().parse().unwrap();
+    let genctxt = GenerationCtx::new(seed);
+    let program = genctxt.generate();
+    println!("{}", program.serialize());
 }

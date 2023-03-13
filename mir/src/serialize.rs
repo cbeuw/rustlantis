@@ -205,8 +205,7 @@ impl Serialize for Body {
             .map(|idx| {
                 let decl = &self.local_decls[idx];
                 format!(
-                    "let {}_{}: {};\n",
-                    &decl.mutability.prefix_str(),
+                    "let _{}: {};\n",
                     idx.index(),
                     decl.ty.serialize()
                 )

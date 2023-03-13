@@ -475,7 +475,7 @@ impl TryFrom<isize> for Literal {
 
 impl Program {
     // TODO: match fn0's param
-    pub const MAIN: &str = "pub fn main(){fn0(42);}";
+    pub const MAIN: &str = "pub fn main(){println!(\"{}\",fn0(42));}";
     pub const FUNCTION_ATTRIBUTE: &str =
         "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
     pub const HEADER: &str = "#![feature(custom_mir, core_intrinsics)]\nextern crate core;\nuse core::intrinsics::mir::*;\n";

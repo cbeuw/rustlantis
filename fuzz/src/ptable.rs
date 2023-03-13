@@ -1,6 +1,6 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
-use bimap::BiMap;
+use bimap::{BiBTreeMap, BiMap};
 use mir::{
     syntax::{Body, FieldIdx, Local, Place, ProjectionElem, Ty},
     vec::Idx,
@@ -14,7 +14,7 @@ pub type Path = SmallVec<[ProjectionIndex; 8]>;
 
 // A program-global graph recording all places that can be reached through projections
 pub struct PlaceTable {
-    current_locals: BiMap<Local, PlaceIndex>,
+    current_locals: BiBTreeMap<Local, PlaceIndex>,
     places: Graph<PlaceNode, ProjectionElem>,
 }
 
@@ -27,13 +27,13 @@ pub struct PlaceNode {
 impl PlaceTable {
     pub fn new() -> Self {
         Self {
-            current_locals: BiMap::new(),
+            current_locals: BiBTreeMap::new(),
             places: Graph::default(),
         }
     }
 
     pub fn enter_fn(&mut self, body: &Body) {
-        self.current_locals = BiMap::new();
+        self.current_locals = BiBTreeMap::new();
         body.args_decl_iter().for_each(|(local, decl)| {
             // arguments are init on Call, otherwise the call site is UB
             let pidx = self.add_place(decl.ty.clone(), true);
@@ -69,8 +69,8 @@ impl PlaceTable {
     /// Get PlaceIndex from a Place
     pub fn get_node(&self, place: &Place) -> Option<PlaceIndex> {
         let mut node = *self.current_locals.get_by_left(&place.local())?;
-        let mut proj_iter = place.projection().iter();
-        while let Some(proj) = proj_iter.next() {
+        let proj_iter = place.projection().iter();
+        for proj in proj_iter {
             let found = self
                 .places
                 .edges_directed(node, Direction::Outgoing)
@@ -139,12 +139,10 @@ impl PlacePath {
 
     pub fn target_index(&self, pt: &PlaceTable) -> PlaceIndex {
         if let Some(last_edge) = self.path.last() {
-            let target_idx = pt
-                .places
+            pt.places
                 .edge_endpoints(*last_edge)
                 .expect("edge in graph")
-                .1;
-            target_idx
+                .1
         } else {
             self.source
         }

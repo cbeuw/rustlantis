@@ -101,7 +101,7 @@ impl GenerateRvalue for GenerationCtx {
             Uint(_) | Bool => &[Not][..],
             _ => &[][..],
         };
-        let rvalue = self.make_choice(unops.into_iter(), |unop| {
+        let rvalue = self.make_choice(unops.iter(), |unop| {
             let operand = self.choose_operand(&[lhs_ty.clone()], lhs)?;
             Ok(Rvalue::UnaryOp(*unop, operand))
         })?;
@@ -121,7 +121,7 @@ impl GenerateRvalue for GenerationCtx {
             RawPtr(..) => &[Offset],
             _ => &[][..],
         };
-        let rvalue = self.make_choice(binops.into_iter(), |binop| {
+        let rvalue = self.make_choice(binops.iter(), |binop| {
             let (l, r) = match *binop {
                 Add | Sub | Mul | Div | Rem | BitXor | BitAnd | BitOr => {
                     // Both operand same type as lhs
@@ -206,7 +206,7 @@ impl GenerateRvalue for GenerationCtx {
                 Uint(_) | Int(_) => &[Add, Sub, Mul, Shl, Shr][..],
                 _ => &[][..],
             };
-            let rvalue = self.make_choice(bin_ops.into_iter(), |bin_op| {
+            let rvalue = self.make_choice(bin_ops.iter(), |bin_op| {
                 let (l, r) = match *bin_op {
                     Add | Sub | Mul => {
                         // Both operand same type as lhs
@@ -291,9 +291,9 @@ impl GenerateRvalue for GenerationCtx {
             ][..],
             _ => &[][..],
         };
-        let rvalue = self.make_choice(source_tys.into_iter(), |source_ty| {
+        let rvalue = self.make_choice(source_tys.iter(), |source_ty| {
             let source = self.choose_operand(&[source_ty.clone()], lhs)?;
-            Ok(Rvalue::Cast(source, source_ty.clone()))
+            Ok(Rvalue::Cast(source, target_ty.clone()))
         })?;
         Ok(rvalue)
     }
@@ -463,8 +463,8 @@ impl GenerationCtx {
         }
     }
 
-    pub fn new() -> Self {
-        let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(0)));
+    pub fn new(seed: u64) -> Self {
+        let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(seed)));
         let tcx = TyCtxt::new(&mut *rng.borrow_mut());
         // TODO: don't zero-initialize current_function and current_bb
         Self {
@@ -533,7 +533,7 @@ impl GenerationCtx {
 
     // Move generation context to an executed function
     fn enter_new_fn(&mut self, args: &[Ty], return_ty: Ty) {
-        let mut body = Body::new(&args, return_ty);
+        let mut body = Body::new(args, return_ty);
 
         let starting_bb = body.new_basic_block(BasicBlockData::new());
         let new_fn = self.program.push_fn(body);
@@ -546,7 +546,7 @@ impl GenerationCtx {
             .enter_fn(&self.program.functions[self.current_function]);
     }
 
-    pub fn generate(&mut self) {
+    pub fn generate(mut self) -> Program {
         let arg_tys = vec![Ty::I32];
 
         self.enter_new_fn(&arg_tys, Ty::I32);
@@ -555,7 +555,8 @@ impl GenerationCtx {
         debug!("generating a bb with {statement_count} statements");
 
         (0..statement_count).for_each(|_| self.choose_statement());
-        println!("{}", self.program.serialize());
+        self.choose_terminator();
+        self.program
     }
 
     fn post_generation(&mut self, stmt: &Statement) {

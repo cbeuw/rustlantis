@@ -5,6 +5,7 @@ use mir::{
     vec::IndexVec,
 };
 use rand::{seq::IteratorRandom, Rng};
+use rand_distr::{Exp, Distribution};
 
 pub struct TyCtxt {
     // Named (user-defined types)
@@ -52,27 +53,28 @@ impl TyCtxt {
     fn populate_tys(&mut self, rng: &mut impl Rng) {
         // Generate composite types
         let count = rng.gen_range(0..=128);
-        for _ in 0..count {
-            let new_ty = match rng.gen_range(0..=1) {
-                0 => Ty::RawPtr(
-                    Box::new(self.choose_ty(rng)),
-                    if rng.gen_bool(0.5) {
-                        Mutability::Mut
-                    } else {
-                        Mutability::Not
-                    },
-                ),
-                1 => Ty::Tuple({
-                    let tuple_count = rng.gen_range(1..=16);
-                    (0..tuple_count).map(|_| self.choose_ty(rng)).collect()
-                }),
-                2 => Ty::Adt(todo!()),
-                _ => unreachable!(),
-            };
-            if !self.tys.iter().any(|ty| ty.clone() == new_ty) {
-                self.tys.push(new_ty);
-            }
-        }
+        // for _ in 0..count {
+        //     let new_ty = match rng.gen_range(0..=0) {
+        //         0 => Ty::Tuple({
+        //             let dist = Exp::<f32>::new(2.).unwrap();
+        //             let length = dist.sample(rng).clamp(1., 16.) as usize;
+        //             (0..length).map(|_| self.choose_ty(rng)).collect()
+        //         }),
+        //         1 => Ty::RawPtr(
+        //             Box::new(self.choose_ty(rng)),
+        //             if rng.gen_bool(0.5) {
+        //                 Mutability::Mut
+        //             } else {
+        //                 Mutability::Not
+        //             },
+        //         ),
+        //         2 => Ty::Adt(todo!()),
+        //         _ => unreachable!(),
+        //     };
+        //     if !self.tys.iter().any(|ty| *ty == new_ty) {
+        //         self.tys.push(new_ty);
+        //     }
+        // }
     }
 
     pub fn iter(&self) -> slice::Iter<'_, Ty> {
