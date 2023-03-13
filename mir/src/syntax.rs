@@ -71,7 +71,7 @@ pub struct LocalDecl {
 declare_id!(FieldIdx);
 declare_id!(VariantIdx);
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Place {
     Hole,
     Place {
@@ -114,7 +114,7 @@ impl Place {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProjectionElem {
     Deref,
     Field(FieldIdx),
