@@ -87,6 +87,13 @@ impl Place {
         }
     }
 
+    pub fn from_projected(local: Local, projections: &[ProjectionElem]) -> Self {
+        Place::Place {
+            local,
+            projection: Vec::from(projections),
+        }
+    }
+
     pub fn local(&self) -> Local {
         match self {
             Place::Place { local, .. } => *local,
@@ -107,13 +114,13 @@ impl Place {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionElem {
     Deref,
     Field(FieldIdx),
     Index(Local),
     Downcast(VariantIdx),
-    ConstantIndex{offset: u64},
+    ConstantIndex { offset: u64 },
     // TODO: Subslice
 }
 
@@ -221,14 +228,14 @@ pub enum Statement {
     Nop,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Mutability {
     // N.B. Order is deliberate, so that Not < Mut
     Not,
     Mut,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum IntTy {
     Isize,
     I8,
@@ -238,7 +245,7 @@ pub enum IntTy {
     I128,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum UintTy {
     Usize,
     U8,
@@ -248,14 +255,14 @@ pub enum UintTy {
     U128,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum FloatTy {
     F32,
     F64,
 }
 
 declare_id!(TyId);
-#[derive(PartialEq, Eq, Clone, Hash)]
+#[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub enum Ty {
     // Primitives
     Unit,
@@ -339,12 +346,12 @@ impl Ty {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Hash)]
+#[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub struct VariantDef {
     // TODO: finish this
 }
 
-#[derive(PartialEq, Eq, Clone, Hash)]
+#[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub struct Adt {
     variants: IndexVec<VariantIdx, VariantDef>,
 }
