@@ -1,70 +1,67 @@
-use mir::syntax::{Local, LocalDecl, Mutability, Place, Ty};
-use rand::{seq::IteratorRandom, Rng};
+use std::iter::FilterMap;
 
-use crate::generation::GenerationCtx;
+use log::debug;
+use mir::syntax::{Place, Ty};
 
-pub struct PlaceSelector<'ctx> {
-    ctx: &'ctx GenerationCtx,
-    candidates: Box<dyn Iterator<Item = Local> + 'ctx>,
+use crate::ptable::{PlaceIndex, PlacePath, PlaceTable, ProjectionIter};
+
+#[derive(Clone, Default)]
+pub struct PlaceSelector {
+    tys: Vec<Ty>,
+    exclusions: Vec<Place>,
+    allow_uninit: bool,
 }
 
-impl<'ctx> PlaceSelector<'ctx> {
-    pub fn locals_and_args(ctx: &'ctx GenerationCtx) -> Self {
-        Self {
-            ctx,
-            candidates: Box::new(ctx.current_fn().vars_and_args_iter()),
-        }
-    }
-    pub fn locals(ctx: &'ctx GenerationCtx) -> Self {
-        Self {
-            ctx,
-            candidates: Box::new(ctx.current_fn().vars_iter()),
-        }
+impl PlaceSelector {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn mutable(self) -> Self {
-        let candidates = Box::new(
-            self.candidates
-                .filter(|&local| self.ctx.current_decls()[local].mutability == Mutability::Mut),
-        );
-        Self { candidates, ..self }
+    pub fn maybe_uninit(mut self) -> Self {
+        self.allow_uninit = true;
+        self
     }
 
     pub fn of_ty(self, ty: Ty) -> Self {
-        let candidates = Box::new(
-            self.candidates
-                .filter(move |&local| self.ctx.current_decls()[local].ty == ty),
-        );
-        Self { candidates, ..self }
+        let mut tys = self.tys;
+        tys.push(ty);
+        Self { tys, ..self }
     }
 
-    pub fn of_tys(self, tys: &'ctx [Ty]) -> Self {
-        let candidates = Box::new(
-            self.candidates
-                .filter(|&local| tys.contains(&self.ctx.current_decls()[local].ty)),
-        );
-        Self { candidates, ..self }
+    pub fn of_tys(self, types: &[Ty]) -> Self {
+        let mut tys = self.tys;
+        tys.extend(types.iter().cloned());
+        Self { tys, ..self }
     }
 
-    pub fn except(self, exclude: &'ctx Place) -> Self {
+    pub fn except(self, exclude: &Place) -> Self {
+        let mut exclusions = self.exclusions;
         // TODO: More granular place discrimination
-        let candidates = Box::new(self.candidates.filter(|&local| local != exclude.local()));
-        Self { candidates, ..self }
+        exclusions.push(exclude.clone());
+        Self { exclusions, ..self }
     }
 
-    pub fn select<R: Rng>(self, rng: &mut R) -> Option<Place> {
-        self.candidates
-            .choose(rng)
-            .map(Place::from_local)
-    }
-}
+    pub fn into_iter(self, pt: &PlaceTable) -> impl Iterator<Item = Place> + Clone + '_ {
+        let exclusion_indicies: Vec<PlaceIndex> = self
+            .exclusions
+            .iter()
+            .map(|place| pt.get_node(place).expect("excluded place exists"))
+            .collect();
+        pt.reachable_nodes().filter_map(move |ppath| {
+            let node = ppath.target_node(pt);
+            let ty_allowed = if self.tys.is_empty() {
+                true
+            } else {
+                self.tys.contains(&node.ty)
+            };
 
-impl IntoIterator for PlaceSelector<'_> {
-    type Item = Place;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        let places: Vec<Place> = self.candidates.map(Place::from_local).collect();
-        places.into_iter()
+            let not_excluded = !exclusion_indicies.contains(&ppath.target_index(pt));
+            let initness_allowed = if self.allow_uninit { true } else { node.init };
+            if ty_allowed && not_excluded && initness_allowed {
+                Some(ppath.to_place(pt))
+            } else {
+                None
+            }
+        })
     }
 }

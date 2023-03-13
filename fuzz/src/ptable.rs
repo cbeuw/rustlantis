@@ -1,19 +1,11 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    marker::PhantomData,
-};
+use std::collections::{HashMap, VecDeque};
 
+use bimap::BiMap;
 use mir::{
     syntax::{Body, FieldIdx, Local, Place, ProjectionElem, Ty},
-    vec::{self, Idx, IndexVec},
+    vec::Idx,
 };
-use petgraph::{
-    graph::Node,
-    prelude::EdgeIndex,
-    stable_graph::{DefaultIx, NodeIndex},
-    visit::{EdgeRef, IntoEdgesDirected, IntoNeighborsDirected},
-    Directed, Direction, Graph,
-};
+use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
 pub type PlaceIndex = NodeIndex;
@@ -22,25 +14,26 @@ pub type Path = SmallVec<[ProjectionIndex; 8]>;
 
 // A program-global graph recording all places that can be reached through projections
 pub struct PlaceTable {
-    current_locals: HashMap<Local, PlaceIndex>,
+    current_locals: BiMap<Local, PlaceIndex>,
     places: Graph<PlaceNode, ProjectionElem>,
 }
 
-struct PlaceNode {
-    ty: Ty,
-    init: bool,
+#[derive(Debug, Clone)]
+pub struct PlaceNode {
+    pub ty: Ty,
+    pub init: bool,
 }
 
 impl PlaceTable {
     pub fn new() -> Self {
         Self {
-            current_locals: HashMap::new(),
+            current_locals: BiMap::new(),
             places: Graph::default(),
         }
     }
 
     pub fn enter_fn(&mut self, body: &Body) {
-        self.current_locals = HashMap::new();
+        self.current_locals = BiMap::new();
         body.args_decl_iter().for_each(|(local, decl)| {
             // arguments are init on Call, otherwise the call site is UB
             let pidx = self.add_place(decl.ty.clone(), true);
@@ -75,7 +68,7 @@ impl PlaceTable {
 
     /// Get PlaceIndex from a Place
     pub fn get_node(&self, place: &Place) -> Option<PlaceIndex> {
-        let mut node = *self.current_locals.get(&place.local())?;
+        let mut node = *self.current_locals.get_by_left(&place.local())?;
         let mut proj_iter = place.projection().iter();
         while let Some(proj) = proj_iter.next() {
             let found = self
@@ -91,64 +84,88 @@ impl PlaceTable {
         Some(node)
     }
 
-    fn sub_fields(&self, pidx: PlaceIndex) {}
-
     pub fn mark_place_init(&mut self, pidx: PlaceIndex) {
         self.places[pidx].init = true;
     }
 
+    pub fn is_place_init(&self, pidx: PlaceIndex) -> bool {
+        self.places[pidx].init
+    }
+
+    // Returns an iterator over all places reachable from local through projections
     fn reachable_from_local(&self, local: Local) -> ProjectionIter<'_> {
-        let local_node = self.current_locals[&local];
+        let local_node = *self.current_locals.get_by_left(&local).unwrap();
         ProjectionIter {
             pt: self,
-            root: local,
+            root: local_node,
             to_visit: self
                 .places
                 .edges_directed(local_node, Direction::Outgoing)
                 .map(|e| smallvec![e.id()])
                 .collect(),
             root_visited: false,
+            follow_deref: true,
         }
     }
 
-    fn reachable_nodes(&self) {}
+    pub fn reachable_nodes(&self) -> impl Iterator<Item = PlacePath> + Clone + '_ {
+        let local_iter = self.current_locals.right_values();
+        local_iter.map(|&local| PlacePath {
+            source: local,
+            path: smallvec![],
+        })
+        // let empty = std::iter::empty::<PlacePath>();
+        // local_iter.fold(empty, |acc, &local| {
+        //     acc.chain(self.reachable_from_local(local))
+        // })
+    }
 }
 
-struct PlacePath {
-    source: Local,
+#[derive(Debug, Clone)]
+pub struct PlacePath {
+    source: NodeIndex,
     path: Path,
 }
 
 impl PlacePath {
-    fn to_place(&self, pt: &PlaceTable) -> Place {
+    pub fn to_place(&self, pt: &PlaceTable) -> Place {
         let projs: SmallVec<[ProjectionElem; 8]> =
             self.path.iter().map(|&proj| pt.places[proj]).collect();
-        Place::from_projected(self.source, &projs)
+        Place::from_projected(
+            *pt.current_locals.get_by_right(&self.source).unwrap(),
+            &projs,
+        )
     }
 
-    fn target_node<'pt>(&self, pt: &'pt PlaceTable) -> &'pt PlaceNode {
+    pub fn target_index(&self, pt: &PlaceTable) -> PlaceIndex {
         if let Some(last_edge) = self.path.last() {
             let target_idx = pt
                 .places
                 .edge_endpoints(*last_edge)
                 .expect("edge in graph")
                 .1;
-            &pt.places[target_idx]
+            target_idx
         } else {
-            let local_idx = pt.current_locals[&self.source];
-            &pt.places[local_idx]
+            self.source
         }
+    }
+
+    pub fn target_node<'pt>(&self, pt: &'pt PlaceTable) -> &'pt PlaceNode {
+        let target_idx = self.target_index(pt);
+        &pt.places[target_idx]
     }
 }
 
 /// A breadth-first iterator over all projections from a local variable
 /// Within each level, projections are returned in reverse insertion order
-/// FIXME: this breaks if there's a reference cycle in the graph 
-struct ProjectionIter<'pt> {
+/// FIXME: this breaks if there's a reference cycle in the graph
+#[derive(Clone)]
+pub struct ProjectionIter<'pt> {
     pt: &'pt PlaceTable,
-    root: Local,
+    root: NodeIndex,
     to_visit: VecDeque<Path>,
     root_visited: bool,
+    follow_deref: bool,
 }
 
 impl<'pt> Iterator for ProjectionIter<'pt> {
@@ -166,11 +183,21 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
 
             let (_, target) = self.pt.places.edge_endpoints(last_edge).unwrap();
             let new_edges = self.pt.places.edges_directed(target, Direction::Outgoing);
-            self.to_visit.extend(new_edges.map(|e| {
-                let mut new_path = path.clone();
-                new_path.push(e.id());
-                new_path
-            }));
+            self.to_visit.extend(
+                new_edges
+                    .filter(|e| {
+                        if self.follow_deref {
+                            true
+                        } else {
+                            !matches!(e.weight(), ProjectionElem::Deref)
+                        }
+                    })
+                    .map(|e| {
+                        let mut new_path = path.clone();
+                        new_path.push(e.id());
+                        new_path
+                    }),
+            );
 
             Some(PlacePath {
                 source: self.root,

@@ -1,11 +1,10 @@
-use std::collections::HashSet;
-use std::{borrow::BorrowMut, cell::RefCell, fmt, mem::variant_count};
+use std::cell::RefCell;
 
 use log::debug;
 use mir::serialize::Serialize;
 use mir::syntax::{
-    BasicBlock, BasicBlockData, BinOp, Body, FloatTy, Function, IntTy, Literal, Local, LocalDecls,
-    Mutability, Operand, Place, Program, Rvalue, Statement, Terminator, Ty, UintTy, UnOp,
+    BasicBlock, BasicBlockData, BinOp, Body, Function, Literal, Local, LocalDecls, Mutability,
+    Operand, Place, Program, Rvalue, Statement, Terminator, Ty, UnOp,
 };
 use mir::vec::Idx;
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
@@ -26,6 +25,7 @@ pub struct GenerationCtx {
     program: Program,
     tcx: TyCtxt,
     pt: PlaceTable,
+    exec_path: Vec<(Function, BasicBlock)>,
     current_function: Function,
     current_bb: BasicBlock,
 }
@@ -36,10 +36,10 @@ trait GenerateOperand {
 
 impl GenerateOperand for GenerationCtx {
     fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand> {
-        let places = PlaceSelector::locals_and_args(self)
+        let places = PlaceSelector::new()
             .except(excluded)
             .of_tys(tys)
-            .into_iter();
+            .into_iter(&self.pt);
         self.make_choice(places, |place| {
             if self.tcx.is_copy(&place.ty(self.current_decls())) {
                 Ok(Operand::Copy(place))
@@ -255,7 +255,7 @@ impl GenerateRvalue for GenerationCtx {
         let target_ty = lhs.ty(self.current_decls());
         let source_tys = match target_ty {
             // TODO: no int to ptr cast for now
-            Ty::Int(..) | Ty::Uint(..) | Ty::Float(..) => &[
+            Ty::Int(..) | Ty::Uint(..) => &[
                 Ty::ISIZE,
                 Ty::I8,
                 Ty::I16,
@@ -272,7 +272,23 @@ impl GenerateRvalue for GenerationCtx {
                 Ty::F64,
                 Ty::Char,
                 Ty::Bool,
-            ],
+            ][..],
+            Ty::Float(..) => &[
+                Ty::ISIZE,
+                Ty::I8,
+                Ty::I16,
+                Ty::I32,
+                Ty::I64,
+                Ty::I128,
+                Ty::USIZE,
+                Ty::U8,
+                Ty::U16,
+                Ty::U32,
+                Ty::U64,
+                Ty::U128,
+                Ty::F32,
+                Ty::F64,
+            ][..],
             _ => &[][..],
         };
         let rvalue = self.make_choice(source_tys.into_iter(), |source_ty| {
@@ -322,7 +338,8 @@ trait GenerateStatement {
 
 impl GenerateStatement for GenerationCtx {
     fn generate_assign(&mut self) -> Result<Statement> {
-        let lhs_choices = PlaceSelector::locals(self).mutable().into_iter();
+        let lhs_choices = PlaceSelector::new().maybe_uninit().into_iter(&self.pt);
+    
         self.make_choice(lhs_choices, |lhs| {
             debug!(
                 "generating an assignment statement with lhs ty {}",
@@ -367,6 +384,7 @@ impl GenerateStatement for GenerationCtx {
         let statement = self
             .make_choice_mut(choices.into_iter(), |ctx, f| f(ctx))
             .expect("deadend");
+        self.post_generation(&statement);
         self.current_bb_mut().insert_statement(statement);
     }
 }
@@ -392,23 +410,28 @@ impl GenerateTerminator for GenerationCtx {
 }
 
 impl GenerationCtx {
-    fn make_choice<T, F, R>(&self, choices: impl Iterator<Item = T>, mut use_choice: F) -> Result<R>
+    fn make_choice<T, F, R>(
+        &self,
+        choices: impl Iterator<Item = T> + Clone,
+        mut use_choice: F,
+    ) -> Result<R>
     where
         F: FnMut(T) -> Result<R>,
         T: Clone,
     {
-        let mut choices: Vec<T> = choices.collect();
+        let mut failed: Vec<usize> = vec![];
         loop {
             let (i, choice) = choices
-                .iter()
+                .clone()
                 .enumerate()
+                .filter(|(i, _)| !failed.contains(i))
                 .choose(&mut *self.rng.borrow_mut())
                 .ok_or(SelectionError::Exhausted)?;
             let res = use_choice(choice.clone());
             match res {
                 Ok(val) => return Ok(val),
                 Err(_) => {
-                    choices.remove(i);
+                    failed.push(i);
                 }
             }
         }
@@ -449,6 +472,7 @@ impl GenerationCtx {
             tcx,
             program: Program::new(),
             pt: PlaceTable::new(),
+            exec_path: vec![],
             current_function: Function::new(0),
             current_bb: BasicBlock::new(0),
         }
@@ -507,22 +531,44 @@ impl GenerationCtx {
         Some(lit)
     }
 
-    pub fn generate(&mut self) {
-        let arg_tys = vec![Ty::I32];
+    // Move generation context to an executed function
+    fn enter_new_fn(&mut self, args: &[Ty], return_ty: Ty) {
+        let mut body = Body::new(&args, return_ty);
 
-        let mut body = Body::new(&arg_tys, Ty::I32);
         let starting_bb = body.new_basic_block(BasicBlockData::new());
         let new_fn = self.program.push_fn(body);
         self.current_function = new_fn;
         self.current_bb = starting_bb;
 
+        self.exec_path.push((new_fn, starting_bb));
+
         self.pt
             .enter_fn(&self.program.functions[self.current_function]);
+    }
+
+    pub fn generate(&mut self) {
+        let arg_tys = vec![Ty::I32];
+
+        self.enter_new_fn(&arg_tys, Ty::I32);
 
         let statement_count = self.rng.get_mut().gen_range(0..=16);
         debug!("generating a bb with {statement_count} statements");
 
         (0..statement_count).for_each(|_| self.choose_statement());
         println!("{}", self.program.serialize());
+    }
+
+    fn post_generation(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::Assign(lhs, _) => {
+                let pidx = self.pt.get_node(lhs).expect("lhs is reachable");
+                self.pt.mark_place_init(pidx);
+            }
+            Statement::StorageLive(_) => todo!(),
+            Statement::StorageDead(_) => todo!(),
+            Statement::Deinit(_) => todo!(),
+            Statement::SetDiscriminant(_, _) => todo!(),
+            Statement::Nop => {}
+        }
     }
 }
