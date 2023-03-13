@@ -14,3 +14,4 @@ log = "0.4.17"
 env_logger = "0.10.0"
 rand_distr = "0.4.3"
 smallvec = "1.10.0"
+bimap = { git = "https://github.com/cbeuw/bimap-rs", branch = "clone" }
