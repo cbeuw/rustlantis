@@ -10,6 +10,7 @@ mod ty;
 use std::env::args;
 
 use crate::generation::GenerationCtx;
+use log::info;
 use mir::{serialize::Serialize, syntax::*};
 use petgraph::dot::Dot;
 use rand::{rngs::SmallRng, SeedableRng};
@@ -43,6 +44,7 @@ fn main() {
     // println!("{dot:?}");
 
     let seed: u64 = args().skip(1).next().unwrap().parse().unwrap();
+    info!("Generating a program with seed {seed}");
     let genctxt = GenerationCtx::new(seed);
     let program = genctxt.generate();
     println!("{}", program.serialize());

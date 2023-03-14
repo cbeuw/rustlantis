@@ -339,7 +339,7 @@ trait GenerateStatement {
 impl GenerateStatement for GenerationCtx {
     fn generate_assign(&mut self) -> Result<Statement> {
         let lhs_choices = PlaceSelector::new().maybe_uninit().into_iter(&self.pt);
-    
+
         self.make_choice(lhs_choices, |lhs| {
             debug!(
                 "generating an assignment statement with lhs ty {}",
@@ -551,10 +551,11 @@ impl GenerationCtx {
 
         self.enter_new_fn(&arg_tys, Ty::I32);
 
-        let statement_count = self.rng.get_mut().gen_range(0..=16);
-        debug!("generating a bb with {statement_count} statements");
+        let ret_node = self.pt.get_node(&Place::RETURN_SLOT).unwrap();
+        while !self.pt.is_place_init(ret_node) {
+            self.choose_statement();
+        }
 
-        (0..statement_count).for_each(|_| self.choose_statement());
         self.choose_terminator();
         self.program
     }

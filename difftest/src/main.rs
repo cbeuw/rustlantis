@@ -1,4 +1,5 @@
 #![feature(byte_slice_trim_ascii)]
+#![feature(iter_intersperse)]
 
 use core::panic;
 use std::{collections::HashMap, path::PathBuf, str::FromStr};
@@ -9,6 +10,7 @@ use difftest::{
     backend::{Backend, Cranelift, Miri, LLVM},
     run_diff_test,
 };
+use log::{info, error};
 
 fn main() {
     env_logger::init();
@@ -46,5 +48,19 @@ fn main() {
 
     backends.insert("llvm", Box::new(LLVM {}));
 
-    run_diff_test(&source, &backends);
+    info!(
+        "Difftesting {} with {}",
+        source.as_os_str().to_string_lossy(),
+        backends
+            .keys()
+            .copied()
+            .intersperse(", ")
+            .collect::<String>()
+    );
+    let results = run_diff_test(&source, &backends);
+    if results.len() == 1 {
+        info!("{} is all the same", source.as_os_str().to_string_lossy());
+    } else {
+        error!("{} didn't pass: {:?}", source.as_os_str().to_string_lossy(), results);
+    }
 }
