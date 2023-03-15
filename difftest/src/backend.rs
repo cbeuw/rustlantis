@@ -58,7 +58,7 @@ pub type ExecResult = Result<ProcessOutput, CompExecError>;
 #[derive(Debug)]
 pub struct BackendInitError(pub String);
 
-pub trait Backend {
+pub trait Backend: Send + Sync {
     fn execute(&self, source: &Path) -> ExecResult;
 }
 

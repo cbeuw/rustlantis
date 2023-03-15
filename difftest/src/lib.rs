@@ -13,6 +13,7 @@ use std::{
 
 use backend::{Backend, CompExecError, ExecResult};
 use colored::Colorize;
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
 pub type BackendName = &'static str;
 
@@ -84,10 +85,7 @@ impl fmt::Display for ExecResults {
             ))?;
             match result {
                 Ok(out) => {
-                    f.write_fmt(format_args!(
-                        "stdout:\n{}",
-                        out.stdout.to_string_lossy()
-                    ))?;
+                    f.write_fmt(format_args!("stdout:\n{}", out.stdout.to_string_lossy()))?;
                 }
                 Err(CompExecError(out)) => {
                     f.write_fmt(format_args!(
@@ -108,14 +106,15 @@ impl fmt::Display for ExecResults {
 
 pub fn run_diff_test<'a>(
     source_file: &Path,
-    backends: impl Iterator<Item = (&'a BackendName, &'a Box<dyn Backend + 'a>)>,
+    backends: HashMap<BackendName, Box<dyn Backend + 'a>>,
 ) -> ExecResults {
-    let mut exec_results: HashMap<BackendName, ExecResult> = HashMap::default();
-
-    for (name, b) in backends {
-        let result = b.execute(source_file);
-        exec_results.insert(name, result);
-    }
+    let exec_results: HashMap<BackendName, ExecResult> = backends
+        .par_iter()
+        .map(|(&name, b)| {
+            let result = b.execute(source_file);
+            (name, result)
+        })
+        .collect();
 
     ExecResults::from_exec_results(exec_results.iter())
 }

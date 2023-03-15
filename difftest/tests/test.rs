@@ -40,11 +40,10 @@ fn correct_mir() {
 
     let results = run_diff_test(
         &PathBuf::from_str("tests/inputs/simple.rs").unwrap(),
-        backends.iter(),
+        backends,
     );
     assert!(results.all_same());
     assert!(results["llvm"]
         .as_ref()
-        .is_ok_and(|output| output.status.success()
-            && output.stdout == "5\n"))
+        .is_ok_and(|output| output.status.success() && output.stdout == "5\n"))
 }

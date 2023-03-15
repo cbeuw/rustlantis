@@ -10,7 +10,7 @@ use difftest::{
     backend::{Backend, Cranelift, Miri, OptLevel, LLVM},
     run_diff_test, BackendName,
 };
-use log::{error, info, debug};
+use log::{debug, error, info};
 
 fn main() {
     env_logger::init();
@@ -57,7 +57,7 @@ fn main() {
             .intersperse(", ")
             .collect::<String>()
     );
-    let results = run_diff_test(&source, backends.iter());
+    let results = run_diff_test(&source, backends);
     if results.all_same() && results.all_success() {
         info!("{} is all the same", source.as_os_str().to_string_lossy());
         debug!("{}", results);
