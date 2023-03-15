@@ -1,4 +1,8 @@
 #!/bin/bash
+cargo build --release
+
+export RUST_LOG=info
+
 mkdir -p out
 for seed in {0..10}; do
     target/release/fuzz $seed > out/$seed.rs
