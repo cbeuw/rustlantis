@@ -1,15 +1,59 @@
 use std::{
     ffi::{OsStr, OsString},
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
-    process::{self, Command},
+    process::{self, Command, ExitStatus},
 };
 
 use log::debug;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct CompExecError(pub process::Output);
+pub struct ProcessOutput {
+    pub status: ExitStatus,
+    /// The data that the process wrote to stdout.
+    pub stdout: OsString,
+    /// The data that the process wrote to stderr.
+    pub stderr: OsString,
+}
+impl Hash for ProcessOutput {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.status.code().hash(state);
+        self.stdout.hash(state);
+        self.stderr.hash(state);
+    }
+}
 
-pub type ExecResult = Result<process::Output, CompExecError>;
+impl From<process::Output> for ProcessOutput {
+    fn from(value: process::Output) -> Self {
+        let stdout: OsString;
+        let stderr: OsString;
+        #[cfg(unix)]
+        {
+            use std::os::unix::prelude::OsStrExt;
+            stdout = OsStr::from_bytes(&value.stdout).to_owned();
+            stderr = OsStr::from_bytes(&value.stderr).to_owned();
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::prelude::OsStrExt;
+            stdout = OsStr::from_wide(&value.stdout).to_owned();
+            stderr = OsStr::from_wide(&value.stderr).to_owned();
+        }
+        Self {
+            status: value.status,
+            stdout,
+            stderr,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub struct CompExecError(pub ProcessOutput);
+
+// #[derive(Debug, PartialEq, Eq, Clone)]
+// pub struct ProgramOutput(pub process::Output);
+
+pub type ExecResult = Result<ProcessOutput, CompExecError>;
 
 #[derive(Debug)]
 pub struct BackendInitError(pub String);
@@ -18,7 +62,30 @@ pub trait Backend {
     fn execute(&self, source: &Path) -> ExecResult;
 }
 
-pub struct LLVM {}
+#[derive(Debug, Clone, Copy)]
+pub enum OptLevel {
+    Unoptimised,
+    Optimised,
+}
+
+impl OptLevel {
+    fn rustc_opt_level(&self) -> usize {
+        match self {
+            OptLevel::Unoptimised => 0,
+            OptLevel::Optimised => 3,
+        }
+    }
+}
+
+pub struct LLVM {
+    opt_level: OptLevel,
+}
+
+impl LLVM {
+    pub fn new(opt_level: OptLevel) -> Self {
+        Self { opt_level }
+    }
+}
 
 impl Backend for LLVM {
     fn execute(&self, source: &Path) -> ExecResult {
@@ -31,17 +98,21 @@ impl Backend for LLVM {
         let compile_out = Command::new("rustc")
             .arg(source)
             .args(["-o", target_path.to_str().unwrap()])
+            .args([
+                "-C",
+                &format!("opt-level={}", self.opt_level.rustc_opt_level()),
+            ])
             .output()
             .expect("can execute rustc and get output");
         if !compile_out.status.success() {
-            return Err(CompExecError(compile_out));
+            return Err(CompExecError(compile_out.into()));
         }
 
         debug!("Executing LLVM compiled {}", source.to_string_lossy());
         let exec_out = Command::new(target_path)
             .output()
             .expect("can execute target program and get output");
-        Ok(exec_out)
+        Ok(exec_out.into())
     }
 }
 
@@ -146,18 +217,22 @@ impl Backend for Miri {
         // FIXME: we assume the source always exits with 0, and any non-zero return code
         // came from Miri itself (e.g. UB and type check errors)
         if !miri_out.status.success() {
-            return Err(CompExecError(miri_out));
+            return Err(CompExecError(miri_out.into()));
         }
-        Ok(miri_out)
+        Ok(miri_out.into())
     }
 }
 
 pub struct Cranelift {
     binary: PathBuf,
+    opt_level: OptLevel,
 }
 
 impl Cranelift {
-    pub fn from_repo<P: AsRef<Path>>(clif_dir: P) -> Result<Self, BackendInitError> {
+    pub fn from_repo<P: AsRef<Path>>(
+        clif_dir: P,
+        opt_level: OptLevel,
+    ) -> Result<Self, BackendInitError> {
         let clif_dir = clif_dir.as_ref();
 
         if !Path::exists(&clif_dir.join("dist/rustc-clif")) {
@@ -193,12 +268,14 @@ impl Cranelift {
 
         Ok(Cranelift {
             binary: clif_dir.join("dist/rustc-clif"),
+            opt_level,
         })
     }
 
-    pub fn from_binary<P: AsRef<Path>>(binary_path: P) -> Self {
+    pub fn from_binary<P: AsRef<Path>>(binary_path: P, opt_level: OptLevel) -> Self {
         Self {
             binary: binary_path.as_ref().to_owned(),
+            opt_level,
         }
     }
 }
@@ -214,16 +291,20 @@ impl Backend for Cranelift {
         let compile_out = Command::new(&self.binary)
             .arg(source)
             .args(["-o", target_path.to_str().unwrap()])
+            .args([
+                "-C",
+                &format!("opt-level={}", self.opt_level.rustc_opt_level()),
+            ])
             .output()
             .expect("can run rustc-clif and get output");
         if !compile_out.status.success() {
-            return Err(CompExecError(compile_out));
+            return Err(CompExecError(compile_out.into()));
         }
 
         debug!("Executing Cranelift compiled {}", source.to_string_lossy());
         let exec_out = Command::new(target_path)
             .output()
             .expect("can run target program and get output");
-        Ok(exec_out)
+        Ok(exec_out.into())
     }
 }

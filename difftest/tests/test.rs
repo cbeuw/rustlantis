@@ -1,9 +1,14 @@
 #![feature(is_some_and)]
 
-use std::{collections::HashMap, path::PathBuf, str::FromStr, ffi::OsStr, os::unix::prelude::OsStrExt};
+use std::{
+    collections::HashMap, ffi::OsStr, os::unix::prelude::OsStrExt, path::PathBuf, str::FromStr,
+};
 
 use config::Config;
-use difftest::{run_diff_test, backend::{Backend, LLVM, Miri, Cranelift}};
+use difftest::{
+    backend::{Backend, Cranelift, Miri, OptLevel, LLVM},
+    run_diff_test,
+};
 
 #[test]
 fn correct_mir() {
@@ -12,11 +17,11 @@ fn correct_mir() {
         .add_source(config::Environment::default())
         .build()
         .unwrap();
-    
+
     let mut backends: HashMap<&'static str, Box<dyn Backend>> = HashMap::default();
 
     if let Ok(clif_dir) = settings.get_string("cranelift_dir") {
-        let clif = Cranelift::from_repo(clif_dir);
+        let clif = Cranelift::from_repo(clif_dir, OptLevel::Optimised);
         match clif {
             Ok(clif) => backends.insert("cranelift", Box::new(clif)),
             Err(e) => panic!("cranelift init failed\n{}", e.0),
@@ -31,12 +36,15 @@ fn correct_mir() {
         };
     }
 
-    backends.insert("llvm", Box::new(LLVM {}));
+    backends.insert("llvm", Box::new(LLVM::new(OptLevel::Optimised)));
 
-    let results = run_diff_test(&PathBuf::from_str("tests/inputs/simple.rs").unwrap(), &backends);
-    for (class, names) in &results {
-        println!("{}: {class:?}", names.join(", "));
-    }
-    assert!(results.len() == 1);
-    assert!(results[0].0.as_ref().is_ok_and(|output| output.status.success() && OsStr::from_bytes(output.stdout.as_slice()) == "5\n"))
+    let results = run_diff_test(
+        &PathBuf::from_str("tests/inputs/simple.rs").unwrap(),
+        backends.iter(),
+    );
+    assert!(results.all_same());
+    assert!(results["llvm"]
+        .as_ref()
+        .is_ok_and(|output| output.status.success()
+            && output.stdout == "5\n"))
 }

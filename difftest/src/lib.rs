@@ -1,45 +1,121 @@
 #![feature(byte_slice_trim_ascii)]
+#![feature(iter_intersperse)]
+
 pub mod backend;
 
 // pub use backend;
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    ops::Index,
+    path::Path,
+};
 
-use backend::{Backend, ExecResult};
+use backend::{Backend, CompExecError, ExecResult};
+use colored::Colorize;
 
-fn compare_exec_results<'a>(
-    results: &HashMap<&'a str, backend::ExecResult>,
-) -> Vec<(ExecResult, Vec<&'a str>)> {
-    //TODO: optimisation here to check if all results are equal directly, since most should be
+pub type BackendName = &'static str;
 
-    // Split execution results into equivalent classes
-    let mut eq_classes: Vec<(ExecResult, Vec<&str>)> = vec![];
+pub struct ExecResults {
+    // Equivalence classes of exec results and backends
+    results: HashMap<ExecResult, HashSet<BackendName>>,
+}
 
-    'outer: for (name, result) in results {
-        for (class_result, names) in &mut eq_classes {
-            // Put into an existing equivalence class
-            if result == class_result {
-                names.push(name);
-                continue 'outer;
+impl ExecResults {
+    pub fn from_exec_results<'a>(
+        map: impl Iterator<Item = (&'a BackendName, &'a ExecResult)>,
+    ) -> Self {
+        //TODO: optimisation here to check if all results are equal directly, since most should be
+
+        // Split execution results into equivalent classes
+        let mut eq_classes: HashMap<ExecResult, HashSet<BackendName>> = HashMap::new();
+
+        'outer: for (&name, result) in map {
+            for (class_result, names) in &mut eq_classes {
+                // Put into an existing equivalence class
+                if result == class_result {
+                    names.insert(name);
+                    continue 'outer;
+                }
             }
+
+            // No equal execution result, make a new class
+            eq_classes.insert(result.clone(), HashSet::from([name]));
         }
 
-        // No equal execution result, make a new class
-        eq_classes.push((result.clone(), vec![name]));
+        Self {
+            results: eq_classes,
+        }
     }
 
-    eq_classes
+    pub fn all_same(&self) -> bool {
+        self.results.len() == 1
+    }
+
+    pub fn all_success(&self) -> bool {
+        self.results.keys().all(|r| r.is_ok())
+    }
+}
+
+impl Index<BackendName> for ExecResults {
+    type Output = ExecResult;
+
+    fn index(&self, index: BackendName) -> &Self::Output {
+        for (result, names) in &self.results {
+            if names.contains(index) {
+                return result;
+            }
+        }
+        panic!("no result for {index}")
+    }
+}
+
+impl fmt::Display for ExecResults {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (result, names) in &self.results {
+            f.write_fmt(format_args!(
+                "{} produced the following output:\n",
+                names
+                    .iter()
+                    .copied()
+                    .intersperse(", ")
+                    .collect::<String>()
+                    .blue()
+            ))?;
+            match result {
+                Ok(out) => {
+                    f.write_fmt(format_args!(
+                        "stdout:\n{}",
+                        out.stdout.to_string_lossy()
+                    ))?;
+                }
+                Err(CompExecError(out)) => {
+                    f.write_fmt(format_args!(
+                        "stdout:\n{}================\n",
+                        out.stdout.to_string_lossy()
+                    ))?;
+                    f.write_fmt(format_args!(
+                        "{}:\n{}================\n",
+                        "stderr".red(),
+                        out.stderr.to_string_lossy()
+                    ))?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn run_diff_test<'a>(
     source_file: &Path,
-    backends: &HashMap<&'a str, Box<dyn Backend + 'a>>,
-) -> Vec<(ExecResult, Vec<&'a str>)> {
-    let mut exec_results: HashMap<&str, ExecResult> = HashMap::default();
+    backends: impl Iterator<Item = (&'a BackendName, &'a Box<dyn Backend + 'a>)>,
+) -> ExecResults {
+    let mut exec_results: HashMap<BackendName, ExecResult> = HashMap::default();
 
     for (name, b) in backends {
         let result = b.execute(source_file);
         exec_results.insert(name, result);
     }
 
-    compare_exec_results(&exec_results)
+    ExecResults::from_exec_results(exec_results.iter())
 }

@@ -7,10 +7,10 @@ use std::{collections::HashMap, path::PathBuf, str::FromStr};
 use clap::{Arg, Command};
 use config::Config;
 use difftest::{
-    backend::{Backend, Cranelift, Miri, LLVM},
-    run_diff_test,
+    backend::{Backend, Cranelift, Miri, OptLevel, LLVM},
+    run_diff_test, BackendName,
 };
-use log::{info, error};
+use log::{error, info, debug};
 
 fn main() {
     env_logger::init();
@@ -29,9 +29,9 @@ fn main() {
         .build()
         .unwrap();
 
-    let mut backends: HashMap<&'static str, Box<dyn Backend>> = HashMap::default();
+    let mut backends: HashMap<BackendName, Box<dyn Backend>> = HashMap::default();
     if let Ok(clif_dir) = settings.get_string("cranelift_dir") {
-        let clif = Cranelift::from_repo(clif_dir);
+        let clif = Cranelift::from_repo(clif_dir, OptLevel::Optimised);
         match clif {
             Ok(clif) => backends.insert("cranelift", Box::new(clif)),
             Err(e) => panic!("cranelift init failed\n{}", e.0),
@@ -46,7 +46,7 @@ fn main() {
         };
     }
 
-    backends.insert("llvm", Box::new(LLVM {}));
+    backends.insert("llvm", Box::new(LLVM::new(OptLevel::Optimised)));
 
     info!(
         "Difftesting {} with {}",
@@ -57,10 +57,15 @@ fn main() {
             .intersperse(", ")
             .collect::<String>()
     );
-    let results = run_diff_test(&source, &backends);
-    if results.len() == 1 {
+    let results = run_diff_test(&source, backends.iter());
+    if results.all_same() && results.all_success() {
         info!("{} is all the same", source.as_os_str().to_string_lossy());
+        debug!("{}", results);
     } else {
-        error!("{} didn't pass: {:?}", source.as_os_str().to_string_lossy(), results);
+        error!(
+            "{} didn't pass:\n{}",
+            source.as_os_str().to_string_lossy(),
+            results
+        );
     }
 }
