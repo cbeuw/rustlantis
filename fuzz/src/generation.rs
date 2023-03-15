@@ -115,8 +115,8 @@ impl GenerateRvalue for GenerationCtx {
         use Ty::*;
         let lhs_ty = lhs.ty(self.current_decls());
         let binops = match lhs_ty {
-            Bool => &[Eq, Lt, Le, Ne, Ge, Gt][..],
-            Float(_) => &[BitAnd, BitOr, BitXor, Add, Sub, Mul, Div, Rem][..],
+            Bool => &[BitAnd, BitOr, BitXor, Eq, Lt, Le, Ne, Ge, Gt][..],
+            Float(_) => &[Add, Sub, Mul, Div, Rem][..],
             Uint(_) | Int(_) => &[BitAnd, BitOr, BitXor, Add, Sub, Mul, Div, Rem, Shl, Shr][..],
             RawPtr(..) => &[Offset],
             _ => &[][..],
