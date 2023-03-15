@@ -291,10 +291,14 @@ impl GenerateRvalue for GenerationCtx {
             ][..],
             _ => &[][..],
         };
-        let rvalue = self.make_choice(source_tys.iter(), |source_ty| {
-            let source = self.choose_operand(&[source_ty.clone()], lhs)?;
-            Ok(Rvalue::Cast(source, target_ty.clone()))
-        })?;
+        let rvalue = self.make_choice(
+            // XXX: remove the filter once https://github.com/rust-lang/rust/pull/109160 is merged
+            source_tys.iter().filter(|ty| **ty != target_ty),
+            |source_ty| {
+                let source = self.choose_operand(&[source_ty.clone()], lhs)?;
+                Ok(Rvalue::Cast(source, target_ty.clone()))
+            },
+        )?;
         Ok(rvalue)
     }
 
@@ -506,8 +510,16 @@ impl GenerationCtx {
         let mut rng = self.rng.borrow_mut();
         let lit: Literal = match *ty {
             Ty::Bool => rng.gen_bool(0.5).into(),
-            // TODO: another range
-            Ty::Char => char::from_u32(rng.gen_range(0..=0xD7FF)).unwrap().into(),
+            Ty::Char => {
+                // There are 0xD7FF + 1 Unicode Scalar Values in the lower range, and 0x10FFFF - 0xE000 + 1
+                // values in the upper range.
+                let ordinal = rng.gen_range(0..((0xD7FF + 1) + (0x10FFFF - 0xE000 + 1)));
+                if ordinal <= 0xD7FF {
+                    char::from_u32(ordinal).unwrap().into()
+                } else {
+                    char::from_u32(ordinal - 0xD800 + 0xE000).unwrap().into()
+                }
+            }
             Ty::USIZE => rng
                 .gen_range(usize::MIN..=usize::MAX)
                 .try_into()
