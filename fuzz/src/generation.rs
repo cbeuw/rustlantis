@@ -8,7 +8,6 @@ use mir::syntax::{
 };
 use mir::vec::Idx;
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
-use rand_distr::weighted_alias::AliasableWeight;
 
 use crate::place::PlaceSelector;
 use crate::ptable::PlaceTable;
@@ -539,6 +538,8 @@ impl GenerationCtx {
             Ty::I32 => rng.gen_range(i32::MIN..=i32::MAX).into(),
             Ty::I64 => rng.gen_range(i64::MIN..=i64::MAX).into(),
             Ty::I128 => rng.gen_range(i128::MIN..=i128::MAX).into(),
+            Ty::F32 => f32::from_bits(rng.gen_range(u32::MIN..=u32::MAX)).into(),
+            Ty::F64 => f64::from_bits(rng.gen_range(u64::MIN..=u64::MAX)).into(),
             _ => return None,
         };
         Some(lit)

@@ -117,6 +117,9 @@ impl Place {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProjectionElem {
     Deref,
+    /// This should be the same as Field, but to allow for context free serialization
+    /// we separate it out
+    TupleField(FieldIdx),
     Field(FieldIdx),
     Index(Local),
     Downcast(VariantIdx),
@@ -194,6 +197,8 @@ pub enum Literal {
     Bool(bool),
     Char(char),
     Tuple(Vec<Literal>),
+    // Every f32 can be expressed exactly as f64
+    Float(f64, FloatTy),
 }
 
 pub enum Operand {
@@ -339,20 +344,20 @@ impl Ty {
 
     pub fn is_primitive(&self) -> bool {
         match *self {
-            // Self::ISIZE
-            // | Self::I8
-            // | Self::I16
-            // | Self::I32
-            // | Self::I64
-            // | Self::I128
+            Self::ISIZE
+            | Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::I64
+            | Self::I128
             | Self::USIZE
             | Self::U8
             | Self::U16
             | Self::U32
             | Self::U64
             | Self::U128
-            // | Self::F32
-            // | Self::F64 => true,
+            | Self::F32
+            | Self::F64
             | Self::Unit => true,
             _ => false,
         }
@@ -405,6 +410,7 @@ impl Literal {
             Literal::Bool(_) => Ty::Bool,
             Literal::Char(_) => Ty::Char,
             Literal::Tuple(elems) => Ty::Tuple(elems.iter().map(|lit| lit.ty()).collect()),
+            Literal::Float(_, ty) => Ty::Float(*ty),
         }
     }
 }
@@ -483,6 +489,18 @@ impl TryFrom<isize> for Literal {
 
     fn try_from(value: isize) -> Result<Self, Self::Error> {
         Ok(Self::Int(value.try_into()?, IntTy::I128))
+    }
+}
+
+impl From<f32> for Literal {
+    fn from(value: f32) -> Self {
+        Self::Float(value as f64, FloatTy::F32)
+    }
+}
+
+impl From<f64> for Literal {
+    fn from(value: f64) -> Self {
+        Self::Float(value, FloatTy::F64)
     }
 }
 

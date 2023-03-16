@@ -52,6 +52,7 @@ impl Serialize for Place {
         let str = self.local().identifier();
         self.projection().iter().fold(str, |acc, proj| match proj {
             ProjectionElem::Deref => format!("*({acc})"),
+            ProjectionElem::TupleField(id) => format!("{acc}.{}", id.index()),
             ProjectionElem::Field(_) => todo!(),
             ProjectionElem::Index(_) => todo!(),
             ProjectionElem::Downcast(_) => todo!(),
@@ -65,6 +66,7 @@ impl Serialize for Literal {
         match self {
             Literal::Uint(i, _) => format!("{i}_{}", self.ty().serialize()),
             Literal::Int(i, _) => format!("{i}_{}", self.ty().serialize()),
+            Literal::Float(f, _) => format!("{f}_{}", self.ty().serialize()),
             Literal::Bool(b) => b.to_string(),
             Literal::Char(c) => format!("'\\u{{{:x}}}'", u32::from(*c)),
             Literal::Tuple(elems) => match elems.len() {

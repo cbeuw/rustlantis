@@ -61,8 +61,11 @@ impl PlaceTable {
         match ty {
             Ty::Tuple(elems) => elems.iter().enumerate().for_each(|(idx, elem)| {
                 let sub_pidx = self.add_place(elem.clone(), init);
-                self.places
-                    .add_edge(pidx, sub_pidx, ProjectionElem::Field(FieldIdx::new(idx)));
+                self.places.add_edge(
+                    pidx,
+                    sub_pidx,
+                    ProjectionElem::TupleField(FieldIdx::new(idx)),
+                );
             }),
             Ty::Adt(_) => todo!(),
             Ty::RawPtr(_, _) => todo!(),
@@ -280,6 +283,9 @@ mod tests {
             .next()
             .unwrap();
 
-        assert!(matches!(place.projection()[0], ProjectionElem::Field(..)));
+        assert!(matches!(
+            place.projection()[0],
+            ProjectionElem::TupleField(..)
+        ));
     }
 }

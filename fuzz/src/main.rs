@@ -11,9 +11,7 @@ use std::env::args;
 
 use crate::generation::GenerationCtx;
 use log::info;
-use mir::{serialize::Serialize, syntax::*};
-use petgraph::dot::Dot;
-use rand::{rngs::SmallRng, SeedableRng};
+use mir::{serialize::Serialize};
 
 fn main() {
     env_logger::init();
