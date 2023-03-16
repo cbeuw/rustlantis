@@ -324,6 +324,19 @@ impl Ty {
         }
     }
 
+    pub fn is_checked_binary_op_lhs(&self) -> bool {
+        match self {
+            Ty::Tuple(tys)
+                if tys.len() == 2
+                    && matches!(tys[0], Ty::Int(..) | Ty::Float(..) | Ty::Uint(..))
+                    && tys[1] == Ty::Bool =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn is_primitive(&self) -> bool {
         match *self {
             // Self::ISIZE

@@ -1,11 +1,16 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, iter::Fuse};
 
 use bimap::{BiBTreeMap, BiMap};
 use mir::{
     syntax::{Body, FieldIdx, Local, Place, ProjectionElem, Ty},
     vec::Idx,
 };
-use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
+use petgraph::{
+    prelude::EdgeIndex,
+    stable_graph::NodeIndex,
+    visit::{EdgeRef, IntoEdgesDirected},
+    Direction, Graph,
+};
 use smallvec::{smallvec, SmallVec};
 
 pub type PlaceIndex = NodeIndex;
@@ -89,35 +94,24 @@ impl PlaceTable {
     }
 
     pub fn is_place_init(&self, pidx: PlaceIndex) -> bool {
-        self.places[pidx].init
+        self.subfields(pidx)
+            .all(|ppath| ppath.target_node(self).init)
+    }
+
+    // Returns an iterator over all places subsumed by a place
+    fn subfields(&self, pidx: PlaceIndex) -> ProjectionIter<'_> {
+        ProjectionIter::new(self, pidx, false)
     }
 
     // Returns an iterator over all places reachable from local through projections
     fn reachable_from_local(&self, local: Local) -> ProjectionIter<'_> {
         let local_node = *self.current_locals.get_by_left(&local).unwrap();
-        ProjectionIter {
-            pt: self,
-            root: local_node,
-            to_visit: self
-                .places
-                .edges_directed(local_node, Direction::Outgoing)
-                .map(|e| smallvec![e.id()])
-                .collect(),
-            root_visited: false,
-            follow_deref: true,
-        }
+        ProjectionIter::new(self, local_node, true)
     }
 
     pub fn reachable_nodes(&self) -> impl Iterator<Item = PlacePath> + Clone + '_ {
         let local_iter = self.current_locals.right_values();
-        local_iter.map(|&local| PlacePath {
-            source: local,
-            path: smallvec![],
-        })
-        // let empty = std::iter::empty::<PlacePath>();
-        // local_iter.fold(empty, |acc, &local| {
-        //     acc.chain(self.reachable_from_local(local))
-        // })
+        local_iter.flat_map(|&node| ProjectionIter::new(self, node, true))
     }
 }
 
@@ -166,6 +160,29 @@ pub struct ProjectionIter<'pt> {
     follow_deref: bool,
 }
 
+impl<'pt> ProjectionIter<'pt> {
+    fn new(pt: &'pt PlaceTable, root: PlaceIndex, follow_deref: bool) -> Self {
+        ProjectionIter {
+            pt,
+            root,
+            to_visit: pt
+                .places
+                .edges_directed(root, Direction::Outgoing)
+                .filter(|e| {
+                    if follow_deref {
+                        true
+                    } else {
+                        *e.weight() != ProjectionElem::Deref
+                    }
+                })
+                .map(|e| smallvec![e.id()])
+                .collect(),
+            root_visited: false,
+            follow_deref,
+        }
+    }
+}
+
 impl<'pt> Iterator for ProjectionIter<'pt> {
     type Item = PlacePath;
     fn next(&mut self) -> Option<Self::Item> {
@@ -210,7 +227,7 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
 #[cfg(test)]
 mod tests {
     use mir::{
-        syntax::{Local, Ty},
+        syntax::{Local, ProjectionElem, Ty},
         vec::Idx,
     };
 
@@ -226,11 +243,12 @@ mod tests {
                 │     │
                i16   i32
         */
-        let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I16, Ty::I32]), Ty::I64]);
 
         let mut pt = PlaceTable::new();
+        let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I16, Ty::I32]), Ty::I64]);
         let local = Local::new(1);
         pt.add_local(local, ty);
+
         let visited: Vec<Ty> = pt
             .reachable_from_local(local)
             .map(|ppath| ppath.target_node(&pt).ty.clone())
@@ -246,5 +264,22 @@ mod tests {
                 Ty::I16,                                                             // i16
             ]
         );
+    }
+
+    #[test]
+    fn tuple_projection() {
+        let mut pt = PlaceTable::new();
+        let local = Local::new(1);
+        let ty = Ty::Tuple(vec![Ty::I8, Ty::I32]);
+        pt.add_local(local, ty);
+
+        let place = pt
+            .reachable_from_local(local)
+            .filter(|ppath| !ppath.path.is_empty())
+            .map(|ppath| ppath.to_place(&pt))
+            .next()
+            .unwrap();
+
+        assert!(matches!(place.projection()[0], ProjectionElem::Field(..)));
     }
 }

@@ -1,7 +1,7 @@
 #![feature(is_some_and)]
 
 use std::{
-    collections::HashMap, ffi::OsStr, os::unix::prelude::OsStrExt, path::PathBuf, str::FromStr,
+    collections::HashMap, path::PathBuf, str::FromStr,
 };
 
 use config::Config;

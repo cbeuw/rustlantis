@@ -8,10 +8,14 @@ use mir::syntax::{
 };
 use mir::vec::Idx;
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
+use rand_distr::weighted_alias::AliasableWeight;
 
 use crate::place::PlaceSelector;
 use crate::ptable::PlaceTable;
 use crate::ty::TyCtxt;
+
+/// Max. number of variable declarations in a function
+const DECL_LIMIT: usize = 64;
 
 #[derive(Debug)]
 enum SelectionError {
@@ -85,13 +89,11 @@ impl GenerateRvalue for GenerationCtx {
     - LHS and RHS do not alias
      */
     fn generate_use(&self, lhs: &Place) -> Result<Rvalue> {
-        debug!("generating a use rvalue");
         let operand = self.choose_operand(&[lhs.ty(self.current_decls())], lhs)?;
         Ok(Rvalue::Use(operand))
     }
 
     fn generate_unary_op(&self, lhs: &Place) -> Result<Rvalue> {
-        debug!("generating a unary op rvalue");
         use Ty::*;
         use UnOp::*;
         let lhs_ty = lhs.ty(self.current_decls());
@@ -109,8 +111,6 @@ impl GenerateRvalue for GenerationCtx {
     }
 
     fn generate_binary_op(&self, lhs: &Place) -> Result<Rvalue> {
-        debug!("generating a binary op rvalue");
-
         use BinOp::*;
         use Ty::*;
         let lhs_ty = lhs.ty(self.current_decls());
@@ -194,8 +194,6 @@ impl GenerateRvalue for GenerationCtx {
     }
 
     fn generate_checked_binary_op(&self, lhs: &Place) -> Result<Rvalue> {
-        debug!("generating a checked binary op rvalue");
-
         use BinOp::*;
         use Ty::*;
         let lhs_ty = lhs.ty(self.current_decls());
@@ -250,8 +248,6 @@ impl GenerateRvalue for GenerationCtx {
     }
 
     fn generate_cast(&self, lhs: &Place) -> Result<Rvalue> {
-        debug!("generating a cast rvalue");
-
         let target_ty = lhs.ty(self.current_decls());
         let source_tys = match target_ty {
             // TODO: no int to ptr cast for now
@@ -346,7 +342,8 @@ impl GenerateStatement for GenerationCtx {
 
         self.make_choice(lhs_choices, |lhs| {
             debug!(
-                "generating an assignment statement with lhs ty {}",
+                "generating an assignment statement with lhs {}: {}",
+                lhs.serialize(),
                 lhs.ty(self.current_decls()).serialize()
             );
             let statement = Statement::Assign(lhs.clone(), self.generate_rvalue(&lhs)?);
@@ -355,6 +352,9 @@ impl GenerateStatement for GenerationCtx {
     }
 
     fn generate_new_var(&mut self) -> Result<Statement> {
+        if self.current_decls().len() > DECL_LIMIT {
+            return Err(SelectionError::Exhausted);
+        }
         let ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
         self.declare_new_var(Mutability::Mut, ty);
         Ok(Statement::Nop)
@@ -443,25 +443,26 @@ impl GenerationCtx {
 
     fn make_choice_mut<T, F, R>(
         &mut self,
-        choices: impl Iterator<Item = T>,
+        choices: impl Iterator<Item = T> + Clone,
         mut use_choice: F,
     ) -> Result<R>
     where
         F: FnMut(&mut Self, T) -> Result<R>,
         T: Clone,
     {
-        let mut choices: Vec<T> = choices.collect();
+        let mut failed: Vec<usize> = vec![];
         loop {
             let (i, choice) = choices
-                .iter()
+                .clone()
                 .enumerate()
+                .filter(|(i, _)| !failed.contains(i))
                 .choose(&mut *self.rng.borrow_mut())
                 .ok_or(SelectionError::Exhausted)?;
             let res = use_choice(self, choice.clone());
             match res {
                 Ok(val) => return Ok(val),
                 Err(_) => {
-                    choices.remove(i);
+                    failed.push(i);
                 }
             }
         }
@@ -561,7 +562,7 @@ impl GenerationCtx {
     pub fn generate(mut self) -> Program {
         let arg_tys = vec![Ty::I32];
 
-        self.enter_new_fn(&arg_tys, Ty::I32);
+        self.enter_new_fn(&arg_tys, Ty::Tuple(vec![Ty::I32]));
 
         let ret_node = self.pt.get_node(&Place::RETURN_SLOT).unwrap();
         while !self.pt.is_place_init(ret_node) {
