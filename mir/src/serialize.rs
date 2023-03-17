@@ -35,12 +35,7 @@ impl Serialize for Ty {
                 if elems.len() == 1 {
                     format!("({},)", elems[0].serialize())
                 } else {
-                    let inner: String = elems
-                        .iter()
-                        .map(|ty| ty.serialize())
-                        .intersperse(", ".to_string())
-                        .collect();
-                    format!("({inner})")
+                    format!("({})", elems.as_slice().serialize())
                 }
             }
         }
@@ -72,7 +67,7 @@ impl Serialize for Literal {
                 } else {
                     format!("{f}_{}", self.ty().serialize())
                 }
-            },
+            }
             Literal::Bool(b) => b.to_string(),
             Literal::Char(c) => format!("'\\u{{{:x}}}'", u32::from(*c)),
             Literal::Tuple(elems) => match elems.len() {
@@ -212,11 +207,7 @@ impl Serialize for Body {
             .vars_iter()
             .map(|idx| {
                 let decl = &self.local_decls[idx];
-                format!(
-                    "let _{}: {};\n",
-                    idx.index(),
-                    decl.ty.serialize()
-                )
+                format!("let _{}: {};\n", idx.index(), decl.ty.serialize())
             })
             .collect();
         let mut bbs = self.basic_blocks.iter_enumerated();
@@ -249,6 +240,15 @@ impl Serialize for Program {
         }));
         program.push_str(Program::MAIN);
         program
+    }
+}
+
+impl Serialize for &[Ty] {
+    fn serialize(&self) -> String {
+        self.iter()
+            .map(|ty| ty.serialize())
+            .intersperse(", ".to_string())
+            .collect()
     }
 }
 

@@ -41,7 +41,7 @@ fn main() {
     // let dot = Dot::new(&skeleton);
     // println!("{dot:?}");
 
-    let seed: u64 = args().skip(1).next().unwrap().parse().unwrap();
+    let seed: u64 = args().nth(1).unwrap().parse().unwrap();
     info!("Generating a program with seed {seed}");
     let genctxt = GenerationCtx::new(seed);
     let program = genctxt.generate();

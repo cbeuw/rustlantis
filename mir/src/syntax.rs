@@ -123,7 +123,7 @@ impl Place {
     }
 
     pub fn ty(&self, local_decl: &LocalDecls) -> Ty {
-        local_decl[self.local()].ty.projected_ty(&self.projection())
+        local_decl[self.local()].ty.projected_ty(self.projection())
     }
 }
 
@@ -346,13 +346,10 @@ impl Ty {
 
     pub fn is_checked_binary_op_lhs(&self) -> bool {
         match self {
-            Ty::Tuple(tys)
-                if tys.len() == 2
-                    && matches!(tys[0], Ty::Int(..) | Ty::Float(..) | Ty::Uint(..))
-                    && tys[1] == Ty::Bool =>
-            {
-                true
-            }
+            Ty::Tuple(elems) => matches!(
+                elems.as_slice(),
+                &[Ty::Int(..) | Ty::Float(..) | Ty::Uint(..), Ty::Bool]
+            ),
             _ => false,
         }
     }
@@ -374,6 +371,8 @@ impl Ty {
             | Self::U128
             | Self::F32
             | Self::F64
+            | Self::Bool
+            | Self::Char
             | Self::Unit => true,
             _ => false,
         }
@@ -388,7 +387,9 @@ impl Ty {
                         Ty::RawPtr(pointee, ..) => *pointee.clone(),
                         _ => panic!("not a reference"),
                     },
-                    ProjectionElem::TupleField(idx) => self.tuple_elems().expect("is a tuple")[idx.index()].clone(),
+                    ProjectionElem::TupleField(idx) => {
+                        self.tuple_elems().expect("is a tuple")[idx.index()].clone()
+                    }
                     ProjectionElem::Downcast(_) => self.clone(),
                     ProjectionElem::Index(_) => todo!(),
                     ProjectionElem::ConstantIndex { offset } => todo!(),
@@ -485,7 +486,7 @@ impl From<u64> for Literal {
 }
 impl From<u128> for Literal {
     fn from(value: u128) -> Self {
-        Self::Uint(value as u128, UintTy::U128)
+        Self::Uint(value, UintTy::U128)
     }
 }
 impl TryFrom<usize> for Literal {
@@ -517,7 +518,7 @@ impl From<i64> for Literal {
 }
 impl From<i128> for Literal {
     fn from(value: i128) -> Self {
-        Self::Int(value as i128, IntTy::I128)
+        Self::Int(value, IntTy::I128)
     }
 }
 impl TryFrom<isize> for Literal {
@@ -542,7 +543,7 @@ impl From<f64> for Literal {
 
 impl Program {
     // TODO: match fn0's param
-    pub const MAIN: &str = "pub fn main(){println!(\"{}\",fn0(std::hint::black_box(42)));}";
+    pub const MAIN: &str = "pub fn main(){println!(\"{:?}\",fn0(std::hint::black_box(42)));}";
     pub const FUNCTION_ATTRIBUTE: &str =
         "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
     pub const HEADER: &str = "#![feature(custom_mir, core_intrinsics)]\nextern crate core;\nuse core::intrinsics::mir::*;\n";

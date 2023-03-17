@@ -232,7 +232,7 @@ impl<'pt> ProjectionIter<'pt> {
                 .places
                 .edges_directed(root, Direction::Outgoing)
                 .filter_map(|e| {
-                    if follow_deref || (!follow_deref && *e.weight() != ProjectionElem::Deref) {
+                    if follow_deref || *e.weight() != ProjectionElem::Deref {
                         Some(smallvec![e.id()])
                     } else {
                         None
@@ -261,8 +261,7 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
             let (_, target) = self.pt.places.edge_endpoints(last_edge).unwrap();
             let new_edges = self.pt.places.edges_directed(target, Direction::Outgoing);
             self.to_visit.extend(new_edges.filter_map(|e| {
-                if self.follow_deref || (!self.follow_deref && *e.weight() != ProjectionElem::Deref)
-                {
+                if self.follow_deref || *e.weight() != ProjectionElem::Deref {
                     let mut new_path = path.clone();
                     new_path.push(e.id());
                     Some(new_path)
@@ -377,6 +376,5 @@ mod tests {
 
         pt.mark_place_init(&i64);
         assert!(pt.is_place_init(local));
-
     }
 }

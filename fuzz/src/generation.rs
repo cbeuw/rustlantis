@@ -387,6 +387,9 @@ impl GenerateStatement for GenerationCtx {
             .make_choice_mut(choices.into_iter(), |ctx, f| f(ctx))
             .expect("deadend");
         self.post_generation(&statement);
+        if !matches!(statement, Statement::Nop) {
+            debug!("generated {}", statement.serialize());
+        }
         self.current_bb_mut().insert_statement(statement);
     }
 }
@@ -501,6 +504,11 @@ impl GenerationCtx {
         let local = self
             .current_fn_mut()
             .declare_new_var(mutability, ty.clone());
+        debug!(
+            "generated new var {}: {}",
+            local.identifier(),
+            ty.serialize()
+        );
         self.pt.add_local(local, ty);
         local
     }
@@ -546,6 +554,11 @@ impl GenerationCtx {
 
     // Move generation context to an executed function
     fn enter_new_fn(&mut self, args: &[Ty], return_ty: Ty) {
+        debug!(
+            "entering function with args {} and return ty {}",
+            args.serialize(),
+            return_ty.serialize()
+        );
         let mut body = Body::new(args, return_ty);
 
         let starting_bb = body.new_basic_block(BasicBlockData::new());
@@ -562,7 +575,8 @@ impl GenerationCtx {
     pub fn generate(mut self) -> Program {
         let arg_tys = vec![Ty::I32];
 
-        self.enter_new_fn(&arg_tys, Ty::I32);
+        let return_ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
+        self.enter_new_fn(&arg_tys, return_ty);
 
         while !self.pt.is_place_init(Place::RETURN_SLOT) {
             self.choose_statement();
