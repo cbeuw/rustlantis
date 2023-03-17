@@ -66,7 +66,13 @@ impl Serialize for Literal {
         match self {
             Literal::Uint(i, _) => format!("{i}_{}", self.ty().serialize()),
             Literal::Int(i, _) => format!("{i}_{}", self.ty().serialize()),
-            Literal::Float(f, _) => format!("{f}_{}", self.ty().serialize()),
+            Literal::Float(f, _) => {
+                if f.is_nan() {
+                    format!("{}::NAN", self.ty().serialize())
+                } else {
+                    format!("{f}_{}", self.ty().serialize())
+                }
+            },
             Literal::Bool(b) => b.to_string(),
             Literal::Char(c) => format!("'\\u{{{:x}}}'", u32::from(*c)),
             Literal::Tuple(elems) => match elems.len() {
@@ -250,6 +256,8 @@ impl Serialize for Program {
 mod tests {
     use crate::{syntax::*, vec::Idx};
 
+    use super::Serialize;
+
     #[test]
     fn serialize_body() {
         let mut body = Body::new(&vec![Ty::BOOL], Ty::BOOL);
@@ -262,5 +270,11 @@ mod tests {
             statements,
             terminator,
         });
+    }
+
+    #[test]
+    fn serialize_literal() {
+        let nan = Literal::Float(f32::NAN as f64, FloatTy::F32);
+        assert_eq!(nan.serialize(), "f32::NAN");
     }
 }
