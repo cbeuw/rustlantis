@@ -108,9 +108,22 @@ impl Place {
         }
     }
 
-    pub fn ty(&self, local_decls: &LocalDecls) -> Ty {
-        // TODO: projection
-        local_decls[self.local()].ty.clone()
+    pub fn project(&self, proj: ProjectionElem) -> Self {
+        // TODO: validation
+        match self.clone() {
+            Place::Place {
+                local,
+                mut projection,
+            } => {
+                projection.push(proj);
+                Place::Place { local, projection }
+            }
+            Place::Hole => panic!("place is a hole"),
+        }
+    }
+
+    pub fn ty(&self, local_decl: &LocalDecls) -> Ty {
+        local_decl[self.local()].ty.projected_ty(&self.projection())
     }
 }
 
@@ -123,7 +136,9 @@ pub enum ProjectionElem {
     Field(FieldIdx),
     Index(Local),
     Downcast(VariantIdx),
-    ConstantIndex { offset: u64 },
+    ConstantIndex {
+        offset: u64,
+    },
     // TODO: Subslice
 }
 
@@ -269,7 +284,7 @@ pub enum FloatTy {
 declare_id!(TyId);
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub enum Ty {
-    // Primitives
+    // Scalars
     Unit,
     Bool,
     Char,
@@ -322,9 +337,9 @@ impl Ty {
 
     pub const FLOATS: [Self; 2] = [Self::F32, Self::F64];
 
-    pub fn try_unwrap_pair(&self) -> Option<(Ty, Ty)> {
+    pub fn tuple_elems(&self) -> Option<&[Ty]> {
         match self {
-            Ty::Tuple(tys) if tys.len() == 2 => Some((tys[0].clone(), tys[1].clone())),
+            Ty::Tuple(tys) => Some(tys),
             _ => None,
         }
     }
@@ -342,7 +357,8 @@ impl Ty {
         }
     }
 
-    pub fn is_primitive(&self) -> bool {
+    // TODO: are pointers scalar?
+    pub fn is_scalar(&self) -> bool {
         match *self {
             Self::ISIZE
             | Self::I8
@@ -360,6 +376,26 @@ impl Ty {
             | Self::F64
             | Self::Unit => true,
             _ => false,
+        }
+    }
+
+    pub fn projected_ty(&self, projs: &[ProjectionElem]) -> Self {
+        match projs {
+            [] => self.clone(),
+            [head, tail @ ..] => {
+                let projected = match head {
+                    ProjectionElem::Deref => match self {
+                        Ty::RawPtr(pointee, ..) => *pointee.clone(),
+                        _ => panic!("not a reference"),
+                    },
+                    ProjectionElem::TupleField(idx) => self.tuple_elems().expect("is a tuple")[idx.index()].clone(),
+                    ProjectionElem::Downcast(_) => self.clone(),
+                    ProjectionElem::Index(_) => todo!(),
+                    ProjectionElem::ConstantIndex { offset } => todo!(),
+                    ProjectionElem::Field(_) => todo!(),
+                };
+                projected.projected_ty(tail)
+            }
         }
     }
 }
@@ -488,7 +524,7 @@ impl TryFrom<isize> for Literal {
     type Error = TryFromIntError;
 
     fn try_from(value: isize) -> Result<Self, Self::Error> {
-        Ok(Self::Int(value.try_into()?, IntTy::I128))
+        Ok(Self::Int(value.try_into()?, IntTy::Isize))
     }
 }
 

@@ -1,16 +1,11 @@
-use std::{collections::VecDeque, iter::Fuse};
+use std::collections::VecDeque;
 
-use bimap::{BiBTreeMap, BiMap};
+use bimap::BiBTreeMap;
 use mir::{
     syntax::{Body, FieldIdx, Local, Place, ProjectionElem, Ty},
     vec::Idx,
 };
-use petgraph::{
-    prelude::EdgeIndex,
-    stable_graph::NodeIndex,
-    visit::{EdgeRef, IntoEdgesDirected},
-    Direction, Graph,
-};
+use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
 pub type PlaceIndex = NodeIndex;
@@ -27,6 +22,34 @@ pub struct PlaceTable {
 pub struct PlaceNode {
     pub ty: Ty,
     pub init: bool,
+}
+
+pub trait ToPlaceIndex {
+    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex>;
+}
+
+impl ToPlaceIndex for Place {
+    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
+        pt.get_node(self)
+    }
+}
+
+impl<'a> ToPlaceIndex for &'a Place {
+    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
+        pt.get_node(self)
+    }
+}
+
+impl ToPlaceIndex for Local {
+    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
+        pt.get_node(&Place::from_local(*self))
+    }
+}
+
+impl ToPlaceIndex for PlaceIndex {
+    fn to_place_index(&self, _: &PlaceTable) -> Option<PlaceIndex> {
+        Some(*self)
+    }
 }
 
 impl PlaceTable {
@@ -92,29 +115,66 @@ impl PlaceTable {
         Some(node)
     }
 
-    pub fn mark_place_init(&mut self, pidx: PlaceIndex) {
+    pub fn mark_place_init(&mut self, p: impl ToPlaceIndex) {
+        let pidx = p.to_place_index(self).unwrap();
         self.places[pidx].init = true;
+        // Find immediate parents whose subfields are all init
+        let mut need_init: Vec<NodeIndex> = self
+            .places
+            .edges_directed(pidx, Direction::Incoming)
+            .filter_map(|e| {
+                if *e.weight() == ProjectionElem::Deref {
+                    None
+                } else {
+                    Some(e.source())
+                }
+            })
+            .filter(|&parent| {
+                self.subfields(parent)
+                    .all(|ppath| ppath.target_node(self).init)
+            })
+            .collect();
+        // Recursively mark them as init
+        need_init
+            .iter()
+            .for_each(|node| self.mark_place_init(*node));
+
+        // Mark all subfields init
+        need_init = self
+            .subfields(pidx)
+            .filter_map(|child| {
+                if child.target_node(self).init {
+                    None
+                } else {
+                    Some(child.target_index(self))
+                }
+            })
+            .collect();
+
+        need_init
+            .iter()
+            .for_each(|node| self.mark_place_init(*node));
     }
 
-    pub fn is_place_init(&self, pidx: PlaceIndex) -> bool {
-        self.subfields(pidx)
-            .all(|ppath| ppath.target_node(self).init)
+    pub fn is_place_init(&self, p: impl ToPlaceIndex) -> bool {
+        let pidx = p.to_place_index(self).unwrap();
+        self.places[pidx].init
     }
 
     // Returns an iterator over all places subsumed by a place
     fn subfields(&self, pidx: PlaceIndex) -> ProjectionIter<'_> {
-        ProjectionIter::new(self, pidx, false)
+        ProjectionIter::new(self, pidx, false, false)
     }
 
     // Returns an iterator over all places reachable from local through projections
     fn reachable_from_local(&self, local: Local) -> ProjectionIter<'_> {
         let local_node = *self.current_locals.get_by_left(&local).unwrap();
-        ProjectionIter::new(self, local_node, true)
+        ProjectionIter::new(self, local_node, true, true)
     }
 
     pub fn reachable_nodes(&self) -> impl Iterator<Item = PlacePath> + Clone + '_ {
-        let local_iter = self.current_locals.right_values();
-        local_iter.flat_map(|&node| ProjectionIter::new(self, node, true))
+        let local_iter = self.current_locals.left_values();
+        local_iter.flat_map(|&local| self.reachable_from_local(local))
     }
 }
 
@@ -164,23 +224,22 @@ pub struct ProjectionIter<'pt> {
 }
 
 impl<'pt> ProjectionIter<'pt> {
-    fn new(pt: &'pt PlaceTable, root: PlaceIndex, follow_deref: bool) -> Self {
+    fn new(pt: &'pt PlaceTable, root: PlaceIndex, visit_root: bool, follow_deref: bool) -> Self {
         ProjectionIter {
             pt,
             root,
             to_visit: pt
                 .places
                 .edges_directed(root, Direction::Outgoing)
-                .filter(|e| {
-                    if follow_deref {
-                        true
+                .filter_map(|e| {
+                    if follow_deref || (!follow_deref && *e.weight() != ProjectionElem::Deref) {
+                        Some(smallvec![e.id()])
                     } else {
-                        *e.weight() != ProjectionElem::Deref
+                        None
                     }
                 })
-                .map(|e| smallvec![e.id()])
                 .collect(),
-            root_visited: false,
+            root_visited: !visit_root,
             follow_deref,
         }
     }
@@ -201,21 +260,16 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
 
             let (_, target) = self.pt.places.edge_endpoints(last_edge).unwrap();
             let new_edges = self.pt.places.edges_directed(target, Direction::Outgoing);
-            self.to_visit.extend(
-                new_edges
-                    .filter(|e| {
-                        if self.follow_deref {
-                            true
-                        } else {
-                            !matches!(e.weight(), ProjectionElem::Deref)
-                        }
-                    })
-                    .map(|e| {
-                        let mut new_path = path.clone();
-                        new_path.push(e.id());
-                        new_path
-                    }),
-            );
+            self.to_visit.extend(new_edges.filter_map(|e| {
+                if self.follow_deref || (!self.follow_deref && *e.weight() != ProjectionElem::Deref)
+                {
+                    let mut new_path = path.clone();
+                    new_path.push(e.id());
+                    Some(new_path)
+                } else {
+                    None
+                }
+            }));
 
             Some(PlacePath {
                 source: self.root,
@@ -230,7 +284,7 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
 #[cfg(test)]
 mod tests {
     use mir::{
-        syntax::{Local, ProjectionElem, Ty},
+        syntax::{FieldIdx, Local, Place, ProjectionElem, Ty},
         vec::Idx,
     };
 
@@ -287,5 +341,42 @@ mod tests {
             place.projection()[0],
             ProjectionElem::TupleField(..)
         ));
+    }
+
+    #[test]
+    fn recursive_init() {
+        /*
+            ┌──────┬──────┐
+            │      │      │
+            i8     │     i64
+                ┌──┴──┐
+                │     │
+               i16   i32
+        */
+
+        let mut pt = PlaceTable::new();
+        let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I16, Ty::I32]), Ty::I64]);
+        let local = Local::new(1);
+        pt.add_local(local, ty);
+
+        let i8 = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(0))]);
+        let i16_i32 = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);
+        let i64 = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(2))]);
+
+        let i16 = i16_i32.project(ProjectionElem::TupleField(FieldIdx::new(0)));
+        let i32 = i16_i32.project(ProjectionElem::TupleField(FieldIdx::new(1)));
+
+        pt.mark_place_init(&i8);
+        assert!(pt.is_place_init(&i8));
+        assert!(!pt.is_place_init(local));
+
+        pt.mark_place_init(&i16_i32);
+        assert!(pt.is_place_init(&i16));
+        assert!(pt.is_place_init(&i32));
+        assert!(!pt.is_place_init(local));
+
+        pt.mark_place_init(&i64);
+        assert!(pt.is_place_init(local));
+
     }
 }

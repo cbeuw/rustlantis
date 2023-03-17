@@ -1,9 +1,6 @@
-use std::iter::FilterMap;
-
-use log::debug;
 use mir::syntax::{Place, Ty};
 
-use crate::ptable::{PlaceIndex, PlacePath, PlaceTable, ProjectionIter};
+use crate::ptable::{PlaceIndex, PlaceTable};
 
 #[derive(Clone, Default)]
 pub struct PlaceSelector {

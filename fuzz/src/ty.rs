@@ -4,11 +4,11 @@ use std::{collections::BTreeMap, fmt::Write};
 use log::{debug, log_enabled};
 use mir::{
     serialize::Serialize,
-    syntax::{Mutability, Ty, TyId},
-    vec::{Idx, IndexVec},
+    syntax::{Ty, TyId},
+    vec::IndexVec,
 };
 use rand::{seq::IteratorRandom, Rng};
-use rand_distr::{Distribution, Exp, Poisson, WeightedIndex};
+use rand_distr::{Distribution, Poisson, WeightedIndex};
 
 pub struct TyCtxt {
     tys: IndexVec<TyId, Ty>,

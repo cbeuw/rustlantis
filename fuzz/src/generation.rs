@@ -14,7 +14,7 @@ use crate::ptable::PlaceTable;
 use crate::ty::TyCtxt;
 
 /// Max. number of variable declarations in a function
-const DECL_LIMIT: usize = 64;
+const DECL_LIMIT: usize = 32;
 
 #[derive(Debug)]
 enum SelectionError {
@@ -52,7 +52,7 @@ impl GenerateOperand for GenerationCtx {
         })
         .or_else(|_| {
             // TODO: allow array and tuple literals
-            let literalble: Vec<Ty> = tys.iter().filter(|ty| ty.is_primitive()).cloned().collect();
+            let literalble: Vec<Ty> = tys.iter().filter(|ty| ty.is_scalar()).cloned().collect();
             if literalble.is_empty() {
                 Err(SelectionError::Exhausted)
             } else {
@@ -197,9 +197,8 @@ impl GenerateRvalue for GenerationCtx {
         use Ty::*;
         let lhs_ty = lhs.ty(self.current_decls());
 
-        if let Some((ret, Ty::BOOL)) = lhs_ty.try_unwrap_pair() {
+        if let Some([ret, Ty::BOOL]) = lhs_ty.tuple_elems() {
             let bin_ops = match ret {
-                Float(_) => &[Add, Sub, Mul][..],
                 Uint(_) | Int(_) => &[Add, Sub, Mul, Shl, Shr][..],
                 _ => &[][..],
             };
@@ -207,15 +206,15 @@ impl GenerateRvalue for GenerationCtx {
                 let (l, r) = match *bin_op {
                     Add | Sub | Mul => {
                         // Both operand same type as lhs
-                        let l = self.choose_operand(&[lhs_ty.clone()], lhs)?;
-                        let r = self.choose_operand(&[lhs_ty.clone()], lhs)?;
+                        let l = self.choose_operand(&[ret.clone()], lhs)?;
+                        let r = self.choose_operand(&[ret.clone()], lhs)?;
                         // As the types are all integers or floats which are Copy, Move/Copy
                         // probably doesn't make much difference
                         (l, r)
                     }
                     Shl | Shr => {
                         // left operand same type as lhs, right can be uint or int
-                        let l = self.choose_operand(&[lhs_ty.clone()], lhs)?;
+                        let l = self.choose_operand(&[ret.clone()], lhs)?;
                         // TODO: use a compile time concat
                         let r = self.choose_operand(
                             &[
@@ -563,10 +562,9 @@ impl GenerationCtx {
     pub fn generate(mut self) -> Program {
         let arg_tys = vec![Ty::I32];
 
-        self.enter_new_fn(&arg_tys, Ty::Tuple(vec![Ty::I32]));
+        self.enter_new_fn(&arg_tys, Ty::I32);
 
-        let ret_node = self.pt.get_node(&Place::RETURN_SLOT).unwrap();
-        while !self.pt.is_place_init(ret_node) {
+        while !self.pt.is_place_init(Place::RETURN_SLOT) {
             self.choose_statement();
         }
 
@@ -577,8 +575,7 @@ impl GenerationCtx {
     fn post_generation(&mut self, stmt: &Statement) {
         match stmt {
             Statement::Assign(lhs, _) => {
-                let pidx = self.pt.get_node(lhs).expect("lhs is reachable");
-                self.pt.mark_place_init(pidx);
+                self.pt.mark_place_init(lhs);
             }
             Statement::StorageLive(_) => todo!(),
             Statement::StorageDead(_) => todo!(),
