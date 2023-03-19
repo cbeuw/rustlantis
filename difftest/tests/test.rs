@@ -36,7 +36,7 @@ fn correct_mir() {
         };
     }
 
-    backends.insert("llvm", Box::new(LLVM::new(OptLevel::Optimised)));
+    backends.insert("llvm", Box::new(LLVM::new(OptLevel::Optimised, None)));
 
     let results = run_diff_test(
         &PathBuf::from_str("tests/inputs/simple.rs").unwrap(),

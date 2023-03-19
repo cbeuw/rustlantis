@@ -78,12 +78,16 @@ impl OptLevel {
 }
 
 pub struct LLVM {
+    toolchain: Option<String>,
     opt_level: OptLevel,
 }
 
 impl LLVM {
-    pub fn new(opt_level: OptLevel) -> Self {
-        Self { opt_level }
+    pub fn new(opt_level: OptLevel, toolchain: Option<String>) -> Self {
+        Self {
+            opt_level,
+            toolchain,
+        }
     }
 }
 
@@ -95,7 +99,13 @@ impl Backend for LLVM {
             "Compiling {} with rustc_codegen_llvm",
             source.to_string_lossy()
         );
-        let compile_out = Command::new("rustc")
+
+        let mut command = Command::new("rustc");
+        if let Some(toolchain) = &self.toolchain {
+            command.arg(format!("+{}", toolchain));
+        }
+
+        let compile_out = command
             .arg(source)
             .args(["-o", target_path.to_str().unwrap()])
             .args([

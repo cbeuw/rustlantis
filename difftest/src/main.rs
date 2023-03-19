@@ -46,7 +46,8 @@ fn main() {
         };
     }
 
-    backends.insert("llvm", Box::new(LLVM::new(OptLevel::Optimised)));
+    let llvm_toolchain = settings.get_string("llvm_toolchain").ok();
+    backends.insert("llvm", Box::new(LLVM::new(OptLevel::Optimised, llvm_toolchain)));
 
     info!(
         "Difftesting {} with {}",
