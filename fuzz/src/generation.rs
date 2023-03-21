@@ -203,7 +203,7 @@ impl GenerateRvalue for GenerationCtx {
 
         if let Some([ret, Ty::BOOL]) = lhs_ty.tuple_elems() {
             let bin_ops = match ret {
-                Uint(_) | Int(_) => &[Add, Sub, Mul, Shl, Shr][..],
+                Uint(_) | Int(_) => &[Add, Sub, Mul][..],
                 _ => &[][..],
             };
             let rvalue = self.make_choice(bin_ops.iter(), |bin_op| {
@@ -216,30 +216,7 @@ impl GenerateRvalue for GenerationCtx {
                         // probably doesn't make much difference
                         (l, r)
                     }
-                    Shl | Shr => {
-                        // left operand same type as lhs, right can be uint or int
-                        let l = self.choose_operand(&[ret.clone()], lhs)?;
-                        // TODO: use a compile time concat
-                        let r = self.choose_operand(
-                            &[
-                                Ty::ISIZE,
-                                Ty::I8,
-                                Ty::I16,
-                                Ty::I32,
-                                Ty::I64,
-                                Ty::I128,
-                                Ty::USIZE,
-                                Ty::U8,
-                                Ty::U16,
-                                Ty::U32,
-                                Ty::U64,
-                                Ty::U128,
-                            ],
-                            lhs,
-                        )?;
-                        (l, r)
-                    }
-                    _ => unreachable!(),
+                     _ => unreachable!(),
                 };
                 Ok(Rvalue::CheckedBinaryOp(*bin_op, l, r))
             })?;
