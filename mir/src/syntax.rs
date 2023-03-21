@@ -195,8 +195,6 @@ pub enum Rvalue {
     CheckedBinaryOp(BinOp, Operand, Operand),
     // define!("mir_len", fn Len<T>(place: T) -> usize);
     Len(Place),
-    // define!("mir_retag", fn Retag<T>(place: T));
-    Retag(Place),
     // define!("mir_discriminant",fn Discriminant<T>(place: T) -> <T as ::core::marker::DiscriminantKind>::Discriminant);
     Discriminant(Place),
 }
@@ -241,6 +239,8 @@ pub enum Statement {
     Deinit(Place),
     // define!("mir_set_discriminant", fn SetDiscriminant<T>(place: T, index: u32));
     SetDiscriminant(Place, u32),
+    // define!("mir_retag", fn Retag<T>(place: T));
+    Retag(Place),
     Nop,
 }
 

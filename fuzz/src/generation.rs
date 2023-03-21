@@ -591,6 +591,7 @@ impl GenerationCtx {
             Statement::Deinit(_) => todo!(),
             Statement::SetDiscriminant(_, _) => todo!(),
             Statement::Nop => {}
+            Statement::Retag(_) => todo!(),
         }
     }
 }
