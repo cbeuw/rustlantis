@@ -41,8 +41,9 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
 name = "bimap"
-version = "0.6.2"
-source = "git+https://github.com/cbeuw/bimap-rs?branch=clone#bb6f4fde5c95cd1e2ff0d5186967dfada3d8180f"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "230c5f1ca6a325a32553f8640d31ac9b49f2411e901e427570154868b46da4f7"
 
 [[package]]
 name = "bitflags"
