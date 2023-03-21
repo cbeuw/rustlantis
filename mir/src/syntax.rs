@@ -25,6 +25,7 @@ macro_rules! declare_id {
 
 pub struct Program {
     pub functions: IndexVec<Function, Body>,
+    pub entry_args: Vec<Literal>,
 }
 
 pub type LocalDecls = IndexVec<Local, LocalDecl>;
@@ -39,7 +40,7 @@ pub struct Body {
 declare_id!(BasicBlock);
 pub struct BasicBlockData {
     pub statements: Vec<Statement>,
-    pub terminator: Option<Terminator>,
+    pub terminator: Terminator,
 }
 
 impl BasicBlockData {
@@ -47,7 +48,7 @@ impl BasicBlockData {
     pub fn new() -> Self {
         Self {
             statements: vec![],
-            terminator: None,
+            terminator: Terminator::Hole,
         }
     }
 
@@ -143,6 +144,7 @@ pub enum ProjectionElem {
 }
 
 pub enum Terminator {
+    Hole,
     // define!("mir_return", fn Return() -> BasicBlock);
     Return,
     // define!("mir_goto", fn Goto(destination: BasicBlock) -> BasicBlock);
@@ -156,20 +158,13 @@ pub enum Terminator {
         place: Place,
         target: BasicBlock,
     },
-    // define!("mir_drop_and_replace", fn DropAndReplace<T>(place: T, value: T, goto: BasicBlock));
-    DropAndReplace {
-        place: Place,
-        value: Operand,
-        target: BasicBlock,
-    },
     // TODO: define!("mir_call", fn Call<T>(place: T, goto: BasicBlock, call: T));
-    // Call {
-    //     destination: Place,
-    //     target: BasicBlock,
-    //     // TODO: this probably isn't a place
-    //     func: Place,
-    //     args: Vec<Operand>,
-    // },
+    Call {
+        func: Function,
+        destination: Place,
+        target: BasicBlock,
+        args: Vec<Operand>,
+    },
     /// Switches based on the computed value.
     ///
     /// First, evaluates the `discr` operand. The type of the operand must be a signed or unsigned
@@ -206,6 +201,7 @@ pub enum Rvalue {
     Discriminant(Place),
 }
 
+#[derive(Debug, Clone)]
 pub enum Literal {
     Uint(u128, UintTy),
     Int(i128, IntTy),
@@ -352,6 +348,10 @@ impl Ty {
             ),
             _ => false,
         }
+    }
+
+    pub fn is_literalble(&self) -> bool {
+        self.is_scalar()
     }
 
     // TODO: are pointers scalar?
@@ -542,8 +542,6 @@ impl From<f64> for Literal {
 }
 
 impl Program {
-    // TODO: match fn0's param
-    pub const MAIN: &str = "pub fn main(){println!(\"{:?}\",fn0(std::hint::black_box(42)));}";
     pub const FUNCTION_ATTRIBUTE: &str =
         "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
     pub const HEADER: &str = "#![feature(custom_mir, core_intrinsics)]\nextern crate core;\nuse core::intrinsics::mir::*;\n";
@@ -552,11 +550,16 @@ impl Program {
     pub fn new() -> Self {
         Self {
             functions: IndexVec::default(),
+            entry_args: vec![],
         }
     }
 
     pub fn push_fn(&mut self, body: Body) -> Function {
         self.functions.push(body)
+    }
+
+    pub fn set_entry_args(&mut self, args: &[Literal]) {
+        self.entry_args = Vec::from(args);
     }
 }
 
@@ -631,17 +634,6 @@ impl Body {
 
     pub fn is_arg(&self, local: Local) -> bool {
         (1..self.arg_count).contains(&local.index())
-    }
-
-    pub fn vars_and_args_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
-        (1..self.local_decls.len()).map(Local::new)
-    }
-
-    pub fn vars_and_args_decl_iter(
-        &self,
-    ) -> impl Iterator<Item = (Local, &LocalDecl)> + ExactSizeIterator {
-        self.vars_and_args_iter()
-            .map(|local| (local, &self.local_decls[local]))
     }
 
     /// Returns an iterator over function arguments

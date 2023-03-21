@@ -50,22 +50,26 @@ impl GenerateOperand for GenerationCtx {
                 Ok(Operand::Move(place))
             }
         })
-        .or_else(|_| {
-            // TODO: allow array and tuple literals
-            let literalble: Vec<Ty> = tys.iter().filter(|ty| ty.is_scalar()).cloned().collect();
-            if literalble.is_empty() {
-                Err(SelectionError::Exhausted)
-            } else {
-                let selected = literalble
-                    .iter()
-                    .choose(&mut *self.rng.borrow_mut())
-                    .unwrap();
-                let literal = self
-                    .generate_literal(selected)
-                    .expect("can always generate a literal of a literalble type");
-                Ok(Operand::Constant(literal))
-            }
-        })
+        // .or_else(|_| {
+        //     // TODO: allow array and tuple literals
+        //     let literalble: Vec<Ty> = tys
+        //         .iter()
+        //         .filter(|ty| ty.is_literalble())
+        //         .cloned()
+        //         .collect();
+        //     if literalble.is_empty() {
+        //         Err(SelectionError::Exhausted)
+        //     } else {
+        //         let selected = literalble
+        //             .iter()
+        //             .choose(&mut *self.rng.borrow_mut())
+        //             .unwrap();
+        //         let literal = self
+        //             .generate_literal(selected)
+        //             .expect("can always generate a literal of a literalble type");
+        //         Ok(Operand::Constant(literal))
+        //     }
+        // })
     }
 }
 
@@ -410,7 +414,7 @@ impl GenerateTerminator for GenerationCtx {
         let terminator = self
             .make_choice(choices.into_iter(), |f| f(self))
             .expect("deadend");
-        self.current_bb_mut().terminator = Some(terminator);
+        self.current_bb_mut().terminator = terminator;
     }
 }
 
@@ -547,6 +551,7 @@ impl GenerationCtx {
             Ty::I128 => rng.gen_range(i128::MIN..=i128::MAX).into(),
             Ty::F32 => f32::from_bits(rng.gen_range(u32::MIN..=u32::MAX)).into(),
             Ty::F64 => f64::from_bits(rng.gen_range(u64::MIN..=u64::MAX)).into(),
+            Ty::Unit => Literal::Tuple(vec![]),
             _ => return None,
         };
         Some(lit)
@@ -573,9 +578,22 @@ impl GenerationCtx {
     }
 
     pub fn generate(mut self) -> Program {
-        let arg_tys = vec![Ty::I32];
+        let args_count = self.rng.get_mut().gen_range(0..=8);
+        let arg_tys: Vec<Ty> = self
+            .tcx
+            .iter()
+            .filter(|ty| ty.is_literalble())
+            .cloned()
+            .choose_multiple(&mut *self.rng.borrow_mut(), args_count);
+        let arg_literals: Vec<Literal> = arg_tys
+            .iter()
+            .map(|ty| self.generate_literal(ty).expect("ty is literable"))
+            .collect();
 
-        let return_ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
+        self.program.set_entry_args(&arg_literals);
+
+        // let return_ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
+        let return_ty = Ty::I32;
         self.enter_new_fn(&arg_tys, return_ty);
 
         while !self.pt.is_place_init(Place::RETURN_SLOT) {

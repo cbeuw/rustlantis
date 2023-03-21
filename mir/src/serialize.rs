@@ -149,39 +149,30 @@ impl Serialize for Terminator {
             Terminator::Drop { place, target } => {
                 format!("Drop({}, {})", place.serialize(), target.identifier())
             }
-            Terminator::DropAndReplace {
-                place,
-                value,
+            Terminator::Call {
+                destination,
                 target,
-            } => format!(
-                "DropAndReplace({}, {}, {})",
-                place.serialize(),
-                value.serialize(),
-                target.identifier()
-            ),
-            // Terminator::Call {
-            //     destination,
-            //     target,
-            //     func,
-            //     args,
-            // } => {
-            //     let args_list: String = args
-            //         .iter()
-            //         .map(|arg| arg.serialize())
-            //         .intersperse(", ".to_owned())
-            //         .collect();
-            //     format!(
-            //         "Call({}, {}, {}({})",
-            //         destination.serialize(),
-            //         target.identifier(),
-            //         func.serialize(),
-            //         args_list
-            //     )
-            // }
+                func,
+                args,
+            } => {
+                let args_list: String = args
+                    .iter()
+                    .map(|arg| arg.serialize())
+                    .intersperse(", ".to_owned())
+                    .collect();
+                format!(
+                    "Call({}, {}, {}({})",
+                    destination.serialize(),
+                    target.identifier(),
+                    func.identifier(),
+                    args_list
+                )
+            }
             Terminator::SwitchInt { discr, targets } => {
                 let arms = targets.match_arms();
                 format!("match {} {{\n{}\n}}", discr.serialize(), arms)
             }
+            Terminator::Hole => unreachable!("hole"),
         }
     }
 }
@@ -194,20 +185,20 @@ impl Serialize for BasicBlockData {
             .filter(|stmt| !matches!(stmt, Statement::Nop))
             .map(|stmt| format!("{};\n", stmt.serialize()))
             .collect();
-        if let Some(term) = &self.terminator {
-            stmts.push_str(&term.serialize());
-        }
+        stmts.push_str(&self.terminator.serialize());
         stmts
     }
 }
 
 impl Serialize for Body {
     fn serialize(&self) -> String {
+        // Declarations
         let mut body: String = self
             .vars_iter()
+            // .chain([Local::RET])
             .map(|idx| {
                 let decl = &self.local_decls[idx];
-                format!("let _{}: {};\n", idx.index(), decl.ty.serialize())
+                format!("let {}: {};\n", idx.identifier(), decl.ty.serialize())
             })
             .collect();
         let mut bbs = self.basic_blocks.iter_enumerated();
@@ -230,7 +221,7 @@ impl Serialize for Program {
         let mut program = Program::HEADER.to_string();
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
             format!(
-                "{}\nfn {}({}) -> {} {{\n{}\n}}\n",
+                "{}\npub fn {}({}) -> {} {{\n{}\n}}\n",
                 Program::FUNCTION_ATTRIBUTE,
                 idx.identifier(),
                 body.args_list(),
@@ -238,7 +229,25 @@ impl Serialize for Program {
                 body.serialize()
             )
         }));
-        program.push_str(Program::MAIN);
+        let arg_list: String = self
+            .entry_args
+            .iter()
+            .map(|arg| format!("std::hint::black_box({})", arg.serialize()))
+            .intersperse(", ".to_string())
+            .collect();
+
+        let first_fn: String = self
+            .functions
+            .indices()
+            .next()
+            .expect("program has functions")
+            .identifier();
+
+        program.push_str(&format!(
+            "pub fn main() {{
+                println!(\"{{:?}}\", {first_fn}({arg_list}));
+            }}"
+        ));
         program
     }
 }
@@ -265,10 +274,9 @@ mod tests {
             Place::RETURN_SLOT,
             Rvalue::UnaryOp(UnOp::Not, Operand::Copy(Place::from_local(Local::new(1)))),
         )];
-        let terminator = Some(Terminator::Return);
         body.new_basic_block(BasicBlockData {
             statements,
-            terminator,
+            terminator: Terminator::Return,
         });
     }
 
