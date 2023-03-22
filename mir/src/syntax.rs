@@ -102,7 +102,7 @@ impl Place {
         }
     }
 
-    pub fn projection(&self) -> &Vec<ProjectionElem> {
+    pub fn projection(&self) -> &[ProjectionElem] {
         match self {
             Place::Place { projection, .. } => projection,
             Place::Hole => panic!("place is a hole"),
@@ -125,6 +125,12 @@ impl Place {
 
     pub fn ty(&self, local_decl: &LocalDecls) -> Ty {
         local_decl[self.local()].ty.projected_ty(self.projection())
+    }
+}
+
+impl From<Local> for Place {
+    fn from(value: Local) -> Self {
+        Self::from_local(value)
     }
 }
 
