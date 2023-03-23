@@ -1,8 +1,8 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use bimap::BiBTreeMap;
 use mir::{
-    syntax::{Body, FieldIdx, Local, Place, ProjectionElem, Ty},
+    syntax::{Body, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty},
     vec::Idx,
 };
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
@@ -10,7 +10,7 @@ use smallvec::{smallvec, SmallVec};
 
 pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
-pub type Path = SmallVec<[ProjectionIndex; 8]>;
+pub type Path = SmallVec<[ProjectionIndex; 4]>;
 
 // A program-global graph recording all places that can be reached through projections
 pub struct PlaceTable {
@@ -22,6 +22,7 @@ pub struct PlaceTable {
 pub struct PlaceNode {
     pub ty: Ty,
     pub init: bool,
+    pub dataflow: usize,
 }
 
 pub trait ToPlaceIndex {
@@ -29,12 +30,6 @@ pub trait ToPlaceIndex {
 }
 
 impl ToPlaceIndex for Place {
-    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
-        pt.get_node(self)
-    }
-}
-
-impl<'a> ToPlaceIndex for &'a Place {
     fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
         pt.get_node(self)
     }
@@ -49,6 +44,15 @@ impl ToPlaceIndex for Local {
 impl ToPlaceIndex for PlaceIndex {
     fn to_place_index(&self, _: &PlaceTable) -> Option<PlaceIndex> {
         Some(*self)
+    }
+}
+
+impl<T> ToPlaceIndex for &T
+where
+    T: ToPlaceIndex,
+{
+    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
+        (*self).to_place_index(pt)
     }
 }
 
@@ -71,15 +75,19 @@ impl PlaceTable {
         self.current_locals.insert(Local::RET, pidx);
     }
 
-    pub fn add_local(&mut self, local: Local, ty: Ty) {
+    pub fn add_local(&mut self, local: Local, ty: Ty) -> PlaceIndex {
         let pidx = self.add_place(ty, false);
-        self.current_locals.insert(local, pidx);
+        self.current_locals
+            .insert_no_overwrite(local, pidx)
+            .expect("did not insert existing local or place");
+        pidx
     }
 
     fn add_place(&mut self, ty: Ty, init: bool) -> PlaceIndex {
         let pidx = self.places.add_node(PlaceNode {
             ty: ty.clone(),
             init,
+            dataflow: 0,
         });
         match ty {
             Ty::Tuple(elems) => elems.iter().enumerate().for_each(|(idx, elem)| {
@@ -156,6 +164,19 @@ impl PlaceTable {
             .for_each(|node| self.mark_place_init(*node));
     }
 
+    pub fn combine_dataflow(&mut self, target: impl ToPlaceIndex, source: impl HasDataflow) {
+        let new_flow = source.dataflow(self);
+        let target_index = target.to_place_index(self).expect("place exists");
+        self.places[target_index].dataflow = new_flow;
+        let to_change: Vec<PlaceIndex> = self
+            .subfields(target_index)
+            .map(|node| node.target_index(self))
+            .collect();
+        to_change
+            .into_iter()
+            .for_each(|pidx| self.places[pidx].dataflow = new_flow);
+    }
+
     pub fn is_place_init(&self, p: impl ToPlaceIndex) -> bool {
         let pidx = p.to_place_index(self).unwrap();
         self.places[pidx].init
@@ -175,6 +196,10 @@ impl PlaceTable {
     pub fn reachable_nodes(&self) -> impl Iterator<Item = PlacePath> + Clone + '_ {
         let local_iter = self.current_locals.left_values();
         local_iter.flat_map(|&local| self.reachable_from_local(local))
+    }
+
+    pub fn place_count(&self) -> usize {
+        self.places.node_count()
     }
 }
 
@@ -214,6 +239,7 @@ impl PlacePath {
 /// A breadth-first iterator over all projections from a local variable
 /// Within each level, projections are returned in reverse insertion order
 /// FIXME: this breaks if there's a reference cycle in the graph
+/// TODO: maybe dfs is fine
 #[derive(Clone)]
 pub struct ProjectionIter<'pt> {
     pt: &'pt PlaceTable,
@@ -280,12 +306,58 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
     }
 }
 
+pub trait HasDataflow {
+    fn dataflow(&self, pt: &PlaceTable) -> usize;
+}
+
+impl HasDataflow for Place {
+    fn dataflow(&self, pt: &PlaceTable) -> usize {
+        pt.places[self.to_place_index(pt).expect("place exists")].dataflow
+    }
+}
+
+impl HasDataflow for Operand {
+    fn dataflow(&self, pt: &PlaceTable) -> usize {
+        match self {
+            Operand::Copy(place) | Operand::Move(place) => place.dataflow(pt),
+            Operand::Constant(_) => 1,
+        }
+    }
+}
+
+impl HasDataflow for Rvalue {
+    fn dataflow(&self, pt: &PlaceTable) -> usize {
+        match self {
+            Rvalue::Use(operand) | Rvalue::Cast(operand, _) | Rvalue::UnaryOp(_, operand) => {
+                operand.dataflow(pt)
+            }
+            Rvalue::BinaryOp(_, l, r) | Rvalue::CheckedBinaryOp(_, l, r) => {
+                l.dataflow(pt) + r.dataflow(pt)
+            }
+            Rvalue::Len(_) => 1,
+            Rvalue::Discriminant(place) => place.dataflow(pt),
+            Rvalue::Hole => unreachable!("hole"),
+        }
+    }
+}
+
+impl<T> HasDataflow for &T
+where
+    T: HasDataflow,
+{
+    fn dataflow(&self, pt: &PlaceTable) -> usize {
+        (*self).dataflow(pt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use mir::{
-        syntax::{FieldIdx, Local, Place, ProjectionElem, Ty},
+        syntax::{BinOp, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty},
         vec::Idx,
     };
+
+    use crate::ptable::HasDataflow;
 
     use super::PlaceTable;
 
@@ -376,5 +448,27 @@ mod tests {
 
         pt.mark_place_init(&i64);
         assert!(pt.is_place_init(local));
+    }
+
+    #[test]
+    fn dataflow() {
+        let mut pt = PlaceTable::new();
+        let a = Local::new(0);
+        let b = Local::new(1);
+        let c = Local::new(2);
+        pt.add_local(a, Ty::I8);
+        pt.add_local(b, Ty::I8);
+        pt.add_local(c, Ty::I8);
+
+        pt.combine_dataflow(b, Rvalue::Use(Operand::Constant(1.into())));
+        pt.combine_dataflow(c, Rvalue::Use(Operand::Constant(2.into())));
+        assert_eq!(Place::from(b).dataflow(&pt), 1);
+        assert_eq!(Place::from(c).dataflow(&pt), 1);
+
+        pt.combine_dataflow(
+            a,
+            Rvalue::BinaryOp(BinOp::Add, Operand::Copy(b.into()), Operand::Copy(c.into())),
+        );
+        assert_eq!(Place::from(a).dataflow(&pt), 2)
     }
 }

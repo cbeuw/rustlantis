@@ -8,13 +8,14 @@ use mir::syntax::{
 };
 use mir::vec::Idx;
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
+use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
-use crate::place::PlaceSelector;
-use crate::ptable::PlaceTable;
+use crate::place::{PlaceSelector, Weight};
+use crate::ptable::{HasDataflow, PlaceTable};
 use crate::ty::TyCtxt;
 
-/// Max. number of variable declarations in a function
-const DECL_LIMIT: usize = 32;
+/// Max. number of statements & declarations in a bb
+const BB_MAX_LEN: usize = 128;
 
 #[derive(Debug)]
 enum SelectionError {
@@ -39,37 +40,37 @@ trait GenerateOperand {
 
 impl GenerateOperand for GenerationCtx {
     fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand> {
-        let places = PlaceSelector::new()
+        let (places, weights) = PlaceSelector::new()
             .except(excluded)
             .of_tys(tys)
-            .into_iter(&self.pt);
-        self.make_choice(places, |place| {
+            .into_weighted(&self.pt);
+        self.make_choice_weighted(places.into_iter(), weights, |place| {
             if self.tcx.is_copy(&place.ty(self.current_decls())) {
                 Ok(Operand::Copy(place))
             } else {
                 Ok(Operand::Move(place))
             }
         })
-        // .or_else(|_| {
-        //     // TODO: allow array and tuple literals
-        //     let literalble: Vec<Ty> = tys
-        //         .iter()
-        //         .filter(|ty| ty.is_literalble())
-        //         .cloned()
-        //         .collect();
-        //     if literalble.is_empty() {
-        //         Err(SelectionError::Exhausted)
-        //     } else {
-        //         let selected = literalble
-        //             .iter()
-        //             .choose(&mut *self.rng.borrow_mut())
-        //             .unwrap();
-        //         let literal = self
-        //             .generate_literal(selected)
-        //             .expect("can always generate a literal of a literalble type");
-        //         Ok(Operand::Constant(literal))
-        //     }
-        // })
+        .or_else(|_| {
+            // TODO: allow array and tuple literals
+            let literalble: Vec<Ty> = tys
+                .iter()
+                .filter(|ty| ty.is_literalble())
+                .cloned()
+                .collect();
+            if literalble.is_empty() {
+                Err(SelectionError::Exhausted)
+            } else {
+                let selected = literalble
+                    .iter()
+                    .choose(&mut *self.rng.borrow_mut())
+                    .unwrap();
+                let literal = self
+                    .generate_literal(selected)
+                    .expect("can always generate a literal of a literalble type");
+                Ok(Operand::Constant(literal))
+            }
+        })
     }
 }
 
@@ -216,7 +217,7 @@ impl GenerateRvalue for GenerationCtx {
                         // probably doesn't make much difference
                         (l, r)
                     }
-                     _ => unreachable!(),
+                    _ => unreachable!(),
                 };
                 Ok(Rvalue::CheckedBinaryOp(*bin_op, l, r))
             })?;
@@ -317,7 +318,9 @@ trait GenerateStatement {
 
 impl GenerateStatement for GenerationCtx {
     fn generate_assign(&mut self) -> Result<Statement> {
-        let lhs_choices = PlaceSelector::new().maybe_uninit().into_iter(&self.pt);
+        let lhs_choices = PlaceSelector::new()
+            .maybe_uninit()
+            .into_iter_place(&self.pt);
 
         self.make_choice(lhs_choices, |lhs| {
             debug!(
@@ -331,9 +334,6 @@ impl GenerateStatement for GenerationCtx {
     }
 
     fn generate_new_var(&mut self) -> Result<Statement> {
-        if self.current_decls().len() > DECL_LIMIT {
-            return Err(SelectionError::Exhausted);
-        }
         let ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
         self.declare_new_var(Mutability::Mut, ty);
         Ok(Statement::Nop)
@@ -396,6 +396,33 @@ impl GenerateTerminator for GenerationCtx {
 }
 
 impl GenerationCtx {
+    fn make_choice_weighted<T, F, R>(
+        &self,
+        choices: impl Iterator<Item = T> + Clone,
+        mut weights: Option<WeightedIndex<Weight>>,
+        mut use_choice: F,
+    ) -> Result<R>
+    where
+        F: FnMut(T) -> Result<R>,
+        T: Clone,
+    {
+        while let Some(ref mut weights) = weights {
+            let i = weights.sample(&mut *self.rng.borrow_mut());
+            let choice = choices.clone().nth(i).expect("choices not empty");
+            let res = use_choice(choice.clone());
+            match res {
+                Ok(val) => return Ok(val),
+                Err(_) => {
+                    weights.update_weights(&[(i, &0)]).map_err(|err| {
+                        assert_eq!(err, WeightedError::AllWeightsZero);
+                        SelectionError::Exhausted
+                    })?;
+                }
+            }
+        }
+        Err(SelectionError::Exhausted)
+    }
+
     fn make_choice<T, F, R>(
         &self,
         choices: impl Iterator<Item = T> + Clone,
@@ -573,7 +600,10 @@ impl GenerationCtx {
         let return_ty = Ty::I32;
         self.enter_new_fn(&arg_tys, return_ty);
 
-        while !self.pt.is_place_init(Place::RETURN_SLOT) {
+        while Place::RETURN_SLOT.dataflow(&self.pt) < 10
+            && self.current_fn().basic_blocks.len() + self.current_fn().local_decls.len()
+                < BB_MAX_LEN
+        {
             self.choose_statement();
         }
 
@@ -583,8 +613,9 @@ impl GenerationCtx {
 
     fn post_generation(&mut self, stmt: &Statement) {
         match stmt {
-            Statement::Assign(lhs, _) => {
+            Statement::Assign(lhs, rvalue) => {
                 self.pt.mark_place_init(lhs);
+                self.pt.combine_dataflow(lhs, rvalue);
             }
             Statement::StorageLive(_) => todo!(),
             Statement::StorageDead(_) => todo!(),
