@@ -9,13 +9,23 @@ pub struct PlaceSelector {
     tys: Vec<Ty>,
     exclusions: Vec<Place>,
     allow_uninit: bool,
+    for_lhs: bool,
 }
 
 pub type Weight = usize;
 
+const LHS_WEIGH_FACTOR: Weight = 2;
+
 impl PlaceSelector {
-    pub fn new() -> Self {
+    pub fn for_operand() -> Self {
         Self::default()
+    }
+
+    pub fn for_lhs() -> Self {
+        Self {
+            for_lhs: true,
+            ..Self::default()
+        }
     }
 
     pub fn maybe_uninit(mut self) -> Self {
@@ -63,12 +73,27 @@ impl PlaceSelector {
     }
 
     pub fn into_weighted(self, pt: &PlaceTable) -> (Vec<Place>, Option<WeightedIndex<Weight>>) {
-        let (places, weights): (Vec<Place>, Vec<Weight>) = self
-            .into_iter_path(pt)
-            .map(|ppath| (ppath.to_place(pt), ppath.target_node(pt).dataflow))
-            .unzip();
-        let weights = WeightedIndex::new(weights).ok();
-        (places, weights)
+        if self.for_lhs {
+            let (places, weights): (Vec<Place>, Vec<Weight>) = self
+                .into_iter_place(pt)
+                .map(|place| {
+                    if place == Place::RETURN_SLOT {
+                        (place, LHS_WEIGH_FACTOR)
+                    } else {
+                        (place, 1)
+                    }
+                })
+                .unzip();
+            let weights = WeightedIndex::new(weights).ok();
+            (places, weights)
+        } else {
+            let (places, weights): (Vec<Place>, Vec<Weight>) = self
+                .into_iter_path(pt)
+                .map(|ppath| (ppath.to_place(pt), ppath.target_node(pt).dataflow))
+                .unzip();
+            let weights = WeightedIndex::new(weights).ok();
+            (places, weights)
+        }
     }
 
     pub fn into_iter_place(self, pt: &PlaceTable) -> impl Iterator<Item = Place> + Clone + '_ {
@@ -112,7 +137,7 @@ mod tests {
         let pt = build_pt(&mut rng);
 
         b.iter(|| {
-            PlaceSelector::new()
+            PlaceSelector::for_lhs()
                 .except(&Place::RETURN_SLOT)
                 .into_iter_place(&pt)
                 .choose(&mut rng)
@@ -126,7 +151,7 @@ mod tests {
         let pt = build_pt(&mut rng);
 
         b.iter(|| {
-            let places: Vec<Place> = PlaceSelector::new()
+            let places: Vec<Place> = PlaceSelector::for_lhs()
                 .except(&Place::RETURN_SLOT)
                 .into_iter_place(&pt)
                 .collect();

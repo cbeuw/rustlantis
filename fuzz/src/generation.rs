@@ -40,7 +40,7 @@ trait GenerateOperand {
 
 impl GenerateOperand for GenerationCtx {
     fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand> {
-        let (places, weights) = PlaceSelector::new()
+        let (places, weights) = PlaceSelector::for_operand()
             .except(excluded)
             .of_tys(tys)
             .into_weighted(&self.pt);
@@ -318,11 +318,11 @@ trait GenerateStatement {
 
 impl GenerateStatement for GenerationCtx {
     fn generate_assign(&mut self) -> Result<Statement> {
-        let lhs_choices = PlaceSelector::new()
+        let (lhs_choices, weights) = PlaceSelector::for_lhs()
             .maybe_uninit()
-            .into_iter_place(&self.pt);
+            .into_weighted(&self.pt);
 
-        self.make_choice(lhs_choices, |lhs| {
+        self.make_choice_weighted(lhs_choices.into_iter(), weights, |lhs| {
             debug!(
                 "generating an assignment statement with lhs {}: {}",
                 lhs.serialize(),
