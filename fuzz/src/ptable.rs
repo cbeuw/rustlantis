@@ -68,30 +68,34 @@ impl PlaceTable {
         self.current_locals = BiBTreeMap::new();
         body.args_decl_iter().for_each(|(local, decl)| {
             // arguments are init on Call, otherwise the call site is UB
-            let pidx = self.add_place(decl.ty.clone(), true);
+            // encourage use of args
+            let pidx = self.add_place(decl.ty.clone(), true, 10);
             self.current_locals.insert(local, pidx);
         });
-        let pidx = self.add_place(body.return_ty(), false);
+        let pidx = self.add_place(body.return_ty(), false, 0);
         self.current_locals.insert(Local::RET, pidx);
     }
 
     pub fn add_local(&mut self, local: Local, ty: Ty) -> PlaceIndex {
-        let pidx = self.add_place(ty, false);
+        let pidx = self.add_place(ty, false, 0);
         self.current_locals
             .insert_no_overwrite(local, pidx)
             .expect("did not insert existing local or place");
         pidx
     }
 
-    fn add_place(&mut self, ty: Ty, init: bool) -> PlaceIndex {
+    fn add_place(&mut self, ty: Ty, init: bool, dataflow: usize) -> PlaceIndex {
+        if !init {
+            assert_eq!(dataflow, 0);
+        }
         let pidx = self.places.add_node(PlaceNode {
             ty: ty.clone(),
             init,
-            dataflow: 0,
+            dataflow,
         });
         match ty {
             Ty::Tuple(elems) => elems.iter().enumerate().for_each(|(idx, elem)| {
-                let sub_pidx = self.add_place(elem.clone(), init);
+                let sub_pidx = self.add_place(elem.clone(), init, dataflow);
                 self.places.add_edge(
                     pidx,
                     sub_pidx,
@@ -123,12 +127,92 @@ impl PlaceTable {
         Some(node)
     }
 
+    fn update_transitive_superfields<F>(&mut self, start: PlaceIndex, mut update: F)
+    where
+        F: FnMut(&mut Self, PlaceIndex) + Copy,
+    {
+        let supers: Vec<PlaceIndex> = self.immediate_superfields(start).collect();
+        for place in supers {
+            update(self, place);
+            self.update_transitive_superfields(place, update);
+        }
+    }
+
+    fn update_transitive_subfields<F>(&mut self, start: PlaceIndex, mut update: F)
+    where
+        F: FnMut(&mut Self, PlaceIndex) + Copy,
+    {
+        let subs: Vec<PlaceIndex> = self.immediate_subfields(start).collect();
+        for place in subs {
+            update(self, place);
+            self.update_transitive_subfields(place, update);
+        }
+    }
+
     pub fn mark_place_init(&mut self, p: impl ToPlaceIndex) {
         let pidx = p.to_place_index(self).unwrap();
         self.places[pidx].init = true;
-        // Find immediate parents whose subfields are all init
-        let mut need_init: Vec<NodeIndex> = self
-            .places
+        // Update superfields whose immediate subfields are all init
+        self.update_transitive_superfields(pidx, |this, place| {
+            if this
+                .immediate_subfields(place)
+                .all(|sub| this.places[sub].init)
+            {
+                this.places[place].init = true;
+            }
+        });
+
+        // Mark all subfields init
+        self.update_transitive_subfields(pidx, |this, place| {
+            this.places[place].init = true;
+        });
+    }
+
+    fn update_dataflow(&mut self, target: PlaceIndex, new_flow: usize) {
+        self.places[target].dataflow = new_flow;
+
+        // Subplaces' complexity is overwritten as target's new complexity
+        self.update_transitive_subfields(target, |this, place| {
+            this.places[place].dataflow = new_flow;
+        });
+
+        // Superplaces' complexity is updated to be the max of its children
+        self.update_transitive_superfields(target, |this, place| {
+            if let Some(max) = this
+                .immediate_subfields(place)
+                .map(|sub| this.places[sub].dataflow)
+                .max()
+            {
+                this.places[place].dataflow = max;
+            }
+        })
+    }
+
+    pub fn combine_dataflow(&mut self, target: impl ToPlaceIndex, source: impl HasDataflow) {
+        let new_flow = source.dataflow(self);
+        let target = target.to_place_index(self).expect("place exists");
+        self.update_dataflow(target, new_flow)
+    }
+
+    pub fn is_place_init(&self, p: impl ToPlaceIndex) -> bool {
+        let pidx = p.to_place_index(self).unwrap();
+        self.places[pidx].init
+    }
+
+    fn immediate_subfields(&self, pidx: PlaceIndex) -> impl Iterator<Item = PlaceIndex> + '_ {
+        self.places
+            .edges_directed(pidx, Direction::Outgoing)
+            .filter_map(|e| {
+                if *e.weight() == ProjectionElem::Deref {
+                    None
+                } else {
+                    Some(e.target())
+                }
+            })
+    }
+
+    fn immediate_superfields(&self, pidx: PlaceIndex) -> impl Iterator<Item = PlaceIndex> + '_ {
+        self.places
             .edges_directed(pidx, Direction::Incoming)
             .filter_map(|e| {
                 if *e.weight() == ProjectionElem::Deref {
@@ -137,54 +221,6 @@ impl PlaceTable {
                     Some(e.source())
                 }
             })
-            .filter(|&parent| {
-                self.subfields(parent)
-                    .all(|ppath| ppath.target_node(self).init)
-            })
-            .collect();
-        // Recursively mark them as init
-        need_init
-            .iter()
-            .for_each(|node| self.mark_place_init(*node));
-
-        // Mark all subfields init
-        need_init = self
-            .subfields(pidx)
-            .filter_map(|child| {
-                if child.target_node(self).init {
-                    None
-                } else {
-                    Some(child.target_index(self))
-                }
-            })
-            .collect();
-
-        need_init
-            .iter()
-            .for_each(|node| self.mark_place_init(*node));
-    }
-
-    pub fn combine_dataflow(&mut self, target: impl ToPlaceIndex, source: impl HasDataflow) {
-        let new_flow = source.dataflow(self);
-        let target_index = target.to_place_index(self).expect("place exists");
-        self.places[target_index].dataflow = new_flow;
-        let to_change: Vec<PlaceIndex> = self
-            .subfields(target_index)
-            .map(|node| node.target_index(self))
-            .collect();
-        to_change
-            .into_iter()
-            .for_each(|pidx| self.places[pidx].dataflow = new_flow);
-    }
-
-    pub fn is_place_init(&self, p: impl ToPlaceIndex) -> bool {
-        let pidx = p.to_place_index(self).unwrap();
-        self.places[pidx].init
-    }
-
-    // Returns an iterator over all places subsumed by a place
-    fn subfields(&self, pidx: PlaceIndex) -> ProjectionIter<'_> {
-        ProjectionIter::new(self, pidx, false, false)
     }
 
     // Returns an iterator over all places reachable from local through projections
@@ -452,23 +488,47 @@ mod tests {
 
     #[test]
     fn dataflow() {
-        let mut pt = PlaceTable::new();
-        let a = Local::new(0);
-        let b = Local::new(1);
-        let c = Local::new(2);
-        pt.add_local(a, Ty::I8);
-        pt.add_local(b, Ty::I8);
-        pt.add_local(c, Ty::I8);
+        /*
+            ┌──────┬──────┐
+            │      │      │
+            a      │      c
+                ┌──b──┐
+                │     │
+                d     e
+        */
 
-        pt.combine_dataflow(b, Rvalue::Use(Operand::Constant(1.into())));
-        pt.combine_dataflow(c, Rvalue::Use(Operand::Constant(2.into())));
-        assert_eq!(Place::from(b).dataflow(&pt), 1);
-        assert_eq!(Place::from(c).dataflow(&pt), 1);
+        let mut pt = PlaceTable::new();
+        let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I8, Ty::I8]), Ty::I8]);
+        let local = Local::new(1);
+        pt.add_local(local, ty);
+
+        let a = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(0))]);
+        let b = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);
+        let c = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(2))]);
+
+        let d = b.project(ProjectionElem::TupleField(FieldIdx::new(0)));
+        let e = b.project(ProjectionElem::TupleField(FieldIdx::new(1)));
+
+        pt.combine_dataflow(&a, Rvalue::Use(Operand::Constant(1.into())));
+        assert_eq!(a.dataflow(&pt), 1);
+        assert_eq!(Place::from(local).dataflow(&pt), 1);
+        pt.combine_dataflow(&c, Rvalue::Use(Operand::Constant(1.into())));
+        assert_eq!(c.dataflow(&pt), 1);
+        assert_eq!(Place::from(local).dataflow(&pt), 1);
 
         pt.combine_dataflow(
-            a,
-            Rvalue::BinaryOp(BinOp::Add, Operand::Copy(b.into()), Operand::Copy(c.into())),
+            &d,
+            Rvalue::BinaryOp(
+                BinOp::Add,
+                Operand::Copy(a.clone()),
+                Operand::Copy(c.clone()),
+            ),
         );
-        assert_eq!(Place::from(a).dataflow(&pt), 2)
+        assert_eq!(d.dataflow(&pt), 2);
+
+        pt.combine_dataflow(&e, Rvalue::Use(Operand::Constant(1.into())));
+        assert_eq!(b.dataflow(&pt), 2);
+
+        assert_eq!(Place::from(local).dataflow(&pt), 2);
     }
 }
