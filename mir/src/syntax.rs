@@ -550,7 +550,10 @@ impl From<f64> for Literal {
 impl Program {
     pub const FUNCTION_ATTRIBUTE: &str =
         "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
-    pub const HEADER: &str = "#![feature(custom_mir, core_intrinsics)]\nextern crate core;\nuse core::intrinsics::mir::*;\n";
+    pub const HEADER: &str = "#![recursion_limit = \"256\"]
+    #![feature(custom_mir, core_intrinsics)]
+    extern crate core;
+    use core::intrinsics::mir::*;";
 
     // A new, empty function
     pub fn new() -> Self {
