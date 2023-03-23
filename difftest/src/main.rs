@@ -1,7 +1,8 @@
 #![feature(iter_intersperse)]
+#![feature(is_some_and)]
 
 use core::panic;
-use std::{collections::HashMap, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, convert::identity, path::PathBuf, str::FromStr};
 
 use clap::{Arg, Command};
 use config::Config;
@@ -9,7 +10,7 @@ use difftest::{
     backend::{Backend, Cranelift, Miri, OptLevel, LLVM},
     run_diff_test, BackendName,
 };
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 
 fn main() {
     env_logger::init();
@@ -46,7 +47,10 @@ fn main() {
     }
 
     let llvm_toolchain = settings.get_string("llvm_toolchain").ok();
-    backends.insert("llvm", Box::new(LLVM::new(OptLevel::Optimised, llvm_toolchain)));
+    backends.insert(
+        "llvm",
+        Box::new(LLVM::new(OptLevel::Optimised, llvm_toolchain)),
+    );
 
     info!(
         "Difftesting {} with {}",
@@ -62,10 +66,14 @@ fn main() {
         info!("{} is all the same", source.as_os_str().to_string_lossy());
         debug!("{}", results);
     } else {
-        error!(
-            "{} didn't pass:\n{}",
-            source.as_os_str().to_string_lossy(),
-            results
-        );
+        if results.has_ub().is_some_and(identity) {
+            warn!("{} has UB", source.as_os_str().to_string_lossy())
+        } else {
+            error!(
+                "{} didn't pass:\n{}",
+                source.as_os_str().to_string_lossy(),
+                results
+            );
+        }
     }
 }

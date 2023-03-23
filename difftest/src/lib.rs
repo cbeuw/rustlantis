@@ -1,6 +1,7 @@
 #![feature(byte_slice_trim_ascii)]
 #![feature(iter_intersperse)]
 #![feature(let_chains)]
+#![feature(is_some_and)]
 
 pub mod backend;
 
@@ -62,6 +63,26 @@ impl ExecResults {
 
     pub fn all_success(&self) -> bool {
         self.results.keys().all(|r| r.is_ok())
+    }
+
+    pub fn has_ub(&self) -> Option<bool> {
+        self.results
+            .iter()
+            .find_map(|(result, backends)| {
+                if backends.contains("miri") {
+                    Some(result)
+                } else {
+                    None
+                }
+            })
+            .map(|result| {
+                result.clone().is_err_and(|err| {
+                    err.0
+                        .stderr
+                        .to_string_lossy()
+                        .contains("Undefined Behavior")
+                })
+            })
     }
 }
 
