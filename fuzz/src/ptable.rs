@@ -69,7 +69,7 @@ impl PlaceTable {
         body.args_decl_iter().for_each(|(local, decl)| {
             // arguments are init on Call, otherwise the call site is UB
             // encourage use of args
-            let pidx = self.add_place(decl.ty.clone(), true, 10);
+            let pidx = self.add_place(decl.ty.clone(), true, 5);
             self.current_locals.insert(local, pidx);
         });
         let pidx = self.add_place(body.return_ty(), false, 0);

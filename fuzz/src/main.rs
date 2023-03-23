@@ -3,6 +3,7 @@
 #![feature(iter_advance_by)]
 #![feature(variant_count)]
 #![feature(test)]
+#![feature(let_chains)]
 mod generation;
 mod place;
 mod ptable;

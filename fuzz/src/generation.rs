@@ -357,7 +357,7 @@ impl GenerateStatement for GenerationCtx {
     fn choose_statement(&mut self) {
         let choices: Vec<fn(&mut GenerationCtx) -> Result<Statement>> = vec![
             Self::generate_assign,
-            Self::generate_new_var,
+            // Self::generate_new_var,
             // Self::generate_storage_live,
             // Self::generate_storage_dead,
             // Self::generate_deinit,
@@ -376,22 +376,25 @@ impl GenerateStatement for GenerationCtx {
 }
 
 trait GenerateTerminator {
-    fn generate_return(&self) -> Result<Terminator>;
+    fn generate_goto(&mut self) -> Result<(Terminator, BasicBlock)>;
 
     fn choose_terminator(&mut self);
 }
 
 impl GenerateTerminator for GenerationCtx {
-    fn generate_return(&self) -> Result<Terminator> {
-        Ok(Terminator::Return)
+    fn generate_goto(&mut self) -> Result<(Terminator, BasicBlock)> {
+        let bb = self.add_new_bb();
+        Ok((Terminator::Goto { target: bb }, bb))
     }
 
+    /// Terminates the current BB, and moves the generation context to the new BB
     fn choose_terminator(&mut self) {
-        let choices: Vec<fn(&GenerationCtx) -> Result<Terminator>> = vec![Self::generate_return];
-        let terminator = self
-            .make_choice(choices.into_iter(), |f| f(self))
+        let choices = [Self::generate_goto];
+        let (terminator, new_bb) = self
+            .make_choice_mut(choices.into_iter(), |ctx, f| f(ctx))
             .expect("deadend");
         self.current_bb_mut().terminator = terminator;
+        self.enter_bb(new_bb);
     }
 }
 
@@ -500,6 +503,10 @@ impl GenerationCtx {
         &mut self.program.functions[self.current_function]
     }
 
+    pub fn current_bb(&mut self) -> &BasicBlockData {
+        &self.program.functions[self.current_function].basic_blocks[self.current_bb]
+    }
+
     pub fn current_bb_mut(&mut self) -> &mut BasicBlockData {
         &mut self.program.functions[self.current_function].basic_blocks[self.current_bb]
     }
@@ -581,8 +588,33 @@ impl GenerationCtx {
             .enter_fn(&self.program.functions[self.current_function]);
     }
 
+    fn add_new_bb(&mut self) -> BasicBlock {
+        self.current_fn_mut().new_basic_block(BasicBlockData::new())
+    }
+
+    fn enter_bb(&mut self, bb: BasicBlock) {
+        self.current_bb = bb;
+        self.exec_path.push((self.current_function, bb));
+    }
+
+    fn generate_return(&mut self) {
+        let callee = self.current_function;
+        self.current_bb_mut().terminator = Terminator::Return;
+        while let Some(&(func, _)) = self.exec_path.last() && func == callee {
+            self.exec_path.pop();
+        }
+
+        if let Some(&(func, bb)) = self.exec_path.last() {
+            self.current_bb = bb;
+            self.current_function = func;
+            // TODO: ptable call stack
+        } else {
+            // Returning back to main from fn0, do nothing
+        }
+    }
+
     pub fn generate(mut self) -> Program {
-        let args_count = self.rng.get_mut().gen_range(0..=8);
+        let args_count = self.rng.get_mut().gen_range(2..=16);
         let arg_tys: Vec<Ty> = self
             .tcx
             .iter()
@@ -601,13 +633,17 @@ impl GenerationCtx {
         self.enter_new_fn(&arg_tys, return_ty);
 
         while Place::RETURN_SLOT.dataflow(&self.pt) < 10
-            && self.current_fn().basic_blocks.len() + self.current_fn().local_decls.len()
-                < BB_MAX_LEN
+            && self.current_fn().basic_blocks.len() < 32
         {
-            self.choose_statement();
+            let statement_count = self.rng.get_mut().gen_range(1..=32);
+            debug!("Generating a bb with {statement_count} statements");
+            for _ in 0..statement_count {
+                self.choose_statement();
+            }
+            self.choose_terminator();
         }
 
-        self.choose_terminator();
+        self.generate_return();
         self.program
     }
 

@@ -203,14 +203,14 @@ impl Serialize for Body {
             .collect();
         let mut bbs = self.basic_blocks.iter_enumerated();
         body.push_str(&format!(
-            "{{\n{}\n}}",
+            "{{\n{}\n}}\n",
             bbs.next()
                 .expect("body contains at least one bb")
                 .1
                 .serialize()
         ));
         let rest =
-            bbs.map(|(idx, bb)| format!("{} = {{\n{}\n}}", idx.identifier(), bb.serialize()));
+            bbs.map(|(idx, bb)| format!("{} = {{\n{}\n}}\n", idx.identifier(), bb.serialize()));
         body.extend(rest);
         format!("mir! {{\n{body}\n}}")
     }
