@@ -60,10 +60,13 @@ impl Serialize for Literal {
     fn serialize(&self) -> String {
         match self {
             Literal::Uint(i, _) => format!("{i}_{}", self.ty().serialize()),
+            Literal::Int(i, _) if *i < 0 => format!("({i}_{})", self.ty().serialize()),
             Literal::Int(i, _) => format!("{i}_{}", self.ty().serialize()),
             Literal::Float(f, _) => {
                 if f.is_nan() {
                     format!("{}::NAN", self.ty().serialize())
+                } else if *f < 0. {
+                    format!("({f}_{})", self.ty().serialize())
                 } else {
                     format!("{f}_{}", self.ty().serialize())
                 }
