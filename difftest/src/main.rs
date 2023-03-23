@@ -1,4 +1,3 @@
-#![feature(byte_slice_trim_ascii)]
 #![feature(iter_intersperse)]
 
 use core::panic;

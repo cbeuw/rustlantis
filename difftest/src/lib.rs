@@ -1,5 +1,6 @@
 #![feature(byte_slice_trim_ascii)]
 #![feature(iter_intersperse)]
+#![feature(let_chains)]
 
 pub mod backend;
 
@@ -34,7 +35,13 @@ impl ExecResults {
         'outer: for (&name, result) in map {
             for (class_result, names) in &mut eq_classes {
                 // Put into an existing equivalence class
-                if result == class_result {
+                let eq = if let Ok(class_out) = class_result && let Ok(out) = result {
+                    class_out.stdout == out.stdout
+                } else {
+                    result == class_result
+
+                };
+                if eq {
                     names.insert(name);
                     continue 'outer;
                 }
