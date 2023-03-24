@@ -628,12 +628,11 @@ impl GenerationCtx {
 
         self.program.set_entry_args(&arg_literals);
 
-        // let return_ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
-        let return_ty = Ty::I32;
+        let return_ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
         self.enter_new_fn(&arg_tys, return_ty);
 
         while Place::RETURN_SLOT.dataflow(&self.pt) < 10
-            && self.current_fn().basic_blocks.len() < 32
+            || !self.pt.is_place_init(Place::RETURN_SLOT)
         {
             let statement_count = self.rng.get_mut().gen_range(1..=32);
             debug!("Generating a bb with {statement_count} statements");
@@ -641,6 +640,10 @@ impl GenerationCtx {
                 self.choose_statement();
             }
             self.choose_terminator();
+
+            if self.current_fn().basic_blocks.len() >= 32 {
+                break;
+            }
         }
 
         self.generate_return();

@@ -195,16 +195,15 @@ impl Serialize for BasicBlockData {
 
 impl Serialize for Body {
     fn serialize(&self) -> String {
+        // Return type annotation
+        let mut body: String = format!("type RET = {};\n", self.return_ty().serialize());
         // Declarations
-        let mut body: String = self
-            .vars_iter()
-            // .chain([Local::RET])
-            .map(|idx| {
-                let decl = &self.local_decls[idx];
-                format!("let {}: {};\n", idx.identifier(), decl.ty.serialize())
-            })
-            .collect();
+        body.extend(self.vars_iter().map(|idx| {
+            let decl = &self.local_decls[idx];
+            format!("let {}: {};\n", idx.identifier(), decl.ty.serialize())
+        }));
         let mut bbs = self.basic_blocks.iter_enumerated();
+        // First bb
         body.push_str(&format!(
             "{{\n{}\n}}\n",
             bbs.next()
@@ -212,9 +211,10 @@ impl Serialize for Body {
                 .1
                 .serialize()
         ));
-        let rest =
-            bbs.map(|(idx, bb)| format!("{} = {{\n{}\n}}\n", idx.identifier(), bb.serialize()));
-        body.extend(rest);
+        // Other bbs
+        body.extend(
+            bbs.map(|(idx, bb)| format!("{} = {{\n{}\n}}\n", idx.identifier(), bb.serialize())),
+        );
         format!("mir! {{\n{body}\n}}")
     }
 }

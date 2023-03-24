@@ -552,6 +552,7 @@ impl Program {
         "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
     pub const HEADER: &str = "#![recursion_limit = \"256\"]
     #![feature(custom_mir, core_intrinsics)]
+    #![allow(unused_parens)]
     extern crate core;
     use core::intrinsics::mir::*;";
 
