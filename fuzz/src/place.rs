@@ -15,6 +15,7 @@ pub struct PlaceSelector {
 pub type Weight = usize;
 
 const LHS_WEIGH_FACTOR: Weight = 2;
+const UNINIT_WEIGHT_FACTOR: Weight = 2;
 
 impl PlaceSelector {
     pub fn for_operand() -> Self {
@@ -75,13 +76,20 @@ impl PlaceSelector {
     pub fn into_weighted(self, pt: &PlaceTable) -> (Vec<Place>, Option<WeightedIndex<Weight>>) {
         if self.for_lhs {
             let (places, weights): (Vec<Place>, Vec<Weight>) = self
-                .into_iter_place(pt)
-                .map(|place| {
-                    if place == Place::RETURN_SLOT {
-                        (place, LHS_WEIGH_FACTOR)
+                .into_iter_path(pt)
+                .map(|ppath| {
+                    let mut weight = if !ppath.target_node(pt).init {
+                        UNINIT_WEIGHT_FACTOR
                     } else {
-                        (place, 1)
-                    }
+                        1
+                    };
+                    let place = ppath.to_place(pt);
+                    weight *= if place == Place::RETURN_SLOT {
+                        LHS_WEIGH_FACTOR
+                    } else {
+                        1
+                    };
+                    (place, weight)
                 })
                 .unzip();
             let weights = WeightedIndex::new(weights).ok();
