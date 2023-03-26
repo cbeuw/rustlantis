@@ -65,6 +65,8 @@ impl Serialize for Literal {
             Literal::Float(f, _) => {
                 if f.is_nan() {
                     format!("{}::NAN", self.ty().serialize())
+                } else if f.is_infinite() {
+                    format!("{}::INFINITY", self.ty().serialize())
                 } else if *f < 0. {
                     format!("({f}_{})", self.ty().serialize())
                 } else {
@@ -287,5 +289,8 @@ mod tests {
     fn serialize_literal() {
         let nan = Literal::Float(f32::NAN as f64, FloatTy::F32);
         assert_eq!(nan.serialize(), "f32::NAN");
+
+        let inf = Literal::Float(f32::INFINITY as f64, FloatTy::F32);
+        assert_eq!(inf.serialize(), "f32::INFINITY");
     }
 }

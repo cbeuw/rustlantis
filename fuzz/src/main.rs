@@ -5,6 +5,7 @@
 #![feature(test)]
 #![feature(let_chains)]
 mod generation;
+mod literal;
 mod place;
 mod ptable;
 mod ty;
@@ -13,7 +14,7 @@ use std::env::args;
 
 use crate::generation::GenerationCtx;
 use log::info;
-use mir::{serialize::Serialize};
+use mir::serialize::Serialize;
 
 fn main() {
     env_logger::init();

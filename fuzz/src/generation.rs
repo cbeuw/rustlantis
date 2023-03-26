@@ -10,6 +10,7 @@ use mir::vec::Idx;
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
 use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
+use crate::literal::GenLiteral;
 use crate::place::{PlaceSelector, Weight};
 use crate::ptable::{HasDataflow, PlaceTable};
 use crate::ty::TyCtxt;
@@ -66,7 +67,9 @@ impl GenerateOperand for GenerationCtx {
                     .choose(&mut *self.rng.borrow_mut())
                     .unwrap();
                 let literal = self
-                    .generate_literal(selected)
+                    .rng
+                    .borrow_mut()
+                    .gen_literal(selected)
                     .expect("can always generate a literal of a literalble type");
                 Ok(Operand::Constant(literal))
             }
@@ -529,46 +532,6 @@ impl GenerationCtx {
         local
     }
 
-    fn generate_literal(&self, ty: &Ty) -> Option<Literal> {
-        let mut rng = self.rng.borrow_mut();
-        let lit: Literal = match *ty {
-            Ty::Bool => rng.gen_bool(0.5).into(),
-            Ty::Char => {
-                // There are 0xD7FF + 1 Unicode Scalar Values in the lower range, and 0x10FFFF - 0xE000 + 1
-                // values in the upper range.
-                let ordinal = rng.gen_range(0..((0xD7FF + 1) + (0x10FFFF - 0xE000 + 1)));
-                if ordinal <= 0xD7FF {
-                    char::from_u32(ordinal).unwrap().into()
-                } else {
-                    char::from_u32(ordinal - 0xD800 + 0xE000).unwrap().into()
-                }
-            }
-            Ty::USIZE => rng
-                .gen_range(usize::MIN..=usize::MAX)
-                .try_into()
-                .expect("usize isn't greater than 128 bits"),
-            Ty::U8 => rng.gen_range(u8::MIN..=u8::MAX).into(),
-            Ty::U16 => rng.gen_range(u16::MIN..=u16::MAX).into(),
-            Ty::U32 => rng.gen_range(u32::MIN..=u32::MAX).into(),
-            Ty::U64 => rng.gen_range(u64::MIN..=u64::MAX).into(),
-            Ty::U128 => rng.gen_range(u128::MIN..=u128::MAX).into(),
-            Ty::ISIZE => rng
-                .gen_range(isize::MIN..=isize::MAX)
-                .try_into()
-                .expect("isize isn't greater than 128 bits"),
-            Ty::I8 => rng.gen_range(i8::MIN..=i8::MAX).into(),
-            Ty::I16 => rng.gen_range(i16::MIN..=i16::MAX).into(),
-            Ty::I32 => rng.gen_range(i32::MIN..=i32::MAX).into(),
-            Ty::I64 => rng.gen_range(i64::MIN..=i64::MAX).into(),
-            Ty::I128 => rng.gen_range(i128::MIN..=i128::MAX).into(),
-            Ty::F32 => f32::from_bits(rng.gen_range(u32::MIN..=u32::MAX)).into(),
-            Ty::F64 => f64::from_bits(rng.gen_range(u64::MIN..=u64::MAX)).into(),
-            Ty::Unit => Literal::Tuple(vec![]),
-            _ => return None,
-        };
-        Some(lit)
-    }
-
     // Move generation context to an executed function
     fn enter_new_fn(&mut self, args: &[Ty], return_ty: Ty) {
         debug!(
@@ -624,7 +587,12 @@ impl GenerationCtx {
             .choose_multiple(&mut *self.rng.borrow_mut(), args_count);
         let arg_literals: Vec<Literal> = arg_tys
             .iter()
-            .map(|ty| self.generate_literal(ty).expect("ty is literable"))
+            .map(|ty| {
+                self.rng
+                    .borrow_mut()
+                    .gen_literal(ty)
+                    .expect("ty is literable")
+            })
             .collect();
 
         self.program.set_entry_args(&arg_literals);
