@@ -1,27 +1,8 @@
 use std::num::TryFromIntError;
 
-use crate::{
-    serialize::Serialize,
-    vec::{Idx, IndexVec},
-};
+use index_vec::{define_index_type, IndexVec};
 
-macro_rules! declare_id {
-    ($name: ident) => {
-        #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
-        pub struct $name(u32);
-
-        impl Idx for $name {
-            fn new(idx: usize) -> Self {
-                $name(idx.try_into().unwrap())
-            }
-            fn index(self) -> usize {
-                // See the comment in `Self::new`.
-                // (This cannot underflow because self is NonZeroU32.)
-                usize::try_from(self.0).unwrap()
-            }
-        }
-    };
-}
+use crate::serialize::Serialize;
 
 pub struct Program {
     pub functions: IndexVec<Function, Body>,
@@ -30,14 +11,14 @@ pub struct Program {
 
 pub type LocalDecls = IndexVec<Local, LocalDecl>;
 
-declare_id!(Function);
+define_index_type!{pub struct Function = u32;}
 pub struct Body {
     pub basic_blocks: IndexVec<BasicBlock, BasicBlockData>,
     pub local_decls: LocalDecls,
     arg_count: usize,
 }
 
-declare_id!(BasicBlock);
+define_index_type!{pub struct BasicBlock = u32;}
 pub struct BasicBlockData {
     pub statements: Vec<Statement>,
     pub terminator: Terminator,
@@ -57,7 +38,7 @@ impl BasicBlockData {
     }
 }
 
-declare_id!(Local);
+define_index_type!{pub struct Local = u32;}
 pub struct LocalDecl {
     /// Whether this is a mutable binding (i.e., `let x` or `let mut x`).
     ///
@@ -69,8 +50,8 @@ pub struct LocalDecl {
     pub ty: Ty,
 }
 
-declare_id!(FieldIdx);
-declare_id!(VariantIdx);
+define_index_type!{pub struct FieldIdx = u32;}
+define_index_type!{pub struct VariantIdx = u32;}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Place {
@@ -283,7 +264,7 @@ pub enum FloatTy {
     F64,
 }
 
-declare_id!(TyId);
+define_index_type!{pub struct TyId = u32;}
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub enum Ty {
     // Scalars
@@ -601,7 +582,7 @@ impl LocalDecl {
 }
 
 impl Local {
-    pub const RET: Self = Self(0);
+    pub const RET: Self = Self::from_raw_unchecked(0);
     pub fn identifier(&self) -> String {
         if *self == Self::RET {
             "RET".to_owned()

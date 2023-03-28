@@ -1,11 +1,11 @@
 use core::slice;
 use std::{collections::BTreeMap, fmt::Write};
 
+use index_vec::IndexVec;
 use log::{debug, log_enabled};
 use mir::{
     serialize::Serialize,
     syntax::{Ty, TyId},
-    vec::IndexVec,
 };
 use rand::{seq::IteratorRandom, Rng};
 use rand_distr::{Distribution, Poisson, WeightedIndex};

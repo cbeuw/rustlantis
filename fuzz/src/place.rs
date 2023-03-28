@@ -115,10 +115,7 @@ impl PlaceSelector {
 #[cfg(test)]
 mod tests {
     extern crate test;
-    use mir::{
-        syntax::{Local, Place},
-        vec::Idx,
-    };
+    use mir::syntax::{Local, Place};
     use rand::{
         rngs::SmallRng,
         seq::{IteratorRandom, SliceRandom},

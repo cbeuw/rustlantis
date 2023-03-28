@@ -6,7 +6,6 @@ use mir::syntax::{
     BasicBlock, BasicBlockData, BinOp, Body, Function, Literal, Local, LocalDecls, Mutability,
     Operand, Place, Program, Rvalue, Statement, Terminator, Ty, UnOp,
 };
-use mir::vec::Idx;
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
 use rand_distr::{Distribution, WeightedError, WeightedIndex};
 

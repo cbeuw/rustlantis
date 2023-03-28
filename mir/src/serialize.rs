@@ -1,4 +1,4 @@
-use crate::{syntax::*, vec::Idx};
+use crate::syntax::*;
 
 pub trait Serialize {
     fn serialize(&self) -> String;
@@ -272,7 +272,7 @@ impl Serialize for &[Ty] {
 
 #[cfg(test)]
 mod tests {
-    use crate::{syntax::*, vec::Idx};
+    use crate::syntax::*;
 
     use super::Serialize;
 

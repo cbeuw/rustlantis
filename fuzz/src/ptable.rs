@@ -1,10 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use bimap::BiBTreeMap;
-use mir::{
-    syntax::{Body, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty},
-    vec::Idx,
-};
+use mir::syntax::{Body, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
@@ -388,10 +385,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use mir::{
-        syntax::{BinOp, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty},
-        vec::Idx,
-    };
+    use mir::syntax::{BinOp, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
 
     use crate::ptable::HasDataflow;
 
