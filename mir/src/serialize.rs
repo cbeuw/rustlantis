@@ -66,7 +66,11 @@ impl Serialize for Literal {
                 if f.is_nan() {
                     format!("{}::NAN", self.ty().serialize())
                 } else if f.is_infinite() {
-                    format!("{}::INFINITY", self.ty().serialize())
+                    if f.is_sign_positive() {
+                        format!("{}::INFINITY", self.ty().serialize())
+                    } else {
+                        format!("{}::NEG_INFINITY", self.ty().serialize())
+                    }
                 } else if *f < 0. {
                     format!("({f}_{})", self.ty().serialize())
                 } else {

@@ -19,7 +19,7 @@ use crate::ty::TyCtxt;
 const BB_MAX_LEN: usize = 128;
 
 #[derive(Debug)]
-enum SelectionError {
+pub enum SelectionError {
     Exhausted,
 }
 
@@ -35,7 +35,7 @@ pub struct GenerationCtx {
     current_bb: BasicBlock,
 }
 
-trait GenerateOperand {
+pub trait GenerateOperand {
     fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand>;
 }
 
@@ -44,7 +44,8 @@ impl GenerateOperand for GenerationCtx {
         let (places, weights) = PlaceSelector::for_operand()
             .except(excluded)
             .of_tys(tys)
-            .into_weighted(&self.pt);
+            .into_weighted(&self.pt)
+            .ok_or(SelectionError::Exhausted)?;
         self.make_choice_weighted(places.into_iter(), weights, |place| {
             if self.tcx.is_copy(&place.ty(self.current_decls())) {
                 Ok(Operand::Copy(place))
@@ -324,7 +325,8 @@ impl GenerateStatement for GenerationCtx {
     fn generate_assign(&mut self) -> Result<Statement> {
         let (lhs_choices, weights) = PlaceSelector::for_lhs()
             .maybe_uninit()
-            .into_weighted(&self.pt);
+            .into_weighted(&self.pt)
+            .ok_or(SelectionError::Exhausted)?;
 
         self.make_choice_weighted(lhs_choices.into_iter(), weights, |lhs| {
             debug!(
@@ -406,14 +408,14 @@ impl GenerationCtx {
     fn make_choice_weighted<T, F, R>(
         &self,
         choices: impl Iterator<Item = T> + Clone,
-        mut weights: Option<WeightedIndex<Weight>>,
+        mut weights: WeightedIndex<Weight>,
         mut use_choice: F,
     ) -> Result<R>
     where
         F: FnMut(T) -> Result<R>,
         T: Clone,
     {
-        while let Some(ref mut weights) = weights {
+        loop {
             let i = weights.sample(&mut *self.rng.borrow_mut());
             let choice = choices.clone().nth(i).expect("choices not empty");
             let res = use_choice(choice.clone());
@@ -427,7 +429,6 @@ impl GenerationCtx {
                 }
             }
         }
-        Err(SelectionError::Exhausted)
     }
 
     fn make_choice<T, F, R>(

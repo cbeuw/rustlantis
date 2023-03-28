@@ -73,8 +73,8 @@ impl PlaceSelector {
         })
     }
 
-    pub fn into_weighted(self, pt: &PlaceTable) -> (Vec<Place>, Option<WeightedIndex<Weight>>) {
-        if self.for_lhs {
+    pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<Place>, WeightedIndex<Weight>)> {
+        let (places, weights) = if self.for_lhs {
             let (places, weights): (Vec<Place>, Vec<Weight>) = self
                 .into_iter_path(pt)
                 .map(|ppath| {
@@ -92,15 +92,18 @@ impl PlaceSelector {
                     (place, weight)
                 })
                 .unzip();
-            let weights = WeightedIndex::new(weights).ok();
             (places, weights)
         } else {
             let (places, weights): (Vec<Place>, Vec<Weight>) = self
                 .into_iter_path(pt)
                 .map(|ppath| (ppath.to_place(pt), ppath.target_node(pt).dataflow))
                 .unzip();
-            let weights = WeightedIndex::new(weights).ok();
             (places, weights)
+        };
+        if let Some(weighted_index) = WeightedIndex::new(weights).ok() {
+            Some((places, weighted_index))
+        } else {
+            None
         }
     }
 
