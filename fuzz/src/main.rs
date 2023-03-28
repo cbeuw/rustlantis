@@ -4,6 +4,7 @@
 #![feature(variant_count)]
 #![feature(test)]
 #![feature(let_chains)]
+#![feature(try_blocks)]
 mod generation;
 mod literal;
 mod place;

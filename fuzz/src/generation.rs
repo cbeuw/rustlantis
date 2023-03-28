@@ -40,19 +40,21 @@ pub trait GenerateOperand {
 
 impl GenerateOperand for GenerationCtx {
     fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand> {
-        let (places, weights) = PlaceSelector::for_operand()
-            .except(excluded)
-            .of_tys(tys)
-            .into_weighted(&self.pt)
-            .ok_or(SelectionError::Exhausted)?;
-        self.make_choice_weighted(places.into_iter(), weights, |place| {
-            if self.tcx.is_copy(&place.ty(self.current_decls())) {
-                Ok(Operand::Copy(place))
-            } else {
-                Ok(Operand::Move(place))
-            }
-        })
-        .or_else(|_| {
+        let operand: Result<Operand> = try {
+            let (places, weights) = PlaceSelector::for_operand()
+                .except(excluded)
+                .of_tys(tys)
+                .into_weighted(&self.pt)
+                .ok_or(SelectionError::Exhausted)?;
+            self.make_choice_weighted(places.into_iter(), weights, |place| {
+                if self.tcx.is_copy(&place.ty(self.current_decls())) {
+                    Ok(Operand::Copy(place))
+                } else {
+                    Ok(Operand::Move(place))
+                }
+            })?
+        };
+        operand.or_else(|_| {
             // TODO: allow array and tuple literals
             let literalble: Vec<Ty> = tys
                 .iter()
@@ -96,6 +98,11 @@ impl GenerateRvalue for GenerationCtx {
     - LHS and RHS do not alias
      */
     fn generate_use(&self, lhs: &Place) -> Result<Rvalue> {
+        debug!(
+            "generating use with {}: {}",
+            lhs.serialize(),
+            lhs.ty(self.current_decls()).serialize()
+        );
         let operand = self.choose_operand(&[lhs.ty(self.current_decls())], lhs)?;
         Ok(Rvalue::Use(operand))
     }
