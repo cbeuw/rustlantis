@@ -11,14 +11,14 @@ pub struct Program {
 
 pub type LocalDecls = IndexVec<Local, LocalDecl>;
 
-define_index_type!{pub struct Function = u32;}
+define_index_type! {pub struct Function = u32;}
 pub struct Body {
     pub basic_blocks: IndexVec<BasicBlock, BasicBlockData>,
     pub local_decls: LocalDecls,
     arg_count: usize,
 }
 
-define_index_type!{pub struct BasicBlock = u32;}
+define_index_type! {pub struct BasicBlock = u32;}
 pub struct BasicBlockData {
     pub statements: Vec<Statement>,
     pub terminator: Terminator,
@@ -38,7 +38,7 @@ impl BasicBlockData {
     }
 }
 
-define_index_type!{pub struct Local = u32;}
+define_index_type! {pub struct Local = u32;}
 pub struct LocalDecl {
     /// Whether this is a mutable binding (i.e., `let x` or `let mut x`).
     ///
@@ -50,8 +50,8 @@ pub struct LocalDecl {
     pub ty: Ty,
 }
 
-define_index_type!{pub struct FieldIdx = u32;}
-define_index_type!{pub struct VariantIdx = u32;}
+define_index_type! {pub struct FieldIdx = u32;}
+define_index_type! {pub struct VariantIdx = u32;}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Place {
@@ -264,7 +264,7 @@ pub enum FloatTy {
     F64,
 }
 
-define_index_type!{pub struct TyId = u32;}
+define_index_type! {pub struct TyId = u32;}
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub enum Ty {
     // Scalars
@@ -338,7 +338,10 @@ impl Ty {
     }
 
     pub fn is_literalble(&self) -> bool {
-        self.is_scalar()
+        match self {
+            Self::Tuple(elems) => elems.iter().all(Self::is_scalar),
+            _ => self.is_scalar(),
+        }
     }
 
     // TODO: are pointers scalar?

@@ -36,6 +36,11 @@ pub trait GenLiteral: Rng {
             Ty::F32 => generate_f32(self).into(),
             Ty::F64 => generate_f64(self).into(),
             Ty::Unit => Literal::Tuple(vec![]),
+            Ty::Tuple(ref elems) if elems.iter().all(Ty::is_scalar) => {
+                let lits: Option<Vec<Literal>> =
+                    elems.iter().map(|ty| self.gen_literal(ty)).collect();
+                return lits.map(|lits| Literal::Tuple(lits));
+            }
             _ => return None,
         };
         Some(lit)
