@@ -71,7 +71,7 @@ fn generate_f32<R: Rng + ?Sized>(rng: &mut R) -> f32 {
         Category::Normal => {
             let sign: u32 = *[0 << 31, 1 << 31].choose(rng).unwrap();
             let exponent = rng.gen_range(0x01..=0xfe);
-            let fraction = rng.gen_range(1..=(1 << 23));
+            let fraction = rng.gen_range(0..(1 << 23));
             f32::from_bits(sign | exponent | fraction)
         }
         Category::Subnormal => {
@@ -92,7 +92,7 @@ fn generate_f64<R: Rng + ?Sized>(rng: &mut R) -> f64 {
         Category::Normal => {
             let sign: u64 = *[0 << 63, 1 << 63].choose(rng).unwrap();
             let exponent = rng.gen_range(0x001..=0x7fe);
-            let fraction = rng.gen_range(0..=(1 << 52));
+            let fraction = rng.gen_range(0..(1 << 52));
             f64::from_bits(sign | exponent | fraction)
         }
         Category::Subnormal => {
