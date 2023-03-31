@@ -337,13 +337,6 @@ impl Ty {
         }
     }
 
-    pub fn is_literalble(&self) -> bool {
-        match self {
-            Self::Tuple(elems) => elems.iter().all(Self::is_scalar),
-            _ => self.is_scalar(),
-        }
-    }
-
     // TODO: are pointers scalar?
     pub fn is_scalar(&self) -> bool {
         match *self {

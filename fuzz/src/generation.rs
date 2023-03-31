@@ -58,7 +58,7 @@ impl GenerateOperand for GenerationCtx {
             // TODO: allow array and tuple literals
             let literalble: Vec<Ty> = tys
                 .iter()
-                .filter(|ty| ty.is_literalble())
+                .filter(|ty| <dyn RngCore>::is_literalble(*ty))
                 .cloned()
                 .collect();
             if literalble.is_empty() {
@@ -535,7 +535,7 @@ impl GenerationCtx {
             local.identifier(),
             ty.serialize()
         );
-        self.pt.add_local(local, ty);
+        self.pt.allocate_local(local, ty);
         local
     }
 

@@ -2,6 +2,12 @@ use mir::syntax::{Literal, Ty};
 use rand::{seq::SliceRandom, Rng, RngCore};
 
 pub trait GenLiteral: Rng {
+    fn is_literalble(ty: &Ty) -> bool {
+        match *ty {
+            Ty::Tuple(ref elems) => elems.iter().all(Ty::is_scalar),
+            _ => ty.is_scalar(),
+        }
+    }
     fn gen_literal(&mut self, ty: &Ty) -> Option<Literal> {
         let lit: Literal = match *ty {
             Ty::Bool => self.gen_bool(0.5).into(),
