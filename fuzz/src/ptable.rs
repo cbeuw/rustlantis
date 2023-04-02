@@ -1,9 +1,12 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use bimap::BiBTreeMap;
+use log::debug;
 use mir::syntax::{Body, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
+
+use crate::mem::{size::Size, AbstractByte, AllocId, AllocIndex, BasicMemory};
 
 pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
@@ -13,13 +16,18 @@ pub type Path = SmallVec<[ProjectionIndex; 4]>;
 pub struct PlaceTable {
     current_locals: BiBTreeMap<Local, PlaceIndex>,
     places: Graph<PlaceNode, ProjectionElem>,
+    memory: BasicMemory,
 }
 
 #[derive(Debug, Clone)]
 pub struct PlaceNode {
     pub ty: Ty,
-    pub init: bool,
+    alloc_id: AllocId,
     pub dataflow: usize,
+
+    // Only Tys fitting into a single Run have these
+    offset: Option<AllocIndex>,
+    size: Option<Size>,
 }
 
 pub trait ToPlaceIndex {
@@ -58,41 +66,89 @@ impl PlaceTable {
         Self {
             current_locals: BiBTreeMap::new(),
             places: Graph::default(),
+            memory: BasicMemory::new(),
         }
     }
 
-    pub fn enter_fn(&mut self, body: &Body) {
+    pub fn enter_fn0(&mut self, body: &Body) {
         self.current_locals = BiBTreeMap::new();
+
+        // Declare args
         body.args_decl_iter().for_each(|(local, decl)| {
-            // arguments are init on Call, otherwise the call site is UB
+            let pidx = self.allocate_local(local, decl.ty.clone());
             // encourage use of args
-            let pidx = self.add_place(decl.ty.clone(), true, 5);
-            self.current_locals.insert(local, pidx);
+            self.places[pidx].dataflow = 5;
         });
-        let pidx = self.add_place(body.return_ty(), false, 0);
-        self.current_locals.insert(Local::RET, pidx);
+
+        // Prepare return place
+        let alloc_id = self.memory.allocate();
+        let return_pidx = self.add_place(body.return_ty(), alloc_id, 0);
+        self.current_locals
+            .insert_no_overwrite(Local::RET, return_pidx)
+            .expect("return place did not already exist");
     }
 
-    pub fn add_local(&mut self, local: Local, ty: Ty) -> PlaceIndex {
-        let pidx = self.add_place(ty, false, 0);
+    pub fn enter_fn(&mut self, body: &Body, args: &[Place]) {
+        // Get the PlaceIndices before frame switch
+        let args: Vec<PlaceIndex> = args
+            .iter()
+            .map(|p| p.to_place_index(self).expect("place is in current frame"))
+            .collect();
+        let return_place = Place::RETURN_SLOT
+            .to_place_index(self)
+            .expect("return slot is in current frame");
+
+        self.current_locals = BiBTreeMap::new();
+        body.args_decl_iter()
+            .zip(args)
+            .for_each(|((local, decl), source)| {
+                let pidx = self.allocate_local(local, decl.ty.clone());
+                debug_assert!(
+                    self.is_place_init(source),
+                    "function arguments must be init"
+                );
+
+                // encourage use of args
+                self.places[pidx].dataflow = self.places[source].dataflow;
+                // FIXME: copy memory from arg to the new places
+            });
+        self.current_locals
+            .insert_no_overwrite(Local::RET, return_place)
+            .expect("return place did not already exist");
+    }
+
+    pub fn allocate_local(&mut self, local: Local, ty: Ty) -> PlaceIndex {
+        let alloc_id = self.memory.allocate();
+        let pidx = self.add_place(ty, alloc_id, 0);
         self.current_locals
             .insert_no_overwrite(local, pidx)
             .expect("did not insert existing local or place");
         pidx
     }
 
-    fn add_place(&mut self, ty: Ty, init: bool, dataflow: usize) -> PlaceIndex {
-        if !init {
-            assert_eq!(dataflow, 0);
-        }
-        let pidx = self.places.add_node(PlaceNode {
-            ty: ty.clone(),
-            init,
-            dataflow,
-        });
+    fn add_place(&mut self, ty: Ty, alloc_id: AllocId, dataflow: usize) -> PlaceIndex {
+        let pidx = if let Some(size) = self.memory.ty_size(&ty) {
+            // FIXME: don't always allocate Runs
+            let offset = self.memory.new_run(alloc_id, size);
+            self.places.add_node(PlaceNode {
+                ty: ty.clone(),
+                alloc_id,
+                dataflow,
+                offset: Some(offset),
+                size: Some(size),
+            })
+        } else {
+            self.places.add_node(PlaceNode {
+                ty: ty.clone(),
+                alloc_id,
+                dataflow,
+                offset: None,
+                size: None,
+            })
+        };
         match ty {
             Ty::Tuple(elems) => elems.iter().enumerate().for_each(|(idx, elem)| {
-                let sub_pidx = self.add_place(elem.clone(), init, dataflow);
+                let sub_pidx = self.add_place(elem.clone(), alloc_id, dataflow);
                 self.places.add_edge(
                     pidx,
                     sub_pidx,
@@ -126,43 +182,32 @@ impl PlaceTable {
 
     fn update_transitive_superfields<F>(&mut self, start: PlaceIndex, mut update: F)
     where
-        F: FnMut(&mut Self, PlaceIndex) + Copy,
+        F: FnMut(&mut Self, PlaceIndex) -> bool + Copy,
     {
         let supers: Vec<PlaceIndex> = self.immediate_superfields(start).collect();
         for place in supers {
-            update(self, place);
-            self.update_transitive_superfields(place, update);
+            let cont = update(self, place);
+            if cont {
+                self.update_transitive_superfields(place, update);
+            } else {
+                continue;
+            }
         }
     }
 
     fn update_transitive_subfields<F>(&mut self, start: PlaceIndex, mut update: F)
     where
-        F: FnMut(&mut Self, PlaceIndex) + Copy,
+        F: FnMut(&mut Self, PlaceIndex) -> bool + Copy,
     {
         let subs: Vec<PlaceIndex> = self.immediate_subfields(start).collect();
         for place in subs {
-            update(self, place);
-            self.update_transitive_subfields(place, update);
-        }
-    }
-
-    pub fn mark_place_init(&mut self, p: impl ToPlaceIndex) {
-        let pidx = p.to_place_index(self).unwrap();
-        self.places[pidx].init = true;
-        // Update superfields whose immediate subfields are all init
-        self.update_transitive_superfields(pidx, |this, place| {
-            if this
-                .immediate_subfields(place)
-                .all(|sub| this.places[sub].init)
-            {
-                this.places[place].init = true;
+            let cont = update(self, place);
+            if cont {
+                self.update_transitive_subfields(place, update);
+            } else {
+                continue;
             }
-        });
-
-        // Mark all subfields init
-        self.update_transitive_subfields(pidx, |this, place| {
-            this.places[place].init = true;
-        });
+        }
     }
 
     fn update_dataflow(&mut self, target: PlaceIndex, new_flow: usize) {
@@ -171,6 +216,7 @@ impl PlaceTable {
         // Subplaces' complexity is overwritten as target's new complexity
         self.update_transitive_subfields(target, |this, place| {
             this.places[place].dataflow = new_flow;
+            true
         });
 
         // Superplaces' complexity is updated to be the max of its children
@@ -182,6 +228,7 @@ impl PlaceTable {
             {
                 this.places[place].dataflow = max;
             }
+            true
         })
     }
 
@@ -191,9 +238,41 @@ impl PlaceTable {
         self.update_dataflow(target, new_flow)
     }
 
+    pub fn mark_place_init(&mut self, p: impl ToPlaceIndex) {
+        let pidx = p.to_place_index(self).unwrap();
+        let node = &self.places[pidx];
+        if let (Some(offset), Some(size)) = (node.offset, node.size) {
+            self.memory
+                .bytes_mut(node.alloc_id, offset, size)
+                .iter_mut()
+                .for_each(|b| *b = AbstractByte::Init(None));
+        }
+        self.update_transitive_subfields(pidx, |this, place| {
+            let node = &this.places[place];
+            if let (Some(offset), Some(size)) = (node.offset, node.size) {
+                this.memory
+                    .bytes_mut(node.alloc_id, offset, size)
+                    .iter_mut()
+                    .for_each(|b| *b = AbstractByte::Init(None));
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     pub fn is_place_init(&self, p: impl ToPlaceIndex) -> bool {
         let pidx = p.to_place_index(self).unwrap();
-        self.places[pidx].init
+        let node = &self.places[pidx];
+        if let (Some(offset), Some(size)) = (node.offset, node.size) {
+            self.memory
+                .bytes(node.alloc_id, offset, size)
+                .iter()
+                .all(|b| b.is_init())
+        } else {
+            self.immediate_subfields(pidx)
+                .all(|sub| self.is_place_init(sub))
+        }
     }
 
     fn immediate_subfields(&self, pidx: PlaceIndex) -> impl Iterator<Item = PlaceIndex> + '_ {
@@ -405,7 +484,7 @@ mod tests {
         let mut pt = PlaceTable::new();
         let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I16, Ty::I32]), Ty::I64]);
         let local = Local::new(1);
-        pt.add_local(local, ty);
+        pt.allocate_local(local, ty);
 
         let visited: Vec<Ty> = pt
             .reachable_from_local(local)
@@ -429,7 +508,7 @@ mod tests {
         let mut pt = PlaceTable::new();
         let local = Local::new(1);
         let ty = Ty::Tuple(vec![Ty::I8, Ty::I32]);
-        pt.add_local(local, ty);
+        pt.allocate_local(local, ty);
 
         let place = pt
             .reachable_from_local(local)
@@ -458,7 +537,7 @@ mod tests {
         let mut pt = PlaceTable::new();
         let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I16, Ty::I32]), Ty::I64]);
         let local = Local::new(1);
-        pt.add_local(local, ty);
+        pt.allocate_local(local, ty);
 
         let i8 = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(0))]);
         let i16_i32 = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);
@@ -494,7 +573,7 @@ mod tests {
         let mut pt = PlaceTable::new();
         let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I8, Ty::I8]), Ty::I8]);
         let local = Local::new(1);
-        pt.add_local(local, ty);
+        pt.allocate_local(local, ty);
 
         let a = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(0))]);
         let b = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);

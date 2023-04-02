@@ -1,4 +1,3 @@
-use log::debug;
 use mir::syntax::{Place, Ty};
 use rand_distr::WeightedIndex;
 
@@ -68,7 +67,11 @@ impl PlaceSelector {
             };
 
             let not_excluded = !exclusion_indicies.contains(&ppath.target_index(pt));
-            let initness_allowed = if self.allow_uninit { true } else { node.init };
+            let initness_allowed = if self.allow_uninit {
+                true
+            } else {
+                pt.is_place_init(ppath.target_index(pt))
+            };
             ty_allowed && not_excluded && initness_allowed
         })
     }
@@ -78,7 +81,7 @@ impl PlaceSelector {
             let (places, weights): (Vec<Place>, Vec<Weight>) = self
                 .into_iter_path(pt)
                 .map(|ppath| {
-                    let mut weight = if !ppath.target_node(pt).init {
+                    let mut weight = if !pt.is_place_init(ppath.target_index(pt)) {
                         UNINIT_WEIGHT_FACTOR
                     } else {
                         1
@@ -131,7 +134,7 @@ mod tests {
         let mut pt = PlaceTable::new();
         let tcx = TyCtxt::new(rng);
         for i in 0..=32 {
-            let pidx = pt.add_local(Local::new(i), tcx.choose_ty(rng));
+            let pidx = pt.allocate_local(Local::new(i), tcx.choose_ty(rng));
             if i % 2 == 0 {
                 pt.mark_place_init(pidx);
             }

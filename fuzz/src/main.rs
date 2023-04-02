@@ -7,9 +7,10 @@
 #![feature(try_blocks)]
 mod generation;
 mod literal;
-mod place;
+mod place_select;
 mod ptable;
 mod ty;
+mod mem;
 
 use std::env::args;
 

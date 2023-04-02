@@ -10,7 +10,7 @@ use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
 use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
 use crate::literal::GenLiteral;
-use crate::place::{PlaceSelector, Weight};
+use crate::place_select::{PlaceSelector, Weight};
 use crate::ptable::{HasDataflow, PlaceTable};
 use crate::ty::TyCtxt;
 
@@ -540,13 +540,13 @@ impl GenerationCtx {
     }
 
     // Move generation context to an executed function
-    fn enter_new_fn(&mut self, args: &[Ty], return_ty: Ty) {
+    fn enter_new_fn(&mut self, args_ty: &[Ty], return_ty: Ty, args: &[Place]) {
         debug!(
             "entering function with args {} and return ty {}",
-            args.serialize(),
+            args_ty.serialize(),
             return_ty.serialize()
         );
-        let mut body = Body::new(args, return_ty);
+        let mut body = Body::new(args_ty, return_ty);
 
         let starting_bb = body.new_basic_block(BasicBlockData::new());
         let new_fn = self.program.push_fn(body);
@@ -556,7 +556,7 @@ impl GenerationCtx {
         self.exec_path.push((new_fn, starting_bb));
 
         self.pt
-            .enter_fn(&self.program.functions[self.current_function]);
+            .enter_fn(&self.program.functions[self.current_function], args);
     }
 
     fn add_new_bb(&mut self) -> BasicBlock {
@@ -584,12 +584,25 @@ impl GenerationCtx {
         }
     }
 
+    fn enter_fn0(&mut self, args_ty: &[Ty], return_ty: Ty) {
+        let mut body = Body::new(args_ty, return_ty);
+
+        let starting_bb = body.new_basic_block(BasicBlockData::new());
+        let new_fn = self.program.push_fn(body);
+        self.current_function = new_fn;
+        self.current_bb = starting_bb;
+
+        self.exec_path.push((new_fn, starting_bb));
+        self.pt
+            .enter_fn0(&self.program.functions[self.current_function]);
+    }
+
     pub fn generate(mut self) -> Program {
         let args_count = self.rng.get_mut().gen_range(2..=16);
         let arg_tys: Vec<Ty> = self
             .tcx
             .iter()
-            .filter(|ty| ty.is_literalble())
+            .filter(|ty| <dyn RngCore>::is_literalble(*ty))
             .cloned()
             .choose_multiple(&mut *self.rng.borrow_mut(), args_count);
         let arg_literals: Vec<Literal> = arg_tys
@@ -605,7 +618,7 @@ impl GenerationCtx {
         self.program.set_entry_args(&arg_literals);
 
         let return_ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
-        self.enter_new_fn(&arg_tys, return_ty);
+        self.enter_fn0(&arg_tys, return_ty);
 
         loop {
             let statement_count = self.rng.get_mut().gen_range(1..=32);
