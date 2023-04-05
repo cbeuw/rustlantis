@@ -1,21 +1,22 @@
 use std::collections::VecDeque;
 
+use abi::size::Size;
 use bimap::BiBTreeMap;
-use log::debug;
 use mir::syntax::{Body, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
-use crate::mem::{size::Size, AbstractByte, AllocId, AllocIndex, BasicMemory};
+use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunAndOffset};
 
+type PlaceGraph = Graph<PlaceNode, ProjectionElem>;
 pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
 
-// A program-global graph recording all places that can be reached through projections
 pub struct PlaceTable {
     current_locals: BiBTreeMap<Local, PlaceIndex>,
-    places: Graph<PlaceNode, ProjectionElem>,
+    // A program-global graph recording all places that can be reached through projections
+    places: PlaceGraph,
     memory: BasicMemory,
 }
 
@@ -26,7 +27,7 @@ pub struct PlaceNode {
     pub dataflow: usize,
 
     // Only Tys fitting into a single Run have these
-    offset: Option<AllocIndex>,
+    run_and_offset: Option<RunAndOffset>,
     size: Option<Size>,
 }
 
@@ -81,8 +82,10 @@ impl PlaceTable {
         });
 
         // Prepare return place
-        let alloc_id = self.memory.allocate();
-        let return_pidx = self.add_place(body.return_ty(), alloc_id, 0);
+        let mut return_pidx = Default::default();
+        self.memory.allocate_with_builder(|builder| {
+            return_pidx = Self::add_place(&mut self.places, body.return_ty(), builder, 0);
+        });
         self.current_locals
             .insert_no_overwrite(Local::RET, return_pidx)
             .expect("return place did not already exist");
@@ -118,38 +121,45 @@ impl PlaceTable {
     }
 
     pub fn allocate_local(&mut self, local: Local, ty: Ty) -> PlaceIndex {
-        let alloc_id = self.memory.allocate();
-        let pidx = self.add_place(ty, alloc_id, 0);
+        let mut pidx = Default::default();
+        self.memory.allocate_with_builder(|builder| {
+            pidx = Self::add_place(&mut self.places, ty, builder, 0);
+        });
         self.current_locals
             .insert_no_overwrite(local, pidx)
             .expect("did not insert existing local or place");
         pidx
     }
 
-    fn add_place(&mut self, ty: Ty, alloc_id: AllocId, dataflow: usize) -> PlaceIndex {
-        let pidx = if let Some(size) = self.memory.ty_size(&ty) {
+    fn add_place(
+        places: &mut PlaceGraph,
+        ty: Ty,
+        alloc_builder: &mut AllocationBuilder,
+        dataflow: usize,
+    ) -> PlaceIndex {
+        let pidx = if let Some(size) = BasicMemory::ty_size(&ty) {
             // FIXME: don't always allocate Runs
-            let offset = self.memory.new_run(alloc_id, size);
-            self.places.add_node(PlaceNode {
+            let offset = alloc_builder.new_run(size);
+            places.add_node(PlaceNode {
                 ty: ty.clone(),
-                alloc_id,
+                alloc_id: alloc_builder.alloc_id(),
                 dataflow,
-                offset: Some(offset),
+                run_and_offset: Some(offset),
                 size: Some(size),
             })
         } else {
-            self.places.add_node(PlaceNode {
+            places.add_node(PlaceNode {
                 ty: ty.clone(),
-                alloc_id,
+                alloc_id: alloc_builder.alloc_id(),
                 dataflow,
-                offset: None,
+                run_and_offset: None,
                 size: None,
             })
         };
         match ty {
             Ty::Tuple(elems) => elems.iter().enumerate().for_each(|(idx, elem)| {
-                let sub_pidx = self.add_place(elem.clone(), alloc_id, dataflow);
-                self.places.add_edge(
+                let sub_pidx = Self::add_place(places, elem.clone(), alloc_builder, dataflow);
+                places.add_edge(
                     pidx,
                     sub_pidx,
                     ProjectionElem::TupleField(FieldIdx::new(idx)),
@@ -241,7 +251,7 @@ impl PlaceTable {
     pub fn mark_place_init(&mut self, p: impl ToPlaceIndex) {
         let pidx = p.to_place_index(self).unwrap();
         let node = &self.places[pidx];
-        if let (Some(offset), Some(size)) = (node.offset, node.size) {
+        if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
             self.memory
                 .bytes_mut(node.alloc_id, offset, size)
                 .iter_mut()
@@ -249,7 +259,7 @@ impl PlaceTable {
         }
         self.update_transitive_subfields(pidx, |this, place| {
             let node = &this.places[place];
-            if let (Some(offset), Some(size)) = (node.offset, node.size) {
+            if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
                 this.memory
                     .bytes_mut(node.alloc_id, offset, size)
                     .iter_mut()
@@ -264,7 +274,7 @@ impl PlaceTable {
     pub fn is_place_init(&self, p: impl ToPlaceIndex) -> bool {
         let pidx = p.to_place_index(self).unwrap();
         let node = &self.places[pidx];
-        if let (Some(offset), Some(size)) = (node.offset, node.size) {
+        if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
             self.memory
                 .bytes(node.alloc_id, offset, size)
                 .iter()

@@ -231,7 +231,6 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "bimap",
- "difftest",
  "env_logger",
  "index_vec",
  "log",
@@ -239,6 +238,7 @@ dependencies = [
  "petgraph",
  "rand",
  "rand_distr",
+ "rangemap",
  "smallvec",
 ]
 
