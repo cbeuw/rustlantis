@@ -3,6 +3,10 @@
 version = 3
 
 [[package]]
+name = "abi"
+version = "0.1.0"
+
+[[package]]
 name = "aho-corasick"
 version = "0.7.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -225,6 +229,7 @@ checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 name = "fuzz"
 version = "0.1.0"
 dependencies = [
+ "abi",
  "bimap",
  "difftest",
  "env_logger",
@@ -506,6 +511,13 @@ checksum = "32cb0b9bc82b0a0876c2dd994a7e7a2683d3e7390ca40e6886785ef0c7e3ee31"
 dependencies = [
  "num-traits",
  "rand",
+]
+
+[[package]]
+name = "rangemap"
+version = "0.1.0"
+dependencies = [
+ "abi",
 ]
 
 [[package]]

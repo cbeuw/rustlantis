@@ -4,4 +4,6 @@ members = [
     "difftest",
     "mir",
     "fuzz",
+    "rangemap",
+    "abi",
 ]
