@@ -34,11 +34,8 @@ pub struct GenerationCtx {
     current_bb: BasicBlock,
 }
 
-pub trait GenerateOperand {
-    fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand>;
-}
-
-impl GenerateOperand for GenerationCtx {
+// Operand
+impl GenerationCtx {
     fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand> {
         let operand: Result<Operand> = try {
             let (places, weights) = PlaceSelector::for_operand()
@@ -79,19 +76,8 @@ impl GenerateOperand for GenerationCtx {
     }
 }
 
-trait GenerateRvalue {
-    fn generate_use(&self, lhs: &Place) -> Result<Rvalue>;
-    fn generate_unary_op(&self, lhs: &Place) -> Result<Rvalue>;
-    fn generate_binary_op(&self, lhs: &Place) -> Result<Rvalue>;
-    fn generate_checked_binary_op(&self, lhs: &Place) -> Result<Rvalue>;
-    fn generate_cast(&self, lhs: &Place) -> Result<Rvalue>;
-    // fn generate_len(&self, cur_stmt: &mut Statement) -> Result<()>;
-    // fn generate_retag(&self, cur_stmt: &mut Statement) -> Result<()>;
-    // fn generate_discriminant(&self, cur_stmt: &mut Statement) -> Result<()>;
-    fn generate_rvalue(&self, lhs: &Place) -> Result<Rvalue>;
-}
-
-impl GenerateRvalue for GenerationCtx {
+// Rvalue
+impl GenerationCtx {
     /*
     Rvalue constaints:
     - Type matches with lhs
@@ -317,17 +303,8 @@ impl GenerateRvalue for GenerationCtx {
     }
 }
 
-trait GenerateStatement {
-    fn generate_assign(&mut self) -> Result<Statement>;
-    fn generate_new_var(&mut self) -> Result<Statement>;
-    // fn generate_storage_live(&self) -> Result<Statement>;
-    // fn generate_storage_dead(&self) -> Result<Statement>;
-    // fn generate_deinit(&self) -> Result<Statement>;
-    // fn generate_set_discriminant(&self) -> Result<Statement>;
-    fn choose_statement(&mut self);
-}
-
-impl GenerateStatement for GenerationCtx {
+// Statement
+impl GenerationCtx {
     fn generate_assign(&mut self) -> Result<Statement> {
         let (lhs_choices, weights) = PlaceSelector::for_lhs()
             .maybe_uninit()
@@ -349,6 +326,19 @@ impl GenerateStatement for GenerationCtx {
         let ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
         self.declare_new_var(Mutability::Mut, ty);
         Ok(Statement::Nop)
+    }
+
+    fn declare_new_var(&mut self, mutability: Mutability, ty: Ty) -> Local {
+        let local = self
+            .current_fn_mut()
+            .declare_new_var(mutability, ty.clone());
+        debug!(
+            "generated new var {}: {}",
+            local.identifier(),
+            ty.serialize()
+        );
+        self.pt.allocate_local(local, ty);
+        local
     }
 
     // fn generate_storage_live(&self) -> Result<Statement> {
@@ -387,13 +377,8 @@ impl GenerateStatement for GenerationCtx {
     }
 }
 
-trait GenerateTerminator {
-    fn generate_goto(&mut self) -> Result<(Terminator, BasicBlock)>;
-
-    fn choose_terminator(&mut self);
-}
-
-impl GenerateTerminator for GenerationCtx {
+// Terminator
+impl GenerationCtx {
     fn generate_goto(&mut self) -> Result<(Terminator, BasicBlock)> {
         let bb = self.add_new_bb();
         Ok((Terminator::Goto { target: bb }, bb))
@@ -524,19 +509,6 @@ impl GenerationCtx {
 
     pub fn current_decls(&self) -> &LocalDecls {
         &self.current_fn().local_decls
-    }
-
-    fn declare_new_var(&mut self, mutability: Mutability, ty: Ty) -> Local {
-        let local = self
-            .current_fn_mut()
-            .declare_new_var(mutability, ty.clone());
-        debug!(
-            "generated new var {}: {}",
-            local.identifier(),
-            ty.serialize()
-        );
-        self.pt.allocate_local(local, ty);
-        local
     }
 
     // Move generation context to an executed function
