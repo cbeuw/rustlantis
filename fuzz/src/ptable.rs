@@ -166,7 +166,7 @@ impl PlaceTable {
                 );
             }),
             Ty::Adt(_) => todo!(),
-            Ty::RawPtr(..) => {/* pointer has no subfields  */},
+            Ty::RawPtr(..) => { /* pointer has no subfields  */ }
             _ => { /* primitives, no projection */ }
         }
         pidx
@@ -271,9 +271,26 @@ impl PlaceTable {
         });
     }
 
-    pub fn create_ref(&mut self, reference: impl ToPlaceIndex, referent: impl ToPlaceIndex) {
+    pub fn set_ref(&mut self, reference: impl ToPlaceIndex, referent: impl ToPlaceIndex) {
         let reference = reference.to_place_index(self).expect("place exists");
         let referent = referent.to_place_index(self).expect("place exists");
+
+        // Remove any old reference edges
+        let old = self
+            .places
+            .edges_directed(reference, Direction::Outgoing)
+            .next();
+        if let Some(old) = old {
+            self.places.remove_edge(old.id());
+        }
+        assert_eq!(
+            self.places
+                .edges_directed(reference, Direction::Outgoing)
+                .count(),
+            0
+        );
+
+        // Add new reference
         self.places
             .add_edge(reference, referent, ProjectionElem::Deref);
     }

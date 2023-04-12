@@ -30,7 +30,7 @@ impl PlaceSelector {
     pub fn for_pointee() -> Self {
         Self {
             usage: PlaceUsage::Pointee,
-            // TODO: allow uninit
+            allow_uninit: true,
             ..Default::default()
         }
     }

@@ -676,7 +676,7 @@ impl GenerationCtx {
                 self.pt.mark_place_init(lhs);
                 self.pt.combine_dataflow(lhs, rvalue);
                 if let Rvalue::AddressOf(_, referent) = rvalue {
-                    self.pt.create_ref(lhs, referent)
+                    self.pt.set_ref(lhs, referent)
                 }
             }
             Statement::StorageLive(_) => todo!(),
