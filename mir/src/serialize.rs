@@ -28,7 +28,7 @@ impl Serialize for Ty {
             Self::Adt(_) => todo!(),
             // Pointer types
             Self::RawPtr(ty, mutability) => {
-                format!("*{} {}", mutability.prefix_str(), ty.serialize())
+                format!("{}{}", mutability.ptr_prefix_str(), ty.serialize())
             }
             // Sequence types
             Self::Tuple(elems) => {
@@ -46,7 +46,7 @@ impl Serialize for Place {
     fn serialize(&self) -> String {
         let str = self.local().identifier();
         self.projection().iter().fold(str, |acc, proj| match proj {
-            ProjectionElem::Deref => format!("*({acc})"),
+            ProjectionElem::Deref => format!("(*{acc})"),
             ProjectionElem::TupleField(id) => format!("{acc}.{}", id.index()),
             ProjectionElem::Field(_) => todo!(),
             ProjectionElem::Index(_) => todo!(),
@@ -110,22 +110,26 @@ impl Serialize for Rvalue {
         match self {
             Rvalue::Use(a) => a.serialize(),
             Rvalue::UnaryOp(op, a) => format!("{}{}", op.symbol(), a.serialize()),
-            Rvalue::BinaryOp(op, a, b) => match op {
-                BinOp::Offset => format!("{}.offset({})", a.serialize(), b.serialize()),
-                _ => format!("{} {} {}", a.serialize(), op.symbol(), b.serialize()),
-            },
-            Rvalue::CheckedBinaryOp(op, a, b) => match op {
-                BinOp::Offset => format!("Checked({}.offset({}))", a.serialize(), b.serialize()),
-                _ => format!(
-                    "Checked({} {} {})",
-                    a.serialize(),
-                    op.symbol(),
-                    b.serialize()
-                ),
-            },
+            Rvalue::BinaryOp(BinOp::Offset, a, b) => format!("Offset({}, {})", a.serialize(), b.serialize()),
+            Rvalue::BinaryOp(op, a, b) => {
+                format!("{} {} {}", a.serialize(), op.symbol(), b.serialize())
+            }
+            Rvalue::CheckedBinaryOp(op, a, b) => format!(
+                "Checked({} {} {})",
+                a.serialize(),
+                op.symbol(),
+                b.serialize()
+            ),
+
             Rvalue::Cast(a, target) => format!("{} as {}", a.serialize(), target.serialize()),
             Rvalue::Len(place) => format!("Len({})", place.serialize()),
             Rvalue::Discriminant(place) => format!("Discriminant({})", place.serialize()),
+            Rvalue::AddressOf(Mutability::Not, place) => {
+                format!("core::ptr::addr_of!({})", place.serialize())
+            }
+            Rvalue::AddressOf(Mutability::Mut, place) => {
+                format!("core::ptr::addr_of_mut!({})", place.serialize())
+            }
             Rvalue::Hole => unreachable!("no hole left at serialization stage"),
         }
     }

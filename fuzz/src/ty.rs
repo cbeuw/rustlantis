@@ -5,7 +5,7 @@ use index_vec::IndexVec;
 use log::{debug, log_enabled};
 use mir::{
     serialize::Serialize,
-    syntax::{Ty, TyId},
+    syntax::{Mutability, Ty, TyId},
 };
 use rand::{seq::IteratorRandom, Rng};
 use rand_distr::{Distribution, Poisson, WeightedIndex};
@@ -113,7 +113,7 @@ impl TyCtxt {
         // Generate composite types
         let count = rng.gen_range(0..=16);
         for _ in 0..count {
-            let new_ty = match rng.gen_range(0..=0) {
+            let new_ty = match rng.gen_range(0..=1) {
                 0 => Ty::Tuple({
                     let dist = Poisson::<f32>::new(2.7).unwrap();
                     let length = dist.sample(rng).clamp(1., 16.) as usize;
@@ -121,14 +121,14 @@ impl TyCtxt {
                         .map(|_| tys.iter().choose(rng).unwrap().clone())
                         .collect()
                 }),
-                // 1 => Ty::RawPtr(
-                //     Box::new(self.choose_ty(rng)),
-                //     if rng.gen_bool(0.5) {
-                //         Mutability::Mut
-                //     } else {
-                //         Mutability::Not
-                //     },
-                // ),
+                1 => Ty::RawPtr(
+                    Box::new(tys.iter().choose(rng).unwrap().clone()),
+                    if rng.gen_bool(0.5) {
+                        Mutability::Mut
+                    } else {
+                        Mutability::Not
+                    },
+                ),
                 // 2 => Ty::Adt(todo!()),
                 _ => unreachable!(),
             };
@@ -143,6 +143,27 @@ impl TyCtxt {
         self.tys
             .iter()
             .nth(self.weights.sample(rng))
+            .expect("tyctxt isn't empty")
+            .clone()
+    }
+
+    pub fn choose_ty_filtered<P>(&self, rng: &mut impl Rng, predicate: P) -> Ty
+    where
+        P: Fn(&Ty) -> bool + Copy,
+    {
+        let mut weights = self.weights.clone();
+        self.tys.iter_enumerated().for_each(|(i, ty)| {
+            if ty.contains(predicate) {
+            } else {
+                weights
+                    .update_weights(&[(i.index(), &0.)])
+                    .expect("no types left");
+            }
+        });
+
+        self.tys
+            .iter()
+            .nth(weights.sample(rng))
             .expect("tyctxt isn't empty")
             .clone()
     }

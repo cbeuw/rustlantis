@@ -5,6 +5,8 @@
 #![feature(test)]
 #![feature(let_chains)]
 #![feature(try_blocks)]
+#![feature(box_patterns)]
+
 mod generation;
 mod literal;
 mod place_select;

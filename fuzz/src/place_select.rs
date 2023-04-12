@@ -1,14 +1,24 @@
+use std::default;
+
 use mir::syntax::{Place, Ty};
 use rand_distr::WeightedIndex;
 
-use crate::ptable::{PlaceIndex, PlacePath, PlaceTable};
+use crate::ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex};
+
+#[derive(Clone, Copy, Default)]
+enum PlaceUsage {
+    #[default]
+    Operand,
+    LHS,
+    Pointee,
+}
 
 #[derive(Clone, Default)]
 pub struct PlaceSelector {
     tys: Vec<Ty>,
     exclusions: Vec<Place>,
     allow_uninit: bool,
-    for_lhs: bool,
+    usage: PlaceUsage,
 }
 
 pub type Weight = usize;
@@ -17,13 +27,21 @@ const LHS_WEIGH_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
 
 impl PlaceSelector {
+    pub fn for_pointee() -> Self {
+        Self {
+            usage: PlaceUsage::Pointee,
+            // TODO: allow uninit
+            ..Default::default()
+        }
+    }
+
     pub fn for_operand() -> Self {
         Self::default()
     }
 
     pub fn for_lhs() -> Self {
         Self {
-            for_lhs: true,
+            usage: PlaceUsage::LHS,
             ..Self::default()
         }
     }
@@ -56,7 +74,7 @@ impl PlaceSelector {
         let exclusion_indicies: Vec<PlaceIndex> = self
             .exclusions
             .iter()
-            .map(|place| pt.get_node(place).expect("excluded place exists"))
+            .map(|place| place.to_place_index(pt).expect("excluded place exists"))
             .collect();
         pt.reachable_nodes().filter(move |ppath| {
             let node = ppath.target_node(pt);
@@ -77,31 +95,54 @@ impl PlaceSelector {
     }
 
     pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<Place>, WeightedIndex<Weight>)> {
-        let (places, weights) = if self.for_lhs {
-            let (places, weights): (Vec<Place>, Vec<Weight>) = self
-                .into_iter_path(pt)
-                .map(|ppath| {
-                    let mut weight = if !pt.is_place_init(ppath.target_index(pt)) {
-                        UNINIT_WEIGHT_FACTOR
-                    } else {
-                        1
-                    };
-                    let place = ppath.to_place(pt);
-                    weight *= if place == Place::RETURN_SLOT {
-                        LHS_WEIGH_FACTOR
-                    } else {
-                        1
-                    };
-                    (place, weight)
-                })
-                .unzip();
-            (places, weights)
-        } else {
-            let (places, weights): (Vec<Place>, Vec<Weight>) = self
-                .into_iter_path(pt)
-                .map(|ppath| (ppath.to_place(pt), ppath.target_node(pt).dataflow))
-                .unzip();
-            (places, weights)
+        let (places, weights) = match self.usage {
+            PlaceUsage::LHS => {
+                let (places, weights): (Vec<Place>, Vec<Weight>) = self
+                    .into_iter_path(pt)
+                    .map(|ppath| {
+                        let mut weight = if !pt.is_place_init(ppath.target_index(pt)) {
+                            UNINIT_WEIGHT_FACTOR
+                        } else {
+                            1
+                        };
+                        let place = ppath.to_place(pt);
+                        weight *= if place == Place::RETURN_SLOT {
+                            LHS_WEIGH_FACTOR
+                        } else {
+                            1
+                        };
+                        (place, weight)
+                    })
+                    .unzip();
+                (places, weights)
+            }
+            PlaceUsage::Operand => {
+                let (places, weights): (Vec<Place>, Vec<Weight>) = self
+                    .into_iter_path(pt)
+                    .map(|ppath| (ppath.to_place(pt), ppath.target_node(pt).dataflow))
+                    .unzip();
+                (places, weights)
+            }
+            PlaceUsage::Pointee => {
+                let (places, weights): (Vec<Place>, Vec<Weight>) = self
+                    .into_iter_path(pt)
+                    .map(|ppath| {
+                        let mut weight = if !pt.is_place_init(ppath.target_index(pt)) {
+                            UNINIT_WEIGHT_FACTOR
+                        } else {
+                            1
+                        };
+                        let place = ppath.to_place(pt);
+                        weight *= if place == Place::RETURN_SLOT {
+                            LHS_WEIGH_FACTOR
+                        } else {
+                            1
+                        };
+                        (place, weight)
+                    })
+                    .unzip();
+                (places, weights)
+            }
         };
         if let Some(weighted_index) = WeightedIndex::new(weights).ok() {
             Some((places, weighted_index))

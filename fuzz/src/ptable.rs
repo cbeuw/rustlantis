@@ -166,14 +166,14 @@ impl PlaceTable {
                 );
             }),
             Ty::Adt(_) => todo!(),
-            Ty::RawPtr(_, _) => todo!(),
+            Ty::RawPtr(..) => {/* pointer has no subfields  */},
             _ => { /* primitives, no projection */ }
         }
         pidx
     }
 
     /// Get PlaceIndex from a Place
-    pub fn get_node(&self, place: &Place) -> Option<PlaceIndex> {
+    fn get_node(&self, place: &Place) -> Option<PlaceIndex> {
         let mut node = *self.current_locals.get_by_left(&place.local())?;
         let proj_iter = place.projection().iter();
         for proj in proj_iter {
@@ -269,6 +269,13 @@ impl PlaceTable {
                 true
             }
         });
+    }
+
+    pub fn create_ref(&mut self, reference: impl ToPlaceIndex, referent: impl ToPlaceIndex) {
+        let reference = reference.to_place_index(self).expect("place exists");
+        let referent = referent.to_place_index(self).expect("place exists");
+        self.places
+            .add_edge(reference, referent, ProjectionElem::Deref);
     }
 
     pub fn is_place_init(&self, p: impl ToPlaceIndex) -> bool {
@@ -458,6 +465,7 @@ impl HasDataflow for Rvalue {
             }
             Rvalue::Len(_) => 1,
             Rvalue::Discriminant(place) => place.dataflow(pt),
+            Rvalue::AddressOf(_, place) => place.dataflow(pt),
             Rvalue::Hole => unreachable!("hole"),
         }
     }

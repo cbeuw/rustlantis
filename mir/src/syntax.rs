@@ -184,6 +184,7 @@ pub enum Rvalue {
     Len(Place),
     // define!("mir_discriminant",fn Discriminant<T>(place: T) -> <T as ::core::marker::DiscriminantKind>::Discriminant);
     Discriminant(Place),
+    AddressOf(Mutability, Place),
 }
 
 #[derive(Debug, Clone)]
@@ -375,11 +376,25 @@ impl Ty {
                     }
                     ProjectionElem::Downcast(_) => self.clone(),
                     ProjectionElem::Index(_) => todo!(),
-                    ProjectionElem::ConstantIndex { offset } => todo!(),
+                    ProjectionElem::ConstantIndex { .. } => todo!(),
                     ProjectionElem::Field(_) => todo!(),
                 };
                 projected.projected_ty(tail)
             }
+        }
+    }
+
+    pub fn contains<P>(&self, mut predicate: P) -> bool
+    where
+        P: FnMut(&Ty) -> bool,
+    {
+        if predicate(self) {
+            return true;
+        }
+        match self {
+            Ty::Tuple(elems) => elems.iter().any(predicate),
+            Ty::Adt(_) => todo!(),
+            _ => false,
         }
     }
 }
@@ -668,6 +683,13 @@ impl Mutability {
         match self {
             Mutability::Mut => "mut ",
             Mutability::Not => "",
+        }
+    }
+
+    pub fn ptr_prefix_str(&self) -> &'static str {
+        match self {
+            Mutability::Mut => "*mut ",
+            Mutability::Not => "*const ",
         }
     }
 }

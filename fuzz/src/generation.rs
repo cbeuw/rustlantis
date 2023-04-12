@@ -119,7 +119,7 @@ impl GenerationCtx {
             // FIXME: Floating point rem https://github.com/rust-lang/rust/issues/109567
             Float(_) => &[Add, Sub, Mul, Div /*, Rem */][..],
             Uint(_) | Int(_) => &[BitAnd, BitOr, BitXor, Add, Sub, Mul, Div, Rem, Shl, Shr][..],
-            RawPtr(..) => &[Offset],
+            // RawPtr(..) => &[Offset],
             _ => &[][..],
         };
         let rvalue = self.make_choice(binops.iter(), |binop| {
@@ -178,14 +178,17 @@ impl GenerationCtx {
                     (l, r)
                 }
                 Offset => {
+                    let Ty::RawPtr(_, lhs_mutability) = lhs_ty else {
+                        unreachable!("lhs is a ptr");
+                    };
                     let tys: Vec<Ty> = self
                         .tcx
                         .iter()
-                        .filter(|ty| matches!(ty, Ty::RawPtr(..)))
+                        .filter(|ty| matches!(ty, Ty::RawPtr(_, mutability) if *mutability == lhs_mutability))
                         .cloned()
                         .collect();
                     let l = self.choose_operand(&tys, lhs)?;
-                    let r = self.choose_operand(&[Ty::USIZE, Ty::ISIZE], lhs)?;
+                    let r = self.choose_operand(&[Ty::ISIZE], lhs)?;
                     (l, r)
                 }
             };
@@ -275,6 +278,22 @@ impl GenerationCtx {
         Ok(rvalue)
     }
 
+    fn generate_address_of(&self, lhs: &Place) -> Result<Rvalue> {
+        let target_ty = lhs.ty(self.current_decls());
+        let (source_ty, mutability) = match target_ty {
+            Ty::RawPtr(box ty, mutability) => (ty, mutability),
+            _ => return Err(SelectionError::Exhausted),
+        };
+        let (candidates, weights) = PlaceSelector::for_pointee()
+            .of_ty(source_ty)
+            .except(lhs)
+            .into_weighted(&self.pt)
+            .ok_or(SelectionError::Exhausted)?;
+        self.make_choice_weighted(candidates.into_iter(), weights, |place| {
+            Ok(Rvalue::AddressOf(mutability, place))
+        })
+    }
+
     // fn generate_len(&self, cur_stmt: &mut Statement) -> Result<()> {
     //     todo!()
     // }
@@ -294,6 +313,7 @@ impl GenerationCtx {
             Self::generate_binary_op,
             Self::generate_checked_binary_op,
             Self::generate_cast,
+            Self::generate_address_of,
             // Self::generate_len,
             // Self::generate_retag,
             // Self::generate_discriminant,
@@ -357,18 +377,25 @@ impl GenerationCtx {
     //     todo!()
     // }
     fn choose_statement(&mut self) {
-        let choices: Vec<fn(&mut GenerationCtx) -> Result<Statement>> = vec![
-            Self::generate_assign,
-            // Self::generate_new_var,
-            // Self::generate_storage_live,
-            // Self::generate_storage_dead,
-            // Self::generate_deinit,
-            // Self::generate_set_discriminant,
+        let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<Statement>, usize)> = vec![
+            (Self::generate_assign, 5),
+            (Self::generate_new_var, 1), // Self::generate_storage_live,
+                                         // Self::generate_storage_dead,
+                                         // Self::generate_deinit,
+                                         // Self::generate_set_discriminant,
         ];
 
+        let (choices, weights): (Vec<fn(&mut GenerationCtx) -> Result<Statement>>, Vec<usize>) =
+            choices_and_weights.into_iter().unzip();
+
         let statement = self
-            .make_choice_mut(choices.into_iter(), |ctx, f| f(ctx))
+            .make_choice_weighted_mut(
+                choices.into_iter(),
+                WeightedIndex::new(weights).expect("weights are valid"),
+                |ctx, f| f(ctx),
+            )
             .expect("deadend");
+
         self.post_generation(&statement);
         if !matches!(statement, Statement::Nop) {
             debug!("generated {}", statement.serialize());
@@ -410,6 +437,32 @@ impl GenerationCtx {
             let i = weights.sample(&mut *self.rng.borrow_mut());
             let choice = choices.clone().nth(i).expect("choices not empty");
             let res = use_choice(choice.clone());
+            match res {
+                Ok(val) => return Ok(val),
+                Err(_) => {
+                    weights.update_weights(&[(i, &0)]).map_err(|err| {
+                        assert_eq!(err, WeightedError::AllWeightsZero);
+                        SelectionError::Exhausted
+                    })?;
+                }
+            }
+        }
+    }
+
+    fn make_choice_weighted_mut<T, F, R>(
+        &mut self,
+        choices: impl Iterator<Item = T> + Clone,
+        mut weights: WeightedIndex<Weight>,
+        mut use_choice: F,
+    ) -> Result<R>
+    where
+        F: FnMut(&mut Self, T) -> Result<R>,
+        T: Clone,
+    {
+        loop {
+            let i = weights.sample(&mut *self.rng.borrow_mut());
+            let choice = choices.clone().nth(i).expect("choices not empty");
+            let res = use_choice(self, choice.clone());
             match res {
                 Ok(val) => return Ok(val),
                 Err(_) => {
@@ -589,7 +642,11 @@ impl GenerationCtx {
 
         self.program.set_entry_args(&arg_literals);
 
-        let return_ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
+        let return_ty = self
+            .tcx
+            .choose_ty_filtered(&mut *self.rng.borrow_mut(), |ty| {
+                !matches!(ty, Ty::RawPtr(..))
+            });
         self.enter_fn0(&arg_tys, return_ty);
 
         loop {
@@ -618,6 +675,9 @@ impl GenerationCtx {
             Statement::Assign(lhs, rvalue) => {
                 self.pt.mark_place_init(lhs);
                 self.pt.combine_dataflow(lhs, rvalue);
+                if let Rvalue::AddressOf(_, referent) = rvalue {
+                    self.pt.create_ref(lhs, referent)
+                }
             }
             Statement::StorageLive(_) => todo!(),
             Statement::StorageDead(_) => todo!(),
