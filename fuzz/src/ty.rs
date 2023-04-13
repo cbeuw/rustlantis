@@ -153,8 +153,7 @@ impl TyCtxt {
     {
         let mut weights = self.weights.clone();
         self.tys.iter_enumerated().for_each(|(i, ty)| {
-            if ty.contains(predicate) {
-            } else {
+            if !predicate(ty) {
                 weights
                     .update_weights(&[(i.index(), &0.)])
                     .expect("no types left");

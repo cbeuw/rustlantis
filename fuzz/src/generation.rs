@@ -645,7 +645,7 @@ impl GenerationCtx {
         let return_ty = self
             .tcx
             .choose_ty_filtered(&mut *self.rng.borrow_mut(), |ty| {
-                !matches!(ty, Ty::RawPtr(..))
+                !ty.contains(|ty| matches!(ty, Ty::RawPtr(..)))
             });
         self.enter_fn0(&arg_tys, return_ty);
 
