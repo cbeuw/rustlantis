@@ -675,8 +675,14 @@ impl GenerationCtx {
             Statement::Assign(lhs, rvalue) => {
                 self.pt.mark_place_init(lhs);
                 self.pt.combine_dataflow(lhs, rvalue);
-                if let Rvalue::AddressOf(_, referent) = rvalue {
-                    self.pt.set_ref(lhs, referent)
+                // Pointert logic
+                if lhs.ty(self.current_decls()).is_any_ptr() {
+                    match rvalue {
+                        Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs)) => self.pt.alias_ref(rhs, lhs),
+                        Rvalue::AddressOf(_, referent) => self.pt.set_ref(lhs, referent),
+                        Rvalue::BinaryOp(BinOp::Offset, _, _) => todo!(),
+                        _ => unreachable!()
+                    }
                 }
             }
             Statement::StorageLive(_) => todo!(),

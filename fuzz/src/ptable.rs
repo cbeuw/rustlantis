@@ -271,17 +271,40 @@ impl PlaceTable {
         });
     }
 
-    pub fn set_ref(&mut self, reference: impl ToPlaceIndex, referent: impl ToPlaceIndex) {
+    /// Returns the pointee in reference -[Deref]-> pointee, if one exists
+    fn pointee(&self, reference: PlaceIndex) -> Option<PlaceIndex> {
+        assert!(self.places[reference].ty.is_any_ptr());
+        self.places
+            .edges_directed(reference, Direction::Outgoing)
+            .next()
+            .map(|deref| deref.target())
+    }
+
+    /// Returns the edge in reference -[edge: Deref]-> pointee, if one exists
+    fn ref_edge(&self, reference: PlaceIndex) -> Option<ProjectionIndex> {
+        assert!(self.places[reference].ty.is_any_ptr());
+        self.places
+            .edges_directed(reference, Direction::Outgoing)
+            .next()
+            .map(|deref| deref.id())
+    }
+
+    /// Make alias such that original_ref -[Deref]-> pointee <-[Deref]- alias_ref
+    pub fn alias_ref(&mut self, original_ref: impl ToPlaceIndex, alias_ref: impl ToPlaceIndex) {
+        let original_ref = original_ref.to_place_index(self).expect("place exists");
+        if let Some(pointee) = self.pointee(original_ref) {
+            self.set_ref(alias_ref, pointee);
+        }
+    }
+
+    /// Creates an edge reference -[Deref]-> pointee
+    pub fn set_ref(&mut self, reference: impl ToPlaceIndex, pointee: impl ToPlaceIndex) {
         let reference = reference.to_place_index(self).expect("place exists");
-        let referent = referent.to_place_index(self).expect("place exists");
+        let pointee = pointee.to_place_index(self).expect("place exists");
 
         // Remove any old reference edges
-        let old = self
-            .places
-            .edges_directed(reference, Direction::Outgoing)
-            .next();
-        if let Some(old) = old {
-            self.places.remove_edge(old.id());
+        if let Some(old) = self.ref_edge(reference) {
+            self.places.remove_edge(old);
         }
         assert_eq!(
             self.places
@@ -292,7 +315,7 @@ impl PlaceTable {
 
         // Add new reference
         self.places
-            .add_edge(reference, referent, ProjectionElem::Deref);
+            .add_edge(reference, pointee, ProjectionElem::Deref);
     }
 
     pub fn is_place_init(&self, p: impl ToPlaceIndex) -> bool {
@@ -483,7 +506,6 @@ impl HasDataflow for Rvalue {
             Rvalue::Len(_) => 1,
             Rvalue::Discriminant(place) => place.dataflow(pt),
             Rvalue::AddressOf(_, place) => place.dataflow(pt),
-            Rvalue::Hole => unreachable!("hole"),
         }
     }
 }

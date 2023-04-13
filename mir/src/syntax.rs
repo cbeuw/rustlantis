@@ -173,7 +173,6 @@ pub struct SwitchTargets {
 }
 
 pub enum Rvalue {
-    Hole,
     Use(Operand),
     UnaryOp(UnOp, Operand),
     BinaryOp(BinOp, Operand, Operand),
@@ -396,6 +395,18 @@ impl Ty {
             Ty::Adt(_) => todo!(),
             _ => false,
         }
+    }
+
+    // pub fn is_ref(self) -> bool {
+    //     matches!(self, Ty::Ref(..))
+    // }
+
+    pub fn is_unsafe_ptr(&self) -> bool {
+        matches!(self, Ty::RawPtr(..))
+    }
+
+    pub fn is_any_ptr(&self) -> bool {
+        self.is_unsafe_ptr()
     }
 }
 

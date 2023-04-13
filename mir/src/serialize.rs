@@ -130,7 +130,6 @@ impl Serialize for Rvalue {
             Rvalue::AddressOf(Mutability::Mut, place) => {
                 format!("core::ptr::addr_of_mut!({})", place.serialize())
             }
-            Rvalue::Hole => unreachable!("no hole left at serialization stage"),
         }
     }
 }
