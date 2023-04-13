@@ -6,7 +6,7 @@ use std::{
 
 use config::Config;
 use difftest::{
-    backend::{Backend, Cranelift, Miri, OptLevel, LLVM},
+    backends::{Backend, Cranelift, Miri, OptLevel, LLVM},
     run_diff_test,
 };
 

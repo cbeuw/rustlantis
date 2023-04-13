@@ -3,7 +3,7 @@
 #![feature(let_chains)]
 #![feature(is_some_and)]
 
-pub mod backend;
+pub mod backends;
 
 // pub use backend;
 use std::{
@@ -13,7 +13,7 @@ use std::{
     path::Path,
 };
 
-use backend::{Backend, CompExecError, ExecResult};
+use backends::{Backend, CompExecError, ExecResult};
 use colored::Colorize;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 

@@ -7,7 +7,7 @@ use std::{collections::HashMap, convert::identity, path::PathBuf, str::FromStr};
 use clap::{Arg, Command};
 use config::Config;
 use difftest::{
-    backend::{Backend, Cranelift, Miri, OptLevel, LLVM},
+    backends::{Backend, Cranelift, Miri, OptLevel, LLVM},
     run_diff_test, BackendName,
 };
 use log::{debug, error, info, warn};
