@@ -408,6 +408,13 @@ impl Ty {
     pub fn is_any_ptr(&self) -> bool {
         self.is_unsafe_ptr()
     }
+
+    pub fn pointee_ty(&self) -> Option<Self> {
+        match self {
+            Ty::RawPtr(box ty, ..) => Some(ty.clone()),
+            _ => None
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]

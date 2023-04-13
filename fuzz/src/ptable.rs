@@ -302,6 +302,11 @@ impl PlaceTable {
         let reference = reference.to_place_index(self).expect("place exists");
         let pointee = pointee.to_place_index(self).expect("place exists");
 
+        assert_eq!(
+            self.places[reference].ty.pointee_ty().unwrap(),
+            self.places[pointee].ty
+        );
+
         // Remove any old reference edges
         if let Some(old) = self.ref_edge(reference) {
             self.places.remove_edge(old);
@@ -405,17 +410,17 @@ impl PlacePath {
     }
 }
 
-/// A breadth-first iterator over all projections from a local variable
-/// Within each level, projections are returned in reverse insertion order
+/// A depth-first iterator over all projections from a local variable
 /// FIXME: this breaks if there's a reference cycle in the graph
-/// TODO: maybe dfs is fine
 #[derive(Clone)]
 pub struct ProjectionIter<'pt> {
     pt: &'pt PlaceTable,
-    root: NodeIndex,
-    to_visit: VecDeque<Path>,
+    root: PlaceIndex,
+    path: Path,
+    // Stack of nodes to visit and their depth (number of projections from root)
+    to_visit: Vec<(ProjectionIndex, usize)>,
+
     root_visited: bool,
-    follow_deref: bool,
 }
 
 impl<'pt> ProjectionIter<'pt> {
@@ -423,19 +428,19 @@ impl<'pt> ProjectionIter<'pt> {
         ProjectionIter {
             pt,
             root,
+            path: smallvec![],
             to_visit: pt
                 .places
                 .edges_directed(root, Direction::Outgoing)
                 .filter_map(|e| {
                     if follow_deref || *e.weight() != ProjectionElem::Deref {
-                        Some(smallvec![e.id()])
+                        Some((e.id(), 1))
                     } else {
                         None
                     }
                 })
                 .collect(),
             root_visited: !visit_root,
-            follow_deref,
         }
     }
 }
@@ -450,24 +455,25 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
                 path: smallvec![],
             });
         }
-        if let Some(path) = self.to_visit.pop_front() {
-            let last_edge = *path.last().expect("path in queue is never empty");
+        if let Some((edge, depth)) = self.to_visit.pop() {
+            let (_, target) = self.pt.places.edge_endpoints(edge).unwrap();
+            self.path.truncate(depth - 1);
+            self.path.push(edge);
 
-            let (_, target) = self.pt.places.edge_endpoints(last_edge).unwrap();
             let new_edges = self.pt.places.edges_directed(target, Direction::Outgoing);
             self.to_visit.extend(new_edges.filter_map(|e| {
-                if self.follow_deref || *e.weight() != ProjectionElem::Deref {
-                    let mut new_path = path.clone();
-                    new_path.push(e.id());
-                    Some(new_path)
+                if *e.weight() != ProjectionElem::Deref {
+                    // Unconditionally follow non-deref edges
+                    Some((e.id(), depth + 1))
                 } else {
+                    // Only deref edges immediately from root can be followed
                     None
                 }
             }));
 
             Some(PlacePath {
                 source: self.root,
-                path,
+                path: self.path.clone(),
             })
         } else {
             None
@@ -521,9 +527,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use mir::syntax::{BinOp, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
+    use mir::syntax::{
+        BinOp, FieldIdx, Local, Mutability, Operand, Place, ProjectionElem, Rvalue, Ty,
+    };
 
-    use crate::ptable::HasDataflow;
+    use crate::ptable::{HasDataflow, PlaceIndex, ToPlaceIndex};
 
     use super::PlaceTable;
 
@@ -551,11 +559,59 @@ mod tests {
             &visited,
             &[
                 Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I16, Ty::I32]), Ty::I64]), // (i8, (i16, i32), i64)
-                Ty::I64,                                                             // i64
-                Ty::Tuple(vec![Ty::I16, Ty::I32]),                                   // (i16, 132)
                 Ty::I8,                                                              // i8
-                Ty::I32,                                                             // i32
+                Ty::Tuple(vec![Ty::I16, Ty::I32]),                                   // (i16, 132)
                 Ty::I16,                                                             // i16
+                Ty::I32,                                                             // i32
+                Ty::I64,                                                             // i64
+            ]
+        );
+    }
+
+    #[test]
+    fn pointers() {
+        let mut pt = PlaceTable::new();
+        // *const (*const i32,)
+        let ty = Ty::RawPtr(
+            Box::new(Ty::Tuple(vec![Ty::RawPtr(
+                Box::new(Ty::I32),
+                Mutability::Not,
+            )])),
+            Mutability::Not,
+        );
+        let root = Local::new(1);
+        pt.allocate_local(root, ty);
+
+        let tuple = Local::new(2);
+        pt.allocate_local(
+            tuple,
+            Ty::Tuple(vec![Ty::RawPtr(Box::new(Ty::I32), Mutability::Not)]),
+        );
+
+        let int = Local::new(3);
+        pt.allocate_local(int, Ty::I32);
+
+        // root -[Deref]-> tuple -[Field(0)]-> tuple.0 -[Deref]-> int
+        let tuple_0 = Place::from_projected(
+            tuple,
+            &[ProjectionElem::TupleField(FieldIdx::from_usize(0))],
+        );
+        pt.set_ref(tuple_0.clone(), int);
+
+        pt.set_ref(root, tuple);
+
+        let visited: Vec<PlaceIndex> = pt
+            .reachable_from_local(root)
+            .map(|ppath| ppath.target_index(&pt))
+            .collect();
+
+        // int is not reachable because it is behind a Field projection
+        assert_eq!(
+            &visited,
+            &[
+                root.to_place_index(&pt).unwrap(),
+                tuple.to_place_index(&pt).unwrap(),
+                tuple_0.to_place_index(&pt).unwrap(),
             ]
         );
     }
