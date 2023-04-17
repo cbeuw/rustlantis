@@ -116,7 +116,7 @@ impl TyCtxt {
             let new_ty = match rng.gen_range(0..=1) {
                 0 => Ty::Tuple({
                     let dist = Poisson::<f32>::new(2.7).unwrap();
-                    let length = dist.sample(rng).clamp(1., 16.) as usize;
+                    let length = dist.sample(rng).clamp(1., 12.) as usize;
                     (0..length)
                         .map(|_| tys.iter().choose(rng).unwrap().clone())
                         .collect()

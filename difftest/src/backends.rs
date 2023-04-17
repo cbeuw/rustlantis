@@ -220,6 +220,7 @@ impl Backend for Miri {
         debug!("Executing {} with Miri", source.to_string_lossy());
         let miri_out = Command::new(&self.binary)
             .args([OsStr::new("--sysroot"), self.sysroot.as_os_str()])
+            .arg("-Zmiri-tree-borrows")
             .arg(source)
             .env_clear()
             .output()

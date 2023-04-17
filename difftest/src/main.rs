@@ -66,14 +66,14 @@ fn main() {
         info!("{} is all the same", source.as_os_str().to_string_lossy());
         debug!("{}", results);
     } else {
-        if results.has_ub().is_some_and(identity) {
-            warn!("{} has UB", source.as_os_str().to_string_lossy())
-        } else {
+        // if results.has_ub().is_some_and(identity) {
+        //     warn!("{} has UB", source.as_os_str().to_string_lossy())
+        // } else {
             error!(
                 "{} didn't pass:\n{}",
                 source.as_os_str().to_string_lossy(),
                 results
             );
-        }
+        // }
     }
 }

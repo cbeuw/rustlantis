@@ -124,7 +124,13 @@ impl GenerationCtx {
         };
         let rvalue = self.make_choice(binops.iter(), |binop| {
             let (l, r) = match *binop {
-                Add | Sub | Mul | Div | Rem | BitXor | BitAnd | BitOr => {
+                Div | Rem => {
+                    // Avoid div/rem by zero
+                    let l = self.choose_operand(&[lhs_ty.clone()], lhs)?;
+                    let r = Operand::Constant(self.rng.borrow_mut().gen_literal_non_zero(&lhs_ty).expect("can generate literal"));
+                    (l, r)
+                }
+                Add | Sub | Mul | BitXor | BitAnd | BitOr => {
                     // Both operand same type as lhs
                     let l = self.choose_operand(&[lhs_ty.clone()], lhs)?;
                     let r = self.choose_operand(&[lhs_ty.clone()], lhs)?;
@@ -678,10 +684,12 @@ impl GenerationCtx {
                 // Pointert logic
                 if lhs.ty(self.current_decls()).is_any_ptr() {
                     match rvalue {
-                        Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs)) => self.pt.alias_ref(rhs, lhs),
+                        Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs)) => {
+                            self.pt.alias_ref(rhs, lhs)
+                        }
                         Rvalue::AddressOf(_, referent) => self.pt.set_ref(lhs, referent),
                         Rvalue::BinaryOp(BinOp::Offset, _, _) => todo!(),
-                        _ => unreachable!()
+                        _ => unreachable!(),
                     }
                 }
             }

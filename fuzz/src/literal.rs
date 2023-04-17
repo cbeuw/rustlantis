@@ -51,6 +51,32 @@ pub trait GenLiteral: Rng {
         };
         Some(lit)
     }
+    fn gen_literal_non_zero(&mut self, ty: &Ty) -> Option<Literal> {
+        self.gen_literal(ty).map(|lit| match lit {
+            Literal::Uint(n, t) => {
+                if n == 0 {
+                    Literal::Uint(n + 1, t)
+                } else {
+                    lit
+                }
+            }
+            Literal::Int(n, t) => {
+                if n == 0 {
+                    Literal::Int(n + 1, t)
+                } else {
+                    lit
+                }
+            }
+            Literal::Float(n, t) => {
+                if n == 0. {
+                    Literal::Float(n + 1., t)
+                } else {
+                    lit
+                }
+            }
+            _ => lit,
+        })
+    }
 }
 
 impl<R: RngCore + ?Sized> GenLiteral for R {}
