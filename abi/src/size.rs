@@ -26,7 +26,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 */
-use std::fmt;
+use std::{fmt, ops::{Add, Sub, Mul, AddAssign}};
 
 use super::align::Align;
 
@@ -149,3 +149,53 @@ impl Size {
         u128::MAX >> (128 - self.bits())
     }
 }
+
+// Panicking addition, subtraction and multiplication for convenience.
+// Avoid during layout computation, return `LayoutError` instead.
+
+impl Add for Size {
+    type Output = Size;
+    #[inline]
+    fn add(self, other: Size) -> Size {
+        Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
+            panic!("Size::add: {} + {} doesn't fit in u64", self.bytes(), other.bytes())
+        }))
+    }
+}
+
+impl Sub for Size {
+    type Output = Size;
+    #[inline]
+    fn sub(self, other: Size) -> Size {
+        Size::from_bytes(self.bytes().checked_sub(other.bytes()).unwrap_or_else(|| {
+            panic!("Size::sub: {} - {} would result in negative size", self.bytes(), other.bytes())
+        }))
+    }
+}
+
+impl Mul<Size> for u64 {
+    type Output = Size;
+    #[inline]
+    fn mul(self, size: Size) -> Size {
+        size * self
+    }
+}
+
+impl Mul<u64> for Size {
+    type Output = Size;
+    #[inline]
+    fn mul(self, count: u64) -> Size {
+        match self.bytes().checked_mul(count) {
+            Some(bytes) => Size::from_bytes(bytes),
+            None => panic!("Size::mul: {} * {} doesn't fit in u64", self.bytes(), count),
+        }
+    }
+}
+
+impl AddAssign for Size {
+    #[inline]
+    fn add_assign(&mut self, other: Size) {
+        *self = *self + other;
+    }
+}
+
