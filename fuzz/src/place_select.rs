@@ -126,20 +126,7 @@ impl PlaceSelector {
             PlaceUsage::Pointee => {
                 let (places, weights): (Vec<Place>, Vec<Weight>) = self
                     .into_iter_path(pt)
-                    .map(|ppath| {
-                        let mut weight = if !pt.is_place_init(ppath.target_index(pt)) {
-                            UNINIT_WEIGHT_FACTOR
-                        } else {
-                            1
-                        };
-                        let place = ppath.to_place(pt);
-                        weight *= if place == Place::RETURN_SLOT {
-                            LHS_WEIGH_FACTOR
-                        } else {
-                            1
-                        };
-                        (place, weight)
-                    })
+                    .map(|ppath| (ppath.to_place(pt), 1))
                     .unzip();
                 (places, weights)
             }
