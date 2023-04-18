@@ -1,6 +1,6 @@
 use std::default;
 
-use mir::syntax::{Place, Ty};
+use mir::syntax::{Place, ProjectionElem, Ty};
 use rand_distr::WeightedIndex;
 
 use crate::ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex};
@@ -25,6 +25,7 @@ pub type Weight = usize;
 
 const LHS_WEIGH_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
+const DEREF_WEIGHT_FACTOR: Weight = 2;
 
 impl PlaceSelector {
     pub fn for_pointee() -> Self {
@@ -106,11 +107,9 @@ impl PlaceSelector {
                             1
                         };
                         let place = ppath.to_place(pt);
-                        weight *= if place == Place::RETURN_SLOT {
-                            LHS_WEIGH_FACTOR
-                        } else {
-                            1
-                        };
+                        if place == Place::RETURN_SLOT {
+                            weight *= LHS_WEIGH_FACTOR;
+                        }
                         (place, weight)
                     })
                     .unzip();
@@ -119,7 +118,15 @@ impl PlaceSelector {
             PlaceUsage::Operand => {
                 let (places, weights): (Vec<Place>, Vec<Weight>) = self
                     .into_iter_path(pt)
-                    .map(|ppath| (ppath.to_place(pt), ppath.target_node(pt).dataflow))
+                    .map(|ppath| {
+                        let place = ppath.to_place(pt);
+                        let mut weight = ppath.target_node(pt).dataflow;
+                        if place.projection().contains(&ProjectionElem::Deref) {
+                            // Encourage dereference
+                            weight *= DEREF_WEIGHT_FACTOR;
+                        }
+                        (place, weight)
+                    })
                     .unzip();
                 (places, weights)
             }
