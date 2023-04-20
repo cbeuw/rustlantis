@@ -1,10 +1,11 @@
 use std::cell::RefCell;
+use std::cmp;
 
 use log::debug;
 use mir::serialize::Serialize;
 use mir::syntax::{
-    BasicBlock, BasicBlockData, BinOp, Body, Function, Literal, Local, LocalDecls, Mutability,
-    Operand, Place, Program, Rvalue, Statement, Terminator, Ty, UnOp,
+    BasicBlock, BasicBlockData, BinOp, Body, Function, IntTy, Literal, Local, LocalDecls,
+    Mutability, Operand, Place, Program, Rvalue, Statement, SwitchTargets, Terminator, Ty, UnOp,
 };
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
 use rand_distr::{Distribution, WeightedError, WeightedIndex};
@@ -16,6 +17,8 @@ use crate::ty::TyCtxt;
 
 /// Max. number of statements & declarations in a bb
 const BB_MAX_LEN: usize = 128;
+/// Max. number of switch targets in a SwitchInt terminator
+const MAX_SWITCH_TARGETS: usize = 8;
 
 #[derive(Debug)]
 pub enum SelectionError {
@@ -417,9 +420,81 @@ impl GenerationCtx {
         Ok((Terminator::Goto { target: bb }, bb))
     }
 
+    // Produce count number of "decoy" BasicBlocks that will never be
+    // actually taken. Return value will contain a mix of existing and new BBs
+    // filled with random statements.
+    fn decoy_bbs(&mut self, count: usize) -> Vec<BasicBlock> {
+        debug!("picking {count} decoy bbs");
+        // FIXME: -1 because we can't name the first BB, but custom_mir
+        // should allow it
+        // -1 to avoid the current bb
+        let available = self.current_fn().basic_blocks.len().saturating_sub(2);
+
+        let pick_from_existing = self.rng.get_mut().gen_range(0..=cmp::min(available, count));
+        let new = count - pick_from_existing;
+        debug!("picking {pick_from_existing} bbs and creating {new} new bbs");
+
+        let mut picked = self
+            .current_fn()
+            .basic_blocks
+            .indices()
+            .skip(1)
+            .filter(|&bb| bb != self.current_bb)
+            .choose_multiple(self.rng.get_mut(), pick_from_existing);
+        assert_eq!(picked.len(), pick_from_existing);
+
+        for _ in 0..new {
+            let new_bb = self.add_new_bb();
+            self.current_fn_mut().basic_blocks[new_bb].terminator = Terminator::Return;
+            picked.push(new_bb);
+        }
+
+        picked
+    }
+
+    fn generate_switch_int(&mut self) -> Result<(Terminator, BasicBlock)> {
+        debug!("Generating a SwitchInt terminator");
+        let discr = self
+            .current_fn_mut()
+            .declare_new_var(Mutability::Mut, Ty::I32);
+
+        let target_bb = self.add_new_bb();
+
+        let decoy_count = self.rng.get_mut().gen_range(1..=MAX_SWITCH_TARGETS);
+        let mut targets = self.decoy_bbs(decoy_count);
+        let otherwise = targets.pop().unwrap();
+
+        targets.push(target_bb);
+        // TODO: obfuscate the real choice so codegen can't optimise this easily
+        let target_discr = targets.len() - 1;
+        self.current_bb_mut().insert_statement(Statement::Assign(
+            Place::from_local(discr),
+            Rvalue::Use(Operand::Constant(Literal::Int(
+                target_discr as i128,
+                IntTy::I32,
+            ))),
+        ));
+
+        let branches: Vec<(u128, BasicBlock)> = targets
+            .iter()
+            .enumerate()
+            .map(|(i, &bb)| (i as u128, bb))
+            .collect();
+
+        let term = Terminator::SwitchInt {
+            discr: Operand::Copy(Place::from_local(discr)),
+            targets: SwitchTargets {
+                branches,
+                otherwise,
+            },
+        };
+
+        Ok((term, target_bb))
+    }
+
     /// Terminates the current BB, and moves the generation context to the new BB
     fn choose_terminator(&mut self) {
-        let choices = [Self::generate_goto];
+        let choices = [Self::generate_goto, Self::generate_switch_int];
         let (terminator, new_bb) = self
             .make_choice_mut(choices.into_iter(), |ctx, f| f(ctx))
             .expect("deadend");

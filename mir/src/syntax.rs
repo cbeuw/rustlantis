@@ -168,8 +168,8 @@ pub enum Terminator {
 }
 
 pub struct SwitchTargets {
-    branches: Vec<(u128, BasicBlock)>,
-    otherwise: BasicBlock,
+    pub branches: Vec<(u128, BasicBlock)>,
+    pub otherwise: BasicBlock,
 }
 
 pub enum Rvalue {

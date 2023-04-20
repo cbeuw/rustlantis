@@ -1,5 +1,3 @@
-use std::default;
-
 use mir::syntax::{Place, ProjectionElem, Ty};
 use rand_distr::WeightedIndex;
 
