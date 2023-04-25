@@ -372,6 +372,26 @@ impl PlaceTable {
         local_iter.flat_map(|&local| self.reachable_from_local(local))
     }
 
+    /// Whether two places overlap or alias
+    pub fn overlap(&self, a: impl ToPlaceIndex, b: impl ToPlaceIndex) -> bool {
+        let a = a.to_place_index(self).expect("place exists");
+        let b = b.to_place_index(self).expect("place exists");
+
+        let a_sub = ProjectionIter::new(self, a, true, false).map(|ppath| ppath.target_index(self));
+        let b_sub: Vec<_> = ProjectionIter::new(self, b, true, false)
+            .map(|ppath| ppath.target_index(self))
+            .collect();
+
+        for a_node in a_sub {
+            for b_node in &b_sub {
+                if a_node == *b_node {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn place_count(&self) -> usize {
         self.places.node_count()
     }
@@ -566,6 +586,37 @@ mod tests {
                 Ty::I64,                                                             // i64
             ]
         );
+    }
+
+    #[test]
+    fn overlap_check() {
+        /*
+            ┌──────┬──────┐
+            │      │      │
+            a      │      c
+                ┌──b──┐
+                │     │
+                d     e
+        */
+
+        let mut pt = PlaceTable::new();
+        let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I8, Ty::I8]), Ty::I8]);
+        let local = Local::new(1);
+        pt.allocate_local(local, ty);
+
+        let a = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(0))]);
+        let b = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);
+        let c = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(2))]);
+
+        let d = b.project(ProjectionElem::TupleField(FieldIdx::new(0)));
+        let e = b.project(ProjectionElem::TupleField(FieldIdx::new(1)));
+
+        assert!(pt.overlap(&b, &local));
+        assert!(pt.overlap(&local, &b));
+        assert!(pt.overlap(&local, &d));
+
+        assert!(!pt.overlap(&a, &c));
+        assert!(!pt.overlap(&a, &d))
     }
 
     #[test]
