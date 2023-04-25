@@ -1,7 +1,8 @@
-use std::collections::VecDeque;
+use std::vec;
 
 use abi::size::Size;
 use bimap::BiBTreeMap;
+use log::debug;
 use mir::syntax::{Body, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
@@ -13,9 +14,12 @@ pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
 
+type Frame = BiBTreeMap<Local, PlaceIndex>;
+
 pub struct PlaceTable {
-    current_locals: BiBTreeMap<Local, PlaceIndex>,
-    // A program-global graph recording all places that can be reached through projections
+    /// The callstack
+    frames: Vec<Frame>,
+    /// A program-global graph recording all places that can be reached through projections
     places: PlaceGraph,
     memory: BasicMemory,
 }
@@ -25,6 +29,7 @@ pub struct PlaceNode {
     pub ty: Ty,
     alloc_id: AllocId,
     pub dataflow: usize,
+    moved: bool,
 
     // Only Tys fitting into a single Run have these
     run_and_offset: Option<RunAndOffset>,
@@ -65,15 +70,25 @@ where
 impl PlaceTable {
     pub fn new() -> Self {
         Self {
-            current_locals: BiBTreeMap::new(),
+            frames: vec![BiBTreeMap::new()],
             places: Graph::default(),
             memory: BasicMemory::new(),
         }
     }
 
-    pub fn enter_fn0(&mut self, body: &Body) {
-        self.current_locals = BiBTreeMap::new();
+    fn current_locals(&self) -> &BiBTreeMap<Local, PlaceIndex> {
+        self.frames.last().expect("call stack isn't empty")
+    }
 
+    fn current_locals_mut(&mut self) -> &mut BiBTreeMap<Local, PlaceIndex> {
+        self.frames.last_mut().expect("call stack isn't empty")
+    }
+
+    fn new_frame(&mut self) {
+        self.frames.push(BiBTreeMap::new());
+    }
+
+    pub fn enter_fn0(&mut self, body: &Body) {
         // Declare args
         body.args_decl_iter().for_each(|(local, decl)| {
             let pidx = self.allocate_local(local, decl.ty.clone());
@@ -86,38 +101,84 @@ impl PlaceTable {
         self.memory.allocate_with_builder(|builder| {
             return_pidx = Self::add_place(&mut self.places, body.return_ty(), builder, 0);
         });
-        self.current_locals
+        self.current_locals_mut()
             .insert_no_overwrite(Local::RET, return_pidx)
             .expect("return place did not already exist");
     }
 
-    pub fn enter_fn(&mut self, body: &Body, args: &[Place]) {
+    pub fn enter_fn(&mut self, body: &Body, args: &[Operand], return_place: &Place) {
         // Get the PlaceIndices before frame switch
-        let args: Vec<PlaceIndex> = args
-            .iter()
-            .map(|p| p.to_place_index(self).expect("place is in current frame"))
-            .collect();
-        let return_place = Place::RETURN_SLOT
-            .to_place_index(self)
-            .expect("return slot is in current frame");
+        enum ArgOperand {
+            Copy(PlaceIndex),
+            Move(PlaceIndex),
+            Constant,
+        }
 
-        self.current_locals = BiBTreeMap::new();
+        let args: Vec<ArgOperand> = args
+            .iter()
+            .map(|p| match p {
+                Operand::Copy(place) => {
+                    ArgOperand::Copy(place.to_place_index(self).expect("arg exists"))
+                }
+                Operand::Move(place) => {
+                    ArgOperand::Move(place.to_place_index(self).expect("arg exists"))
+                }
+                Operand::Constant(_) => ArgOperand::Constant,
+            })
+            .collect();
+        let return_place = return_place
+            .to_place_index(self)
+            .expect("return place exists");
+
+        // Deinitialise return place
+        self.mark_place_uninit(return_place);
+
+        // Frame switch
+        self.new_frame();
         body.args_decl_iter()
             .zip(args)
-            .for_each(|((local, decl), source)| {
+            .for_each(|((local, decl), arg)| {
                 let pidx = self.allocate_local(local, decl.ty.clone());
-                debug_assert!(
-                    self.is_place_init(source),
-                    "function arguments must be init"
-                );
 
-                // encourage use of args
-                self.places[pidx].dataflow = self.places[source].dataflow;
-                // FIXME: copy memory from arg to the new places
+                if let ArgOperand::Copy(source_pidx) | ArgOperand::Move(source_pidx) = arg {
+                    debug_assert!(
+                        self.is_place_init(source_pidx),
+                        "function arguments must be init"
+                    );
+
+                    // encourage use of args
+                    self.places[pidx].dataflow = self.places[source_pidx].dataflow;
+                    // FIXME: copy memory from arg to the new places
+                }
+                if let ArgOperand::Move(source_pidx) = arg {
+                    self.mark_place_moved(source_pidx);
+                }
             });
-        self.current_locals
+        self.current_locals_mut()
             .insert_no_overwrite(Local::RET, return_place)
             .expect("return place did not already exist");
+    }
+
+    pub fn exit_fn(&mut self) {
+        // Deinit places
+        // keep RET as it is allocated on the parent's frame
+        let ret_pidx = Place::RETURN_SLOT
+            .to_place_index(self)
+            .expect("place exists");
+
+        // can't use current_locals() here as that keeps the borrow
+        for pidx in self
+            .frames
+            .last()
+            .expect("call stack isn't empty")
+            .right_values()
+        {
+            if *pidx != ret_pidx {
+                let alloc_id = self.places[*pidx].alloc_id;
+                self.memory.deallocate(alloc_id);
+            }
+        }
+        self.frames.pop();
     }
 
     pub fn allocate_local(&mut self, local: Local, ty: Ty) -> PlaceIndex {
@@ -125,7 +186,7 @@ impl PlaceTable {
         self.memory.allocate_with_builder(|builder| {
             pidx = Self::add_place(&mut self.places, ty, builder, 0);
         });
-        self.current_locals
+        self.current_locals_mut()
             .insert_no_overwrite(local, pidx)
             .expect("did not insert existing local or place");
         pidx
@@ -144,6 +205,7 @@ impl PlaceTable {
                 ty: ty.clone(),
                 alloc_id: alloc_builder.alloc_id(),
                 dataflow,
+                moved: false,
                 run_and_offset: Some(offset),
                 size: Some(size),
             })
@@ -152,6 +214,7 @@ impl PlaceTable {
                 ty: ty.clone(),
                 alloc_id: alloc_builder.alloc_id(),
                 dataflow,
+                moved: false,
                 run_and_offset: None,
                 size: None,
             })
@@ -174,7 +237,7 @@ impl PlaceTable {
 
     /// Get PlaceIndex from a Place
     fn get_node(&self, place: &Place) -> Option<PlaceIndex> {
-        let mut node = *self.current_locals.get_by_left(&place.local())?;
+        let mut node = *self.current_locals().get_by_left(&place.local())?;
         let proj_iter = place.projection().iter();
         for proj in proj_iter {
             let found = self
@@ -246,6 +309,39 @@ impl PlaceTable {
         let new_flow = source.dataflow(self);
         let target = target.to_place_index(self).expect("place exists");
         self.update_dataflow(target, new_flow)
+    }
+
+    pub fn mark_place_moved(&mut self, p: impl ToPlaceIndex) {
+        todo!();
+    }
+
+    fn mark_place_uninit(&mut self, p: impl ToPlaceIndex) {
+        let pidx = p.to_place_index(self).unwrap();
+
+        // If this is a pointer, we have to remove the Deref edge, but not for other projections
+        if self.places[pidx].ty.is_any_ptr() && let Some(old) = self.ref_edge(pidx) {
+            self.places.remove_edge(old);
+        }
+
+        let node = &self.places[pidx];
+        if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
+            self.memory
+                .bytes_mut(node.alloc_id, offset, size)
+                .iter_mut()
+                .for_each(|b| *b = AbstractByte::Uninit);
+        }
+        self.update_transitive_subfields(pidx, |this, place| {
+            let node = &this.places[place];
+            if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
+                this.memory
+                    .bytes_mut(node.alloc_id, offset, size)
+                    .iter_mut()
+                    .for_each(|b| *b = AbstractByte::Uninit);
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn mark_place_init(&mut self, p: impl ToPlaceIndex) {
@@ -323,7 +419,16 @@ impl PlaceTable {
             .add_edge(reference, pointee, ProjectionElem::Deref);
     }
 
+    pub fn is_place_live(&self, p: impl ToPlaceIndex) -> bool {
+        let pidx = p.to_place_index(self).unwrap();
+        let node = &self.places[pidx];
+        self.memory.is_live(node.alloc_id)
+    }
+
     pub fn is_place_init(&self, p: impl ToPlaceIndex) -> bool {
+        if !self.is_place_live(&p) {
+            return false;
+        }
         let pidx = p.to_place_index(self).unwrap();
         let node = &self.places[pidx];
         if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
@@ -363,12 +468,12 @@ impl PlaceTable {
 
     // Returns an iterator over all places reachable from local through projections
     fn reachable_from_local(&self, local: Local) -> ProjectionIter<'_> {
-        let local_node = *self.current_locals.get_by_left(&local).unwrap();
+        let local_node = *self.current_locals().get_by_left(&local).unwrap();
         ProjectionIter::new(self, local_node, true, true)
     }
 
     pub fn reachable_nodes(&self) -> impl Iterator<Item = PlacePath> + Clone + '_ {
-        let local_iter = self.current_locals.left_values();
+        let local_iter = self.current_locals().left_values();
         local_iter.flat_map(|&local| self.reachable_from_local(local))
     }
 
@@ -408,7 +513,7 @@ impl PlacePath {
         let projs: SmallVec<[ProjectionElem; 8]> =
             self.path.iter().map(|&proj| pt.places[proj]).collect();
         Place::from_projected(
-            *pt.current_locals.get_by_right(&self.source).unwrap(),
+            *pt.current_locals().get_by_right(&self.source).unwrap(),
             &projs,
         )
     }
@@ -555,21 +660,33 @@ mod tests {
 
     use super::PlaceTable;
 
-    #[test]
-    fn nested_tuple() {
+    fn prepare_t() -> (PlaceTable, Local, Place, Place, Place, Place, Place) {
         /*
             ┌──────┬──────┐
             │      │      │
-            i8     │     i64
-                ┌──┴──┐
+            a      │      c
+                ┌──b──┐
                 │     │
-               i16   i32
+                d     e
         */
 
         let mut pt = PlaceTable::new();
         let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I16, Ty::I32]), Ty::I64]);
         let local = Local::new(1);
         pt.allocate_local(local, ty);
+
+        let a = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(0))]);
+        let b = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);
+        let c = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(2))]);
+
+        let d = b.project(ProjectionElem::TupleField(FieldIdx::new(0)));
+        let e = b.project(ProjectionElem::TupleField(FieldIdx::new(1)));
+        (pt, local, a, b, c, d, e)
+    }
+
+    #[test]
+    fn nested_tuple() {
+        let (pt, local, ..) = prepare_t();
 
         let visited: Vec<Ty> = pt
             .reachable_from_local(local)
@@ -590,26 +707,7 @@ mod tests {
 
     #[test]
     fn overlap_check() {
-        /*
-            ┌──────┬──────┐
-            │      │      │
-            a      │      c
-                ┌──b──┐
-                │     │
-                d     e
-        */
-
-        let mut pt = PlaceTable::new();
-        let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I8, Ty::I8]), Ty::I8]);
-        let local = Local::new(1);
-        pt.allocate_local(local, ty);
-
-        let a = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(0))]);
-        let b = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);
-        let c = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(2))]);
-
-        let d = b.project(ProjectionElem::TupleField(FieldIdx::new(0)));
-        let e = b.project(ProjectionElem::TupleField(FieldIdx::new(1)));
+        let (pt, local, a, b, c, d, _) = prepare_t();
 
         assert!(pt.overlap(&b, &local));
         assert!(pt.overlap(&local, &b));
@@ -689,62 +787,40 @@ mod tests {
 
     #[test]
     fn recursive_init() {
-        /*
-            ┌──────┬──────┐
-            │      │      │
-            i8     │     i64
-                ┌──┴──┐
-                │     │
-               i16   i32
-        */
+        let (mut pt, local, a, b, c, d, e) = prepare_t();
 
-        let mut pt = PlaceTable::new();
-        let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I16, Ty::I32]), Ty::I64]);
-        let local = Local::new(1);
-        pt.allocate_local(local, ty);
-
-        let i8 = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(0))]);
-        let i16_i32 = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);
-        let i64 = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(2))]);
-
-        let i16 = i16_i32.project(ProjectionElem::TupleField(FieldIdx::new(0)));
-        let i32 = i16_i32.project(ProjectionElem::TupleField(FieldIdx::new(1)));
-
-        pt.mark_place_init(&i8);
-        assert!(pt.is_place_init(&i8));
+        pt.mark_place_init(&a);
+        assert!(pt.is_place_init(&a));
         assert!(!pt.is_place_init(local));
 
-        pt.mark_place_init(&i16_i32);
-        assert!(pt.is_place_init(&i16));
-        assert!(pt.is_place_init(&i32));
+        pt.mark_place_init(&b);
+        assert!(pt.is_place_init(&d));
+        assert!(pt.is_place_init(&e));
         assert!(!pt.is_place_init(local));
 
-        pt.mark_place_init(&i64);
+        pt.mark_place_init(&c);
         assert!(pt.is_place_init(local));
     }
 
     #[test]
+    fn recursive_uninit() {
+        let (mut pt, local, a, b, c, d, e) = prepare_t();
+        pt.mark_place_init(local);
+
+        pt.mark_place_uninit(&d);
+        assert!(!pt.is_place_init(&d));
+
+        pt.mark_place_uninit(&e);
+        assert!(!pt.is_place_init(&b));
+
+        pt.mark_place_uninit(local);
+        assert!(!pt.is_place_init(&a));
+        assert!(!pt.is_place_init(&c));
+    }
+
+    #[test]
     fn dataflow() {
-        /*
-            ┌──────┬──────┐
-            │      │      │
-            a      │      c
-                ┌──b──┐
-                │     │
-                d     e
-        */
-
-        let mut pt = PlaceTable::new();
-        let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I8, Ty::I8]), Ty::I8]);
-        let local = Local::new(1);
-        pt.allocate_local(local, ty);
-
-        let a = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(0))]);
-        let b = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);
-        let c = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(2))]);
-
-        let d = b.project(ProjectionElem::TupleField(FieldIdx::new(0)));
-        let e = b.project(ProjectionElem::TupleField(FieldIdx::new(1)));
+        let (mut pt, local, a, b, c, d, e) = prepare_t();
 
         pt.combine_dataflow(&a, Rvalue::Use(Operand::Constant(1.into())));
         assert_eq!(a.dataflow(&pt), 1);

@@ -41,13 +41,9 @@ impl PlaceSelector {
     pub fn for_lhs() -> Self {
         Self {
             usage: PlaceUsage::LHS,
+            allow_uninit: true,
             ..Self::default()
         }
-    }
-
-    pub fn maybe_uninit(mut self) -> Self {
-        self.allow_uninit = true;
-        self
     }
 
     pub fn of_ty(self, ty: Ty) -> Self {
@@ -76,20 +72,25 @@ impl PlaceSelector {
             .map(|place| place.to_place_index(pt).expect("excluded place exists"))
             .collect();
         pt.reachable_nodes().filter(move |ppath| {
-            let node = ppath.target_node(pt);
+            let live = pt.is_place_live(ppath.target_index(pt));
+
             let ty_allowed = if self.tys.is_empty() {
                 true
             } else {
-                self.tys.contains(&node.ty)
+                self.tys.contains(&ppath.target_node(pt).ty)
             };
 
-            let not_excluded = !exclusion_indicies.contains(&ppath.target_index(pt));
+            let not_excluded = !exclusion_indicies
+                .iter()
+                .any(|excl| pt.overlap(ppath.target_index(pt), excl));
             let initness_allowed = if self.allow_uninit {
                 true
             } else {
                 pt.is_place_init(ppath.target_index(pt))
             };
-            ty_allowed && not_excluded && initness_allowed
+
+            // FIXME: are we allowed to use moved-from places?
+            live && ty_allowed && not_excluded && initness_allowed
         })
     }
 

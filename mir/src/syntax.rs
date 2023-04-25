@@ -20,8 +20,8 @@ pub struct Body {
 
 define_index_type! {pub struct BasicBlock = u32;}
 pub struct BasicBlockData {
-    pub statements: Vec<Statement>,
-    pub terminator: Terminator,
+    pub(crate) statements: Vec<Statement>,
+    pub(crate) terminator: Terminator,
 }
 
 impl BasicBlockData {
@@ -35,6 +35,15 @@ impl BasicBlockData {
 
     pub fn insert_statement(&mut self, stmt: Statement) {
         self.statements.push(stmt);
+    }
+
+    pub fn set_terminator(&mut self, term: Terminator) {
+        assert!(matches!(self.terminator, Terminator::Hole));
+        self.terminator = term;
+    }
+
+    pub fn terminator(&self) -> &Terminator {
+        &self.terminator
     }
 }
 
@@ -412,7 +421,7 @@ impl Ty {
     pub fn pointee_ty(&self) -> Option<Self> {
         match self {
             Ty::RawPtr(box ty, ..) => Some(ty.clone()),
-            _ => None
+            _ => None,
         }
     }
 }

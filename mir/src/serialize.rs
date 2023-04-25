@@ -173,7 +173,7 @@ impl Serialize for Terminator {
                     .intersperse(", ".to_owned())
                     .collect();
                 format!(
-                    "Call({}, {}, {}({})",
+                    "Call({}, {}, {}({}))",
                     destination.serialize(),
                     target.identifier(),
                     func.identifier(),
