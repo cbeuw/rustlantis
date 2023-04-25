@@ -2,7 +2,6 @@ use std::vec;
 
 use abi::size::Size;
 use bimap::BiBTreeMap;
-use log::debug;
 use mir::syntax::{Body, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
@@ -253,6 +252,7 @@ impl PlaceTable {
         Some(node)
     }
 
+    /// Call update on all transitive superfields of start, *excluding* start
     fn update_transitive_superfields<F>(&mut self, start: PlaceIndex, mut update: F)
     where
         F: FnMut(&mut Self, PlaceIndex) -> bool + Copy,
@@ -268,24 +268,21 @@ impl PlaceTable {
         }
     }
 
+    /// Call update on all transitive subfields of start, *including* start
     fn update_transitive_subfields<F>(&mut self, start: PlaceIndex, mut update: F)
     where
         F: FnMut(&mut Self, PlaceIndex) -> bool + Copy,
     {
-        let subs: Vec<PlaceIndex> = self.immediate_subfields(start).collect();
-        for place in subs {
-            let cont = update(self, place);
-            if cont {
+        let cont = update(self, start);
+        if cont {
+            let subs: Vec<PlaceIndex> = self.immediate_subfields(start).collect();
+            for place in subs {
                 self.update_transitive_subfields(place, update);
-            } else {
-                continue;
             }
         }
     }
 
     fn update_dataflow(&mut self, target: PlaceIndex, new_flow: usize) {
-        self.places[target].dataflow = new_flow;
-
         // Subplaces' complexity is overwritten as target's new complexity
         self.update_transitive_subfields(target, |this, place| {
             this.places[place].dataflow = new_flow;
@@ -323,13 +320,6 @@ impl PlaceTable {
             self.places.remove_edge(old);
         }
 
-        let node = &self.places[pidx];
-        if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
-            self.memory
-                .bytes_mut(node.alloc_id, offset, size)
-                .iter_mut()
-                .for_each(|b| *b = AbstractByte::Uninit);
-        }
         self.update_transitive_subfields(pidx, |this, place| {
             let node = &this.places[place];
             if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
@@ -346,13 +336,6 @@ impl PlaceTable {
 
     pub fn mark_place_init(&mut self, p: impl ToPlaceIndex) {
         let pidx = p.to_place_index(self).unwrap();
-        let node = &self.places[pidx];
-        if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
-            self.memory
-                .bytes_mut(node.alloc_id, offset, size)
-                .iter_mut()
-                .for_each(|b| *b = AbstractByte::Init(None));
-        }
         self.update_transitive_subfields(pidx, |this, place| {
             let node = &this.places[place];
             if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
