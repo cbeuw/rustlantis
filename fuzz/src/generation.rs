@@ -1,4 +1,3 @@
-use std::borrow::BorrowMut;
 use std::cell::RefCell;
 use std::{cmp, vec};
 
@@ -13,7 +12,7 @@ use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
 use crate::literal::GenLiteral;
 use crate::place_select::{PlaceSelector, Weight};
-use crate::ptable::{HasDataflow, PlaceTable, ToPlaceIndex};
+use crate::ptable::{HasDataflow, PlaceTable};
 use crate::ty::TyCtxt;
 
 /// Max. number of statements & declarations in a bb
@@ -318,19 +317,25 @@ impl GenerationCtx {
     // }
 
     fn generate_rvalue(&self, lhs: &Place) -> Result<Rvalue> {
-        let choices: Vec<fn(&GenerationCtx, &Place) -> Result<Rvalue>> = vec![
-            Self::generate_use,
-            Self::generate_unary_op,
-            Self::generate_binary_op,
-            Self::generate_checked_binary_op,
-            Self::generate_cast,
-            Self::generate_address_of,
-            // Self::generate_len,
-            // Self::generate_retag,
-            // Self::generate_discriminant,
+        let choices_and_weights: Vec<(fn(&GenerationCtx, &Place) -> Result<Rvalue>, usize)> = vec![
+            (Self::generate_use, 1),
+            (Self::generate_unary_op, 10),
+            (Self::generate_binary_op, 10),
+            (Self::generate_checked_binary_op, 10),
+            (Self::generate_cast, 5),
+            (Self::generate_address_of, 10),
         ];
 
-        self.make_choice(choices.into_iter(), |f| f(self, lhs))
+        let (choices, weights): (
+            Vec<fn(&GenerationCtx, &Place) -> Result<Rvalue>>,
+            Vec<usize>,
+        ) = choices_and_weights.into_iter().unzip();
+
+        self.make_choice_weighted(
+            choices.into_iter(),
+            WeightedIndex::new(weights).expect("weights are valid"),
+            |f| f(self, lhs),
+        )
     }
 }
 
