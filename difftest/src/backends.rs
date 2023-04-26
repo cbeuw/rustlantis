@@ -75,6 +75,13 @@ impl OptLevel {
             OptLevel::Optimised => 3,
         }
     }
+
+    fn mir_opt_level(&self) -> usize {
+        match self {
+            OptLevel::Unoptimised => 0,
+            OptLevel::Optimised => 3,
+        }
+    }
 }
 
 pub struct LLVM {
@@ -111,6 +118,10 @@ impl Backend for LLVM {
             .args([
                 "-C",
                 &format!("opt-level={}", self.opt_level.rustc_opt_level()),
+            ])
+            .args([
+                "-Z",
+                &format!("mir-opt-level={}", self.opt_level.mir_opt_level()),
             ])
             .output()
             .expect("can execute rustc and get output");

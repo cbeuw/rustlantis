@@ -10,7 +10,7 @@ use difftest::{
     backends::{Backend, Cranelift, Miri, OptLevel, LLVM},
     run_diff_test, BackendName,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 
 fn main() {
     env_logger::init();
@@ -48,8 +48,13 @@ fn main() {
 
     let llvm_toolchain = settings.get_string("llvm_toolchain").ok();
     backends.insert(
+        "llvm-opt",
+        Box::new(LLVM::new(OptLevel::Optimised, llvm_toolchain.clone())),
+    );
+
+    backends.insert(
         "llvm",
-        Box::new(LLVM::new(OptLevel::Optimised, llvm_toolchain)),
+        Box::new(LLVM::new(OptLevel::Unoptimised, llvm_toolchain)),
     );
 
     info!(
@@ -66,14 +71,10 @@ fn main() {
         info!("{} is all the same", source.as_os_str().to_string_lossy());
         debug!("{}", results);
     } else {
-        // if results.has_ub().is_some_and(identity) {
-        //     warn!("{} has UB", source.as_os_str().to_string_lossy())
-        // } else {
-            error!(
-                "{} didn't pass:\n{}",
-                source.as_os_str().to_string_lossy(),
-                results
-            );
-        // }
+        error!(
+            "{} didn't pass:\n{}",
+            source.as_os_str().to_string_lossy(),
+            results
+        );
     }
 }
