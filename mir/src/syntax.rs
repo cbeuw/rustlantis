@@ -568,7 +568,7 @@ impl From<f64> for Literal {
 
 impl Program {
     pub const FUNCTION_ATTRIBUTE: &str =
-        "#[custom_mir(dialect = \"runtime\", phase = \"optimized\")]";
+        "#[custom_mir(dialect = \"runtime\", phase = \"initial\")]";
     pub const HEADER: &str = "#![recursion_limit = \"256\"]
     #![feature(custom_mir, core_intrinsics)]
     #![allow(unused_parens, unused_assignments, overflowing_literals)]
