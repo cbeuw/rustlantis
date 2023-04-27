@@ -1,12 +1,11 @@
 use std::vec;
 
-use abi::size::Size;
 use bimap::BiBTreeMap;
 use mir::syntax::{Body, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
-use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunAndOffset};
+use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunPointer};
 
 type PlaceGraph = Graph<PlaceNode, ProjectionElem>;
 pub type PlaceIndex = NodeIndex;
@@ -28,11 +27,9 @@ pub struct PlaceNode {
     pub ty: Ty,
     alloc_id: AllocId,
     pub dataflow: usize,
-    moved: bool,
 
     // Only Tys fitting into a single Run have these
-    run_and_offset: Option<RunAndOffset>,
-    size: Option<Size>,
+    run_ptr: Option<RunPointer>,
 }
 
 pub trait ToPlaceIndex {
@@ -88,24 +85,17 @@ impl PlaceTable {
     }
 
     pub fn enter_fn0(&mut self, body: &Body) {
+        // Declare return place
+        self.allocate_local(Local::RET, body.return_ty());
         // Declare args
         body.args_decl_iter().for_each(|(local, decl)| {
             let pidx = self.allocate_local(local, decl.ty.clone());
             // encourage use of args
             self.places[pidx].dataflow = 5;
         });
-
-        // Prepare return place
-        let mut return_pidx = Default::default();
-        self.memory.allocate_with_builder(|builder| {
-            return_pidx = Self::add_place(&mut self.places, body.return_ty(), builder, 0);
-        });
-        self.current_locals_mut()
-            .insert_no_overwrite(Local::RET, return_pidx)
-            .expect("return place did not already exist");
     }
 
-    pub fn enter_fn(&mut self, body: &Body, args: &[Operand], return_place: &Place) {
+    pub fn enter_fn(&mut self, body: &Body, args: &[Operand]) {
         // Get the PlaceIndices before frame switch
         enum ArgOperand {
             Copy(PlaceIndex),
@@ -125,15 +115,10 @@ impl PlaceTable {
                 Operand::Constant(_) => ArgOperand::Constant,
             })
             .collect();
-        let return_place = return_place
-            .to_place_index(self)
-            .expect("return place exists");
-
-        // Deinitialise return place
-        self.mark_place_uninit(return_place);
 
         // Frame switch
         self.new_frame();
+        self.allocate_local(Local::RET, body.return_ty());
         body.args_decl_iter()
             .zip(args)
             .for_each(|((local, decl), arg)| {
@@ -144,40 +129,29 @@ impl PlaceTable {
                         self.is_place_init(source_pidx),
                         "function arguments must be init"
                     );
-
-                    // encourage use of args
-                    self.places[pidx].dataflow = self.places[source_pidx].dataflow;
-                    // FIXME: copy memory from arg to the new places
+                    self.copy_place(pidx, source_pidx);
                 }
                 if let ArgOperand::Move(source_pidx) = arg {
                     self.mark_place_moved(source_pidx);
                 }
             });
-        self.current_locals_mut()
-            .insert_no_overwrite(Local::RET, return_place)
-            .expect("return place did not already exist");
     }
 
-    pub fn exit_fn(&mut self) {
-        // Deinit places
-        // keep RET as it is allocated on the parent's frame
-        let ret_pidx = Place::RETURN_SLOT
+    pub fn exit_fn(&mut self, caller_dest: &Place) {
+        // FIXME: this is quite flimsy wrt. statement order
+        let callee_ret = Place::RETURN_SLOT
             .to_place_index(self)
             .expect("place exists");
+        let popped_frame = self.frames.pop().expect("call stack isn't empyt");
+        let caller_dest = caller_dest.to_place_index(self).expect("place exists");
+        // Copy ret
+        self.copy_place(caller_dest, callee_ret);
 
+        // Deinit places
         // can't use current_locals() here as that keeps the borrow
-        for pidx in self
-            .frames
-            .last()
-            .expect("call stack isn't empty")
-            .right_values()
-        {
-            if *pidx != ret_pidx {
-                let alloc_id = self.places[*pidx].alloc_id;
-                self.memory.deallocate(alloc_id);
-            }
+        for pidx in popped_frame.right_values() {
+            self.memory.deallocate(self.places[*pidx].alloc_id);
         }
-        self.frames.pop();
     }
 
     pub fn allocate_local(&mut self, local: Local, ty: Ty) -> PlaceIndex {
@@ -197,25 +171,26 @@ impl PlaceTable {
         alloc_builder: &mut AllocationBuilder,
         dataflow: usize,
     ) -> PlaceIndex {
+        let alloc_id = alloc_builder.alloc_id();
         let pidx = if let Some(size) = BasicMemory::ty_size(&ty) {
             // FIXME: don't always allocate Runs
-            let offset = alloc_builder.new_run(size);
+            let run_and_offset = alloc_builder.new_run(size);
             places.add_node(PlaceNode {
                 ty: ty.clone(),
-                alloc_id: alloc_builder.alloc_id(),
+                alloc_id,
                 dataflow,
-                moved: false,
-                run_and_offset: Some(offset),
-                size: Some(size),
+                run_ptr: Some(RunPointer {
+                    alloc_id,
+                    run_and_offset,
+                    size,
+                }),
             })
         } else {
             places.add_node(PlaceNode {
                 ty: ty.clone(),
-                alloc_id: alloc_builder.alloc_id(),
+                alloc_id,
                 dataflow,
-                moved: false,
-                run_and_offset: None,
-                size: None,
+                run_ptr: None,
             })
         };
         match ty {
@@ -234,17 +209,51 @@ impl PlaceTable {
         pidx
     }
 
+    fn copy_place(&mut self, dst: PlaceIndex, src: PlaceIndex) {
+        let (dst_node, src_node) = self.places.index_twice_mut(dst, src);
+        dst_node.dataflow = src_node.dataflow;
+        assert_eq!(dst_node.ty, src_node.ty);
+        if let Some(run_ptr) = src_node.run_ptr {
+            self.memory
+                .copy(dst_node.run_ptr.expect("dst is terminal"), run_ptr);
+
+            if dst_node.ty.is_any_ptr() {
+                self.alias_ref(src, dst);
+            }
+        } else {
+            let projs: Vec<_> = self
+                .places
+                .edges_directed(dst, Direction::Outgoing)
+                .filter_map(|e| (!e.weight().is_deref()).then_some(e.weight()))
+                .copied()
+                .collect();
+            for proj in projs {
+                let new_dst = self
+                    .project_from_node(dst, &proj)
+                    .expect("projection exists");
+                let new_src = self
+                    .project_from_node(src, &proj)
+                    .expect("projection exists");
+                self.copy_place(new_dst, new_src);
+            }
+        }
+    }
+
+    fn project_from_node(&self, pidx: PlaceIndex, proj: &ProjectionElem) -> Option<PlaceIndex> {
+        self.places
+            .edges_directed(pidx, Direction::Outgoing)
+            .find(|edge| edge.weight() == proj)
+            .map(|e| e.target())
+    }
+
     /// Get PlaceIndex from a Place
     fn get_node(&self, place: &Place) -> Option<PlaceIndex> {
         let mut node = *self.current_locals().get_by_left(&place.local())?;
         let proj_iter = place.projection().iter();
         for proj in proj_iter {
-            let found = self
-                .places
-                .edges_directed(node, Direction::Outgoing)
-                .find(|edge| edge.weight() == proj);
-            if let Some(edge) = found {
-                node = edge.target();
+            let next = self.project_from_node(node, proj);
+            if let Some(next) = next {
+                node = next;
             } else {
                 return None;
             }
@@ -322,9 +331,9 @@ impl PlaceTable {
 
         self.update_transitive_subfields(pidx, |this, place| {
             let node = &this.places[place];
-            if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
+            if let Some(run_ptr) = node.run_ptr {
                 this.memory
-                    .bytes_mut(node.alloc_id, offset, size)
+                    .bytes_mut(run_ptr)
                     .iter_mut()
                     .for_each(|b| *b = AbstractByte::Uninit);
                 false
@@ -338,9 +347,9 @@ impl PlaceTable {
         let pidx = p.to_place_index(self).unwrap();
         self.update_transitive_subfields(pidx, |this, place| {
             let node = &this.places[place];
-            if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
+            if let Some(run_ptr) = node.run_ptr {
                 this.memory
-                    .bytes_mut(node.alloc_id, offset, size)
+                    .bytes_mut(run_ptr)
                     .iter_mut()
                     .for_each(|b| *b = AbstractByte::Init(None));
                 false
@@ -368,7 +377,7 @@ impl PlaceTable {
             .map(|deref| deref.id())
     }
 
-    /// Make alias such that original_ref -[Deref]-> pointee <-[Deref]- alias_ref
+    /// Make alias such that original_ref -[Deref]-> pointee <-[Deref]- alias_ref, if one exists
     pub fn alias_ref(&mut self, original_ref: impl ToPlaceIndex, alias_ref: impl ToPlaceIndex) {
         let original_ref = original_ref.to_place_index(self).expect("place exists");
         if let Some(pointee) = self.pointee(original_ref) {
@@ -414,11 +423,8 @@ impl PlaceTable {
         }
         let pidx = p.to_place_index(self).unwrap();
         let node = &self.places[pidx];
-        if let (Some(offset), Some(size)) = (node.run_and_offset, node.size) {
-            self.memory
-                .bytes(node.alloc_id, offset, size)
-                .iter()
-                .all(|b| b.is_init())
+        if let Some(run_ptr) = node.run_ptr {
+            self.memory.bytes(run_ptr).iter().all(|b| b.is_init())
         } else {
             self.immediate_subfields(pidx)
                 .all(|sub| self.is_place_init(sub))
@@ -428,25 +434,13 @@ impl PlaceTable {
     fn immediate_subfields(&self, pidx: PlaceIndex) -> impl Iterator<Item = PlaceIndex> + '_ {
         self.places
             .edges_directed(pidx, Direction::Outgoing)
-            .filter_map(|e| {
-                if *e.weight() == ProjectionElem::Deref {
-                    None
-                } else {
-                    Some(e.target())
-                }
-            })
+            .filter_map(|e| (!e.weight().is_deref()).then_some(e.target()))
     }
 
     fn immediate_superfields(&self, pidx: PlaceIndex) -> impl Iterator<Item = PlaceIndex> + '_ {
         self.places
             .edges_directed(pidx, Direction::Incoming)
-            .filter_map(|e| {
-                if *e.weight() == ProjectionElem::Deref {
-                    None
-                } else {
-                    Some(e.source())
-                }
-            })
+            .filter_map(|e| (!e.weight().is_deref()).then_some(e.source()))
     }
 
     // Returns an iterator over all places reachable from local through projections
@@ -541,7 +535,7 @@ impl<'pt> ProjectionIter<'pt> {
                 .places
                 .edges_directed(root, Direction::Outgoing)
                 .filter_map(|e| {
-                    if follow_deref || *e.weight() != ProjectionElem::Deref {
+                    if follow_deref || !e.weight().is_deref() {
                         Some((e.id(), 1))
                     } else {
                         None
@@ -570,13 +564,8 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
 
             let new_edges = self.pt.places.edges_directed(target, Direction::Outgoing);
             self.to_visit.extend(new_edges.filter_map(|e| {
-                if *e.weight() != ProjectionElem::Deref {
-                    // Unconditionally follow non-deref edges
-                    Some((e.id(), depth + 1))
-                } else {
-                    // Only deref edges immediately from root can be followed
-                    None
-                }
+                // Do not follow deref edges since we are not root
+                (!e.weight().is_deref()).then_some((e.id(), depth + 1))
             }));
 
             Some(PlacePath {

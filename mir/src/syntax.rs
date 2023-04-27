@@ -139,6 +139,12 @@ pub enum ProjectionElem {
     // TODO: Subslice
 }
 
+impl ProjectionElem {
+    pub fn is_deref(&self) -> bool {
+        *self == ProjectionElem::Deref
+    }
+}
+
 pub enum Terminator {
     Hole,
     // define!("mir_return", fn Return() -> BasicBlock);

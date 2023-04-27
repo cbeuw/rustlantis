@@ -540,12 +540,13 @@ impl GenerationCtx {
             })
             .collect::<Result<Vec<Operand>>>()?;
 
+        self.return_stack
+            .push((self.current_function, self.current_bb));
         let target_bb = self.add_new_bb();
-        self.return_stack.push((self.current_function, target_bb));
 
         // We don't know the name of the new function here, so we save the current cursor and write the terminator after frame switch
         let (caller_fn, caller_bb) = (self.current_function, self.current_bb);
-        let new_fn = self.enter_new_fn(&args, &return_place);
+        let new_fn = self.enter_new_fn(&args, return_place.ty(self.current_decls()));
         self.program.functions[caller_fn].basic_blocks[caller_bb].set_terminator(
             Terminator::Call {
                 func: new_fn,
@@ -605,12 +606,11 @@ impl GenerationCtx {
 // Frame controls
 impl GenerationCtx {
     // Move generation context to an executed function
-    fn enter_new_fn(&mut self, args: &[Operand], return_place: &Place) -> Function {
+    fn enter_new_fn(&mut self, args: &[Operand], return_ty: Ty) -> Function {
         let args_ty: Vec<Ty> = args
             .iter()
             .map(|arg| arg.ty(self.current_decls()))
             .collect::<Vec<_>>();
-        let return_ty = return_place.ty(self.current_decls());
         let mut body = Body::new(&args_ty, return_ty.clone());
 
         let starting_bb = body.new_basic_block(BasicBlockData::new());
@@ -626,11 +626,8 @@ impl GenerationCtx {
         self.current_function = new_fn;
         self.current_bb = starting_bb;
 
-        self.pt.enter_fn(
-            &self.program.functions[self.current_function],
-            args,
-            return_place,
-        );
+        self.pt
+            .enter_fn(&self.program.functions[self.current_function], args);
         new_fn
     }
 
@@ -649,12 +646,17 @@ impl GenerationCtx {
 
     fn exit_fn(&mut self) -> bool {
         let callee = self.current_function;
-        if let Some((func, target)) = self.return_stack.pop() {
+        if let Some((func, caller)) = self.return_stack.pop() {
             debug!("leaving {} to {}", callee.identifier(), func.identifier());
+
+            let Terminator::Call { target, destination, .. } = self.program.functions[func].basic_blocks[caller].terminator() else {
+                unreachable!("caller terminates with Call");
+            };
+
             // Move cursor to the target bb in the call terminator
             self.current_function = func;
-            self.current_bb = target;
-            self.pt.exit_fn();
+            self.current_bb = *target;
+            self.pt.exit_fn(destination);
             true
         } else {
             // Returning back to main from fn0, stop generation

@@ -1,20 +1,17 @@
 mod stacked_borrows;
 
-use std::{alloc::GlobalAlloc, fmt, ops::Index};
+use std::{fmt, ops::Range};
 
 use abi::size::Size;
 use index_vec::{define_index_type, IndexVec};
-use log::trace;
 use mir::syntax::Ty;
 use rangemap::RangeMap;
-
-use crate::mem::stacked_borrows::{AccessKind, SBViolation};
 
 use self::stacked_borrows::{
     item::{Item, Permission},
     stack::Stack,
     state::GlobalState,
-    BorTag, NewPermission, Provenance, SBResult, Stacks,
+    BorTag, Provenance, Stacks,
 };
 
 #[derive(Clone, Copy)]
@@ -130,6 +127,20 @@ impl AllocationBuilder {
 
 define_index_type! {pub struct AllocId = u32;}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunPointer {
+    pub alloc_id: AllocId,
+    pub run_and_offset: RunAndOffset,
+    pub size: Size,
+}
+
+impl RunPointer {
+    pub fn bytes_range(&self) -> Range<usize> {
+        self.run_and_offset.1.bytes_usize()
+            ..self.run_and_offset.1.bytes_usize() + self.size.bytes_usize()
+    }
+}
+
 pub struct BasicMemory {
     allocations: IndexVec<AllocId, Allocation>,
     sb_state: GlobalState,
@@ -169,26 +180,28 @@ impl BasicMemory {
         self.allocations[alloc_id].live
     }
 
-    pub fn bytes(
-        &self,
-        alloc_id: AllocId,
-        idx: RunAndOffset,
-        size: Size,
-    ) -> &[AbstractByte<Provenance>] {
-        assert!(self.allocations[alloc_id].live, "can't access dead bytes");
-        &self.allocations[alloc_id].runs[idx.0].bytes
-            [idx.1.bytes_usize()..idx.1.bytes_usize() + size.bytes_usize()]
+    pub fn bytes(&self, run_ptr: RunPointer) -> &[AbstractByte<Provenance>] {
+        assert!(
+            self.allocations[run_ptr.alloc_id].live,
+            "can't access dead bytes"
+        );
+        &self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].bytes
+            [run_ptr.bytes_range()]
     }
 
-    pub fn bytes_mut(
-        &mut self,
-        alloc_id: AllocId,
-        idx: RunAndOffset,
-        size: Size,
-    ) -> &mut [AbstractByte<Provenance>] {
-        assert!(self.allocations[alloc_id].live, "can't access dead bytes");
-        &mut self.allocations[alloc_id].runs[idx.0].bytes
-            [idx.1.bytes_usize()..idx.1.bytes_usize() + size.bytes_usize()]
+    pub fn bytes_mut(&mut self, run_ptr: RunPointer) -> &mut [AbstractByte<Provenance>] {
+        assert!(
+            self.allocations[run_ptr.alloc_id].live,
+            "can't access dead bytes"
+        );
+        &mut self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].bytes
+            [run_ptr.bytes_range()]
+    }
+
+    pub fn copy(&mut self, dst: RunPointer, src: RunPointer) {
+        assert_eq!(dst.size, src.size);
+        let tmp = self.bytes(src).to_vec();
+        self.bytes_mut(dst).copy_from_slice(&tmp)
     }
 
     /// Returns Size for types with guaranteed size.
