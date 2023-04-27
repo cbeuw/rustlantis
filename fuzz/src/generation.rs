@@ -586,7 +586,7 @@ impl GenerationCtx {
         }
 
         let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> = vec![
-            (Self::generate_goto, 500),
+            (Self::generate_goto, 200),
             (Self::generate_switch_int, 200),
             (
                 Self::generate_call,
