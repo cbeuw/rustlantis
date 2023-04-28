@@ -2,7 +2,7 @@
 #![feature(is_some_and)]
 
 use core::panic;
-use std::{collections::HashMap, convert::identity, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
 use clap::{Arg, Command};
 use config::Config;
@@ -83,11 +83,15 @@ fn main() {
         {
             warn!("Protector UB");
         } else {
-            error!(
-                "{} didn't pass:\n{}",
-                source.as_os_str().to_string_lossy(),
-                results
-            );
+            let results = results.to_string();
+            if results.contains("compiler/rustc_mir_transform/src/nrvo.rs") {
+                warn!("Known bug: NVRO");
+            } else {
+                error!(
+                    "{} didn't pass:\n{results}",
+                    source.as_os_str().to_string_lossy(),
+                );
+            }
         }
     }
 }
