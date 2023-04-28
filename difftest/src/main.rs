@@ -10,7 +10,7 @@ use difftest::{
     backends::{Backend, Cranelift, Miri, OptLevel, LLVM},
     run_diff_test, BackendName,
 };
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 
 fn main() {
     env_logger::init();
@@ -71,10 +71,23 @@ fn main() {
         info!("{} is all the same", source.as_os_str().to_string_lossy());
         debug!("{}", results);
     } else {
-        error!(
-            "{} didn't pass:\n{}",
-            source.as_os_str().to_string_lossy(),
-            results
-        );
+        // FIXME: properly solve protectors
+        if results.has_ub().unwrap()
+            && results["miri"]
+                .as_ref()
+                .unwrap_err()
+                .0
+                .stderr
+                .to_string_lossy()
+                .contains("protected")
+        {
+            warn!("Protector UB");
+        } else {
+            error!(
+                "{} didn't pass:\n{}",
+                source.as_os_str().to_string_lossy(),
+                results
+            );
+        }
     }
 }

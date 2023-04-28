@@ -321,7 +321,7 @@ impl PlaceTable {
         todo!();
     }
 
-    fn mark_place_uninit(&mut self, p: impl ToPlaceIndex) {
+    pub fn mark_place_uninit(&mut self, p: impl ToPlaceIndex) {
         let pidx = p.to_place_index(self).unwrap();
 
         // If this is a pointer, we have to remove the Deref edge, but not for other projections

@@ -540,6 +540,9 @@ impl GenerationCtx {
             })
             .collect::<Result<Vec<Operand>>>()?;
 
+        // FIXME: not necessary
+        self.pt.mark_place_uninit(&return_place);
+
         self.return_stack
             .push((self.current_function, self.current_bb));
         let target_bb = self.add_new_bb();
