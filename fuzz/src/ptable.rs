@@ -210,8 +210,9 @@ impl PlaceTable {
     }
 
     fn copy_place(&mut self, dst: PlaceIndex, src: PlaceIndex) {
+        self.update_dataflow(dst, self.places[src].dataflow);
+
         let (dst_node, src_node) = self.places.index_twice_mut(dst, src);
-        dst_node.dataflow = src_node.dataflow;
         assert_eq!(dst_node.ty, src_node.ty);
         if let Some(run_ptr) = src_node.run_ptr {
             self.memory
@@ -292,6 +293,8 @@ impl PlaceTable {
     }
 
     fn update_dataflow(&mut self, target: PlaceIndex, new_flow: usize) {
+        let new_flow = new_flow.min(10000);
+
         // Subplaces' complexity is overwritten as target's new complexity
         self.update_transitive_subfields(target, |this, place| {
             this.places[place].dataflow = new_flow;
