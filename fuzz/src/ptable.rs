@@ -209,7 +209,9 @@ impl PlaceTable {
         pidx
     }
 
-    fn copy_place(&mut self, dst: PlaceIndex, src: PlaceIndex) {
+    pub fn copy_place(&mut self, dst: impl ToPlaceIndex, src: impl ToPlaceIndex) {
+        let dst = dst.to_place_index(self).expect("place exists");
+        let src = src.to_place_index(self).expect("place exists");
         self.update_dataflow(dst, self.places[src].dataflow);
 
         let (dst_node, src_node) = self.places.index_twice_mut(dst, src);

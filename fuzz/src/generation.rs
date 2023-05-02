@@ -19,7 +19,7 @@ use crate::ty::TyCtxt;
 const BB_MAX_LEN: usize = 128;
 /// Max. number of switch targets in a SwitchInt terminator
 const MAX_SWITCH_TARGETS: usize = 8;
-const MAX_FN_COUNT: usize = 100;
+const MAX_FN_COUNT: usize = 50;
 
 #[derive(Debug)]
 pub enum SelectionError {
@@ -589,8 +589,8 @@ impl GenerationCtx {
         }
 
         let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> = vec![
-            (Self::generate_goto, 200),
-            (Self::generate_switch_int, 200),
+            (Self::generate_goto, 100),
+            (Self::generate_switch_int, 100),
             (
                 Self::generate_call,
                 MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
@@ -866,16 +866,14 @@ impl GenerationCtx {
         match stmt {
             Statement::Assign(lhs, rvalue) => {
                 self.pt.mark_place_init(lhs);
-                self.pt.combine_dataflow(lhs, rvalue);
-                // Pointert logic
-                if lhs.ty(self.current_decls()).is_any_ptr() {
-                    match rvalue {
-                        Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs)) => {
-                            self.pt.alias_ref(rhs, lhs)
-                        }
-                        Rvalue::AddressOf(_, referent) => self.pt.set_ref(lhs, referent),
-                        Rvalue::BinaryOp(BinOp::Offset, _, _) => todo!(),
-                        _ => unreachable!(),
+                match rvalue {
+                    Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs)) => {
+                        self.pt.copy_place(rhs, lhs)
+                    }
+                    Rvalue::BinaryOp(BinOp::Offset, _, _) => todo!(),
+                    Rvalue::AddressOf(_, referent) => self.pt.set_ref(lhs, referent),
+                    _ => {
+                        self.pt.combine_dataflow(lhs, rvalue);
                     }
                 }
                 // FIXME: move logic
