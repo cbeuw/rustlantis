@@ -1,10 +1,12 @@
+mod intrinsics;
+
 use std::cell::RefCell;
 use std::{cmp, vec};
 
 use log::{debug, trace};
 use mir::serialize::Serialize;
 use mir::syntax::{
-    BasicBlock, BasicBlockData, BinOp, Body, Function, IntTy, Literal, Local, LocalDecls,
+    BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal, Local, LocalDecls,
     Mutability, Operand, Place, Program, Rvalue, Statement, SwitchTargets, Terminator, Ty, UnOp,
 };
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
@@ -14,6 +16,8 @@ use crate::literal::GenLiteral;
 use crate::place_select::{PlaceSelector, Weight};
 use crate::ptable::{HasDataflow, PlaceTable};
 use crate::ty::TyCtxt;
+
+use self::intrinsics::CoreIntrinsic;
 
 /// Max. number of statements & declarations in a bb
 const BB_MAX_LEN: usize = 128;
@@ -552,7 +556,7 @@ impl GenerationCtx {
         let new_fn = self.enter_new_fn(&args, return_place.ty(self.current_decls()));
         self.program.functions[caller_fn].basic_blocks[caller_bb].set_terminator(
             Terminator::Call {
-                func: new_fn,
+                callee: Callee::Generated(new_fn),
                 destination: return_place,
                 target: target_bb,
                 args,
@@ -560,6 +564,27 @@ impl GenerationCtx {
         );
 
         debug!("generated a Call terminator");
+        Ok(())
+    }
+
+    fn generate_intrinsic_call(&mut self) -> Result<()> {
+        let (return_places, weights) = PlaceSelector::for_lhs()
+            .into_weighted(&self.pt)
+            .ok_or(SelectionError::Exhausted)?;
+
+        let return_place =
+            self.make_choice_weighted(return_places.into_iter(), weights, Result::Ok)?;
+
+        let (callee, args) = self.choose_intrinsic(&return_place)?;
+
+        let bb = self.add_new_bb();
+        self.current_bb_mut().set_terminator(Terminator::Call {
+            callee,
+            destination: return_place,
+            target: bb,
+            args,
+        });
+        self.enter_bb(bb);
         Ok(())
     }
 
@@ -591,6 +616,7 @@ impl GenerationCtx {
         let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> = vec![
             (Self::generate_goto, 100),
             (Self::generate_switch_int, 100),
+            (Self::generate_intrinsic_call, 100),
             (
                 Self::generate_call,
                 MAX_FN_COUNT.saturating_sub(self.program.functions.len()),

@@ -16,9 +16,10 @@ mod mem;
 
 use std::env::args;
 
-use crate::generation::GenerationCtx;
 use log::info;
 use mir::serialize::Serialize;
+
+use crate::generation::GenerationCtx;
 
 fn main() {
     env_logger::init();

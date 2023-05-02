@@ -145,6 +145,11 @@ impl ProjectionElem {
     }
 }
 
+pub enum Callee {
+    Generated(Function),
+    Intrinsic(&'static str),
+}
+
 pub enum Terminator {
     Hole,
     // define!("mir_return", fn Return() -> BasicBlock);
@@ -162,7 +167,7 @@ pub enum Terminator {
     },
     // TODO: define!("mir_call", fn Call<T>(place: T, goto: BasicBlock, call: T));
     Call {
-        func: Function,
+        callee: Callee,
         destination: Place,
         target: BasicBlock,
         args: Vec<Operand>,

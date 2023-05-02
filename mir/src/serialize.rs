@@ -110,7 +110,9 @@ impl Serialize for Rvalue {
         match self {
             Rvalue::Use(a) => a.serialize(),
             Rvalue::UnaryOp(op, a) => format!("{}{}", op.symbol(), a.serialize()),
-            Rvalue::BinaryOp(BinOp::Offset, a, b) => format!("Offset({}, {})", a.serialize(), b.serialize()),
+            Rvalue::BinaryOp(BinOp::Offset, a, b) => {
+                format!("Offset({}, {})", a.serialize(), b.serialize())
+            }
             Rvalue::BinaryOp(op, a, b) => {
                 format!("{} {} {}", a.serialize(), op.symbol(), b.serialize())
             }
@@ -164,7 +166,7 @@ impl Serialize for Terminator {
             Terminator::Call {
                 destination,
                 target,
-                func,
+                callee,
                 args,
             } => {
                 let args_list: String = args
@@ -172,12 +174,14 @@ impl Serialize for Terminator {
                     .map(|arg| arg.serialize())
                     .intersperse(", ".to_owned())
                     .collect();
+                let fn_name = match callee {
+                    Callee::Generated(func) => func.identifier(),
+                    Callee::Intrinsic(func) => format!("core::intrinsics::{func}"),
+                };
                 format!(
-                    "Call({}, {}, {}({}))",
+                    "Call({}, {}, {fn_name}({args_list}))",
                     destination.serialize(),
                     target.identifier(),
-                    func.identifier(),
-                    args_list
                 )
             }
             Terminator::SwitchInt { discr, targets } => {
