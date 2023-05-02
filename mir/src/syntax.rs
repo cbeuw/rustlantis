@@ -398,15 +398,15 @@ impl Ty {
         }
     }
 
-    pub fn contains<P>(&self, mut predicate: P) -> bool
+    pub fn contains<P>(&self, predicate: P) -> bool
     where
-        P: FnMut(&Ty) -> bool,
+        P: Fn(&Ty) -> bool + Copy,
     {
         if predicate(self) {
             return true;
         }
         match self {
-            Ty::Tuple(elems) => elems.iter().any(predicate),
+            Ty::Tuple(elems) => elems.iter().any(|ty| ty.contains(predicate)),
             Ty::Adt(_) => todo!(),
             _ => false,
         }
