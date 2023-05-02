@@ -31,9 +31,9 @@ fn main() {
 
     let mut backends: HashMap<BackendName, Box<dyn Backend>> = HashMap::default();
     if let Ok(clif_dir) = settings.get_string("cranelift_dir") {
-        let clif = Cranelift::from_repo(clif_dir, OptLevel::Optimised);
+        let clif = Cranelift::from_repo(clif_dir, OptLevel::Optimised, OptLevel::Unoptimised);
         match clif {
-            Ok(clif) => backends.insert("cranelift", Box::new(clif)),
+            Ok(clif) => backends.insert("cranelift-opt-only", Box::new(clif)),
             Err(e) => panic!("cranelift init failed\n{}", e.0),
         };
     }
@@ -49,12 +49,20 @@ fn main() {
     let llvm_toolchain = settings.get_string("llvm_toolchain").ok();
     backends.insert(
         "llvm-opt",
-        Box::new(LLVM::new(OptLevel::Optimised, llvm_toolchain.clone())),
+        Box::new(LLVM::new(
+            llvm_toolchain.clone(),
+            OptLevel::Optimised,
+            OptLevel::Optimised,
+        )),
     );
 
     backends.insert(
-        "llvm",
-        Box::new(LLVM::new(OptLevel::Unoptimised, llvm_toolchain)),
+        "llvm-opt-only",
+        Box::new(LLVM::new(
+            llvm_toolchain,
+            OptLevel::Optimised,
+            OptLevel::Unoptimised,
+        )),
     );
 
     info!(

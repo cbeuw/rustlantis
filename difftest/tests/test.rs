@@ -1,8 +1,6 @@
 #![feature(is_some_and)]
 
-use std::{
-    collections::HashMap, path::PathBuf, str::FromStr,
-};
+use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
 use config::Config;
 use difftest::{
@@ -21,7 +19,7 @@ fn correct_mir() {
     let mut backends: HashMap<&'static str, Box<dyn Backend>> = HashMap::default();
 
     if let Ok(clif_dir) = settings.get_string("cranelift_dir") {
-        let clif = Cranelift::from_repo(clif_dir, OptLevel::Optimised);
+        let clif = Cranelift::from_repo(clif_dir, OptLevel::Optimised, OptLevel::Optimised);
         match clif {
             Ok(clif) => backends.insert("cranelift", Box::new(clif)),
             Err(e) => panic!("cranelift init failed\n{}", e.0),
@@ -36,7 +34,10 @@ fn correct_mir() {
         };
     }
 
-    backends.insert("llvm", Box::new(LLVM::new(OptLevel::Optimised, None)));
+    backends.insert(
+        "llvm",
+        Box::new(LLVM::new(None, OptLevel::Optimised, OptLevel::Optimised)),
+    );
 
     let results = run_diff_test(
         &PathBuf::from_str("tests/inputs/simple.rs").unwrap(),

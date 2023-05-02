@@ -64,35 +64,21 @@ pub trait Backend: Send + Sync {
 
 #[derive(Debug, Clone, Copy)]
 pub enum OptLevel {
-    Unoptimised,
-    Optimised,
-}
-
-impl OptLevel {
-    fn rustc_opt_level(&self) -> usize {
-        match self {
-            OptLevel::Unoptimised => 0,
-            OptLevel::Optimised => 3,
-        }
-    }
-
-    fn mir_opt_level(&self) -> usize {
-        match self {
-            OptLevel::Unoptimised => 0,
-            OptLevel::Optimised => 3,
-        }
-    }
+    Unoptimised = 0,
+    Optimised = 3,
 }
 
 pub struct LLVM {
     toolchain: Option<String>,
-    opt_level: OptLevel,
+    codegen_opt: OptLevel,
+    mir_opt: OptLevel,
 }
 
 impl LLVM {
-    pub fn new(opt_level: OptLevel, toolchain: Option<String>) -> Self {
+    pub fn new(toolchain: Option<String>, codegen_opt: OptLevel, mir_opt: OptLevel) -> Self {
         Self {
-            opt_level,
+            codegen_opt,
+            mir_opt,
             toolchain,
         }
     }
@@ -115,14 +101,8 @@ impl Backend for LLVM {
         let compile_out = command
             .arg(source)
             .args(["-o", target_path.to_str().unwrap()])
-            .args([
-                "-C",
-                &format!("opt-level={}", self.opt_level.rustc_opt_level()),
-            ])
-            .args([
-                "-Z",
-                &format!("mir-opt-level={}", self.opt_level.mir_opt_level()),
-            ])
+            .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
+            .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
             .output()
             .expect("can execute rustc and get output");
         if !compile_out.status.success() {
@@ -247,13 +227,15 @@ impl Backend for Miri {
 
 pub struct Cranelift {
     binary: PathBuf,
-    opt_level: OptLevel,
+    codegen_opt: OptLevel,
+    mir_opt: OptLevel,
 }
 
 impl Cranelift {
     pub fn from_repo<P: AsRef<Path>>(
         clif_dir: P,
-        opt_level: OptLevel,
+        codegen_opt: OptLevel,
+        mir_opt: OptLevel,
     ) -> Result<Self, BackendInitError> {
         let clif_dir = clif_dir.as_ref();
 
@@ -290,14 +272,20 @@ impl Cranelift {
 
         Ok(Cranelift {
             binary: clif_dir.join("dist/rustc-clif"),
-            opt_level,
+            codegen_opt,
+            mir_opt,
         })
     }
 
-    pub fn from_binary<P: AsRef<Path>>(binary_path: P, opt_level: OptLevel) -> Self {
+    pub fn from_binary<P: AsRef<Path>>(
+        binary_path: P,
+        codegen_opt: OptLevel,
+        mir_opt: OptLevel,
+    ) -> Self {
         Self {
             binary: binary_path.as_ref().to_owned(),
-            opt_level,
+            codegen_opt,
+            mir_opt,
         }
     }
 }
@@ -313,10 +301,8 @@ impl Backend for Cranelift {
         let compile_out = Command::new(&self.binary)
             .arg(source)
             .args(["-o", target_path.to_str().unwrap()])
-            .args([
-                "-C",
-                &format!("opt-level={}", self.opt_level.rustc_opt_level()),
-            ])
+            .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
+            .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
             .output()
             .expect("can run rustc-clif and get output");
         if !compile_out.status.success() {
