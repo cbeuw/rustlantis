@@ -7,7 +7,7 @@ use std::{collections::HashMap, path::PathBuf, str::FromStr};
 use clap::{Arg, Command};
 use config::Config;
 use difftest::{
-    backends::{Backend, Cranelift, Miri, OptLevel, LLVM},
+    backends::{Backend, Cranelift, Miri, OptLevel, GCC, LLVM},
     run_diff_test, BackendName,
 };
 use log::{debug, error, info, warn};
@@ -43,6 +43,14 @@ fn main() {
         match miri {
             Ok(miri) => backends.insert("miri", Box::new(miri)),
             Err(e) => panic!("miri init failed\n{}", e.0),
+        };
+    }
+
+    if let Ok(cg_gcc) = settings.get_string("cg_gcc") {
+        let cg_gcc = GCC::from_built_repo(cg_gcc, OptLevel::Optimised, OptLevel::Optimised);
+        match cg_gcc {
+            Ok(cg_gcc) => backends.insert("cg_gcc", Box::new(cg_gcc)),
+            Err(e) => panic!("rustc_codegen_gcc init failed\n{}", e.0),
         };
     }
 

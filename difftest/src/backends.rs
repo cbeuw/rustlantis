@@ -1,5 +1,6 @@
 use std::{
     ffi::{OsStr, OsString},
+    fs::read_to_string,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::{self, Command, ExitStatus},
@@ -59,7 +60,25 @@ pub type ExecResult = Result<ProcessOutput, CompExecError>;
 pub struct BackendInitError(pub String);
 
 pub trait Backend: Send + Sync {
-    fn execute(&self, source: &Path) -> ExecResult;
+    fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
+        panic!("not implemented")
+    }
+
+    fn execute(&self, source: &Path) -> ExecResult {
+        let target_dir = tempfile::tempdir().unwrap();
+        let target_path = target_dir.path().join("target");
+        debug!("Compiling {}", source.to_string_lossy());
+        let compile_out = self.compile(source, &target_path);
+        if !compile_out.status.success() {
+            return Err(CompExecError(compile_out));
+        }
+
+        debug!("Executing compiled {}", source.to_string_lossy());
+        let exec_out = Command::new(target_path)
+            .output()
+            .expect("can execute target program and get output");
+        Ok(exec_out.into())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -85,14 +104,7 @@ impl LLVM {
 }
 
 impl Backend for LLVM {
-    fn execute(&self, source: &Path) -> ExecResult {
-        let target_dir = tempfile::tempdir().unwrap();
-        let target_path = target_dir.path().join("target");
-        debug!(
-            "Compiling {} with rustc_codegen_llvm",
-            source.to_string_lossy()
-        );
-
+    fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
         let mut command = Command::new("rustc");
         if let Some(toolchain) = &self.toolchain {
             command.arg(format!("+{}", toolchain));
@@ -100,30 +112,23 @@ impl Backend for LLVM {
 
         let compile_out = command
             .arg(source)
-            .args(["-o", target_path.to_str().unwrap()])
+            .args(["-o", target.to_str().unwrap()])
             .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
             .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
             .output()
             .expect("can execute rustc and get output");
-        if !compile_out.status.success() {
-            return Err(CompExecError(compile_out.into()));
-        }
 
-        debug!("Executing LLVM compiled {}", source.to_string_lossy());
-        let exec_out = Command::new(target_path)
-            .output()
-            .expect("can execute target program and get output");
-        Ok(exec_out.into())
+        compile_out.into()
     }
 }
 
 pub struct Miri {
     binary: PathBuf,
-    sysroot: OsString,
+    sysroot: PathBuf,
 }
 
 impl Miri {
-    fn find_sysroot(miri_dir: &Path) -> Result<OsString, BackendInitError> {
+    fn find_sysroot(miri_dir: &Path) -> Result<PathBuf, BackendInitError> {
         let output = Command::new(miri_dir.join("target/release/cargo-miri"))
             .arg("miri")
             .arg("setup")
@@ -149,7 +154,14 @@ impl Miri {
             use std::os::windows::prelude::OsStrExt;
             sysroot = OsStr::from_wide(output.stdout.trim_ascii_end()).to_owned();
         }
+
+        let sysroot = PathBuf::from(sysroot);
+
         debug!("Miri sysroot at {}", sysroot.to_string_lossy());
+        if !Path::exists(&sysroot) {
+            return Err(BackendInitError("sysroot does not exist".to_string()));
+        }
+
         Ok(sysroot)
     }
 
@@ -201,7 +213,7 @@ impl Miri {
     pub fn from_binary<P: AsRef<Path>>(binary_path: P, sysroot: P) -> Self {
         Self {
             binary: binary_path.as_ref().to_owned(),
-            sysroot: sysroot.as_ref().as_os_str().to_owned(),
+            sysroot: sysroot.as_ref().to_owned(),
         }
     }
 }
@@ -291,28 +303,75 @@ impl Cranelift {
 }
 
 impl Backend for Cranelift {
-    fn execute(&self, source: &Path) -> ExecResult {
-        let target_dir = tempfile::tempdir().unwrap();
-        let target_path = target_dir.path().join("target");
-        debug!(
-            "Compiling {} with rustc_codegen_cranelift",
-            source.to_string_lossy()
-        );
+    fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
         let compile_out = Command::new(&self.binary)
             .arg(source)
-            .args(["-o", target_path.to_str().unwrap()])
+            .args(["-o", target.to_str().unwrap()])
             .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
             .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
             .output()
             .expect("can run rustc-clif and get output");
-        if !compile_out.status.success() {
-            return Err(CompExecError(compile_out.into()));
+        compile_out.into()
+    }
+}
+
+pub struct GCC {
+    library: PathBuf,
+    sysroot: PathBuf,
+    toolchain: String,
+    codegen_opt: OptLevel,
+    mir_opt: OptLevel,
+}
+
+impl GCC {
+    pub fn from_built_repo<P: AsRef<Path>>(
+        cg_gcc: P,
+        codegen_opt: OptLevel,
+        mir_opt: OptLevel,
+    ) -> Result<Self, BackendInitError> {
+        let cg_gcc = cg_gcc.as_ref();
+
+        let toolchain = read_to_string(cg_gcc.join("rust-toolchain")).map_err(|_| {
+            BackendInitError(
+                "cannot detect rust-toolchain file under rustc_codegen_gcc repo".to_string(),
+            )
+        })?;
+        let library = cg_gcc.join("target/release/librustc_codegen_gcc.so");
+        let sysroot = cg_gcc.join("build_sysroot/sysroot");
+
+        if !Path::exists(&library) {
+            return Err(BackendInitError(
+                "cannot find librustc_codegen_gcc.so".to_string(),
+            ));
         }
 
-        debug!("Executing Cranelift compiled {}", source.to_string_lossy());
-        let exec_out = Command::new(target_path)
+        if !Path::exists(&sysroot) {
+            return Err(BackendInitError("cannot find sysroot".to_string()));
+        }
+
+        Ok(Self {
+            library,
+            sysroot,
+            toolchain,
+            codegen_opt,
+            mir_opt,
+        })
+    }
+}
+impl Backend for GCC {
+    fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
+        let compile_out = Command::new("rustc")
+            .arg(format!("+{}", self.toolchain))
+            .arg(source)
+            .arg("-Zcodegen-backend")
+            .arg(self.library.as_path())
+            .arg("--sysroot")
+            .arg(&self.sysroot)
+            .args(["-o", target.to_str().unwrap()])
+            .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
+            .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
             .output()
-            .expect("can run target program and get output");
-        Ok(exec_out.into())
+            .expect("can run rustc-clif and get output");
+        compile_out.into()
     }
 }
