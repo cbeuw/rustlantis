@@ -46,7 +46,7 @@ fn main() {
         };
     }
 
-    if let Ok(cg_gcc) = settings.get_string("cg_gcc") {
+    if let Ok(cg_gcc) = settings.get_string("cg_gcc_dir") {
         let cg_gcc = GCC::from_built_repo(cg_gcc, OptLevel::Optimised, OptLevel::Optimised);
         match cg_gcc {
             Ok(cg_gcc) => backends.insert("cg_gcc", Box::new(cg_gcc)),
