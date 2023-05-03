@@ -68,7 +68,8 @@ pub trait Backend: Send + Sync {
         let target_dir = tempfile::tempdir().unwrap();
         let target_path = target_dir.path().join("target");
         debug!("Compiling {}", source.to_string_lossy());
-        let compile_out = self.compile(source, &target_path);
+        let source = source.canonicalize().expect("source path valid");
+        let compile_out = self.compile(&source, &target_path);
         if !compile_out.status.success() {
             return Err(CompExecError(compile_out));
         }
@@ -318,7 +319,7 @@ impl Backend for Cranelift {
 pub struct GCC {
     library: PathBuf,
     sysroot: PathBuf,
-    toolchain: String,
+    repo: PathBuf,
     codegen_opt: OptLevel,
     mir_opt: OptLevel,
 }
@@ -329,30 +330,25 @@ impl GCC {
         codegen_opt: OptLevel,
         mir_opt: OptLevel,
     ) -> Result<Self, BackendInitError> {
-        let cg_gcc = cg_gcc.as_ref();
+        let Ok(cg_gcc) = cg_gcc.as_ref().to_owned().canonicalize() else {
+            return Err(BackendInitError(
+                "cannot rustc_codegen_gcc repo".to_string(),
+            ));
+        };
 
-        let toolchain = read_to_string(cg_gcc.join("rust-toolchain")).map_err(|_| {
-            BackendInitError(
-                "cannot detect rust-toolchain file under rustc_codegen_gcc repo".to_string(),
-            )
-        })?;
-        let library = cg_gcc.join("target/release/librustc_codegen_gcc.so");
-        let sysroot = cg_gcc.join("build_sysroot/sysroot");
-
-        if !Path::exists(&library) {
+        let Ok(library) = cg_gcc.join("target/release/librustc_codegen_gcc.so").canonicalize() else {
             return Err(BackendInitError(
                 "cannot find librustc_codegen_gcc.so".to_string(),
             ));
-        }
-
-        if !Path::exists(&sysroot) {
+        };
+        let Ok(sysroot) = cg_gcc.join("build_sysroot/sysroot").canonicalize() else {
             return Err(BackendInitError("cannot find sysroot".to_string()));
-        }
+        };
 
         Ok(Self {
             library,
             sysroot,
-            toolchain,
+            repo: cg_gcc,
             codegen_opt,
             mir_opt,
         })
@@ -361,10 +357,14 @@ impl GCC {
 impl Backend for GCC {
     fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
         let compile_out = Command::new("rustc")
-            .arg(format!("+{}", self.toolchain))
+            .env_clear()
+            .env("PATH", env!("PATH"))
+            .current_dir(&self.repo)
             .arg(source)
-            .arg("-Zcodegen-backend")
-            .arg(self.library.as_path())
+            .args([
+                "-Z",
+                &format!("codegen-backend={}", self.library.to_str().unwrap()),
+            ])
             .arg("--sysroot")
             .arg(&self.sysroot)
             .args(["-o", target.to_str().unwrap()])
