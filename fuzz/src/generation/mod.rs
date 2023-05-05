@@ -17,8 +17,6 @@ use crate::place_select::{PlaceSelector, Weight};
 use crate::ptable::{HasDataflow, PlaceTable};
 use crate::ty::TyCtxt;
 
-use self::intrinsics::CoreIntrinsic;
-
 /// Max. number of statements & declarations in a bb
 const BB_MAX_LEN: usize = 128;
 /// Max. number of switch targets in a SwitchInt terminator
@@ -614,9 +612,9 @@ impl GenerationCtx {
         }
 
         let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> = vec![
-            (Self::generate_goto, 100),
-            (Self::generate_switch_int, 100),
-            (Self::generate_intrinsic_call, 100),
+            (Self::generate_goto, 50),
+            (Self::generate_switch_int, 50),
+            (Self::generate_intrinsic_call, 50),
             (
                 Self::generate_call,
                 MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
