@@ -24,7 +24,7 @@ fn main() {
     // Initialise backends
     // TODO: extract this out into a function
     let settings = Config::builder()
-        .add_source(config::File::with_name("config.toml"))
+        .add_source(config::File::with_name("config.toml").required(false))
         .add_source(config::Environment::default())
         .build()
         .unwrap();
