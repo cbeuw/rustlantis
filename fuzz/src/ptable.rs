@@ -411,6 +411,8 @@ impl PlaceTable {
             0
         );
 
+        self.update_dataflow(reference, self.places[pointee].dataflow);
+
         // Add new reference
         self.places
             .add_edge(reference, pointee, ProjectionElem::Deref);

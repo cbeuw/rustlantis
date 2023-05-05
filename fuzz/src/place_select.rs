@@ -1,3 +1,4 @@
+use log::info;
 use mir::syntax::{Place, ProjectionElem, Ty};
 use rand_distr::WeightedIndex;
 
@@ -9,6 +10,7 @@ enum PlaceUsage {
     Operand,
     LHS,
     Pointee,
+    Argument,
 }
 
 #[derive(Clone, Default)]
@@ -24,6 +26,7 @@ pub type Weight = usize;
 const LHS_WEIGH_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 2;
+const PTR_ARG_FACTOR: Weight = 2;
 
 impl PlaceSelector {
     pub fn for_pointee() -> Self {
@@ -36,6 +39,13 @@ impl PlaceSelector {
 
     pub fn for_operand() -> Self {
         Self::default()
+    }
+
+    pub fn for_argument() -> Self {
+        Self {
+            usage: PlaceUsage::Argument,
+            ..Default::default()
+        }
     }
 
     pub fn for_lhs() -> Self {
@@ -96,6 +106,18 @@ impl PlaceSelector {
 
     pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<Place>, WeightedIndex<Weight>)> {
         let (places, weights) = match self.usage {
+            PlaceUsage::Argument => {
+                // Like Operand, but we don't encourage deref to pass in pointers
+                let (places, weights): (Vec<Place>, Vec<Weight>) = self
+                    .into_iter_path(pt)
+                    .map(|ppath| {
+                        let place = ppath.to_place(pt);
+                        let weight = ppath.target_node(pt).dataflow;
+                        (place, weight)
+                    })
+                    .unzip();
+                (places, weights)
+            }
             PlaceUsage::LHS => {
                 let (places, weights): (Vec<Place>, Vec<Weight>) = self
                     .into_iter_path(pt)

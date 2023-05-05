@@ -531,7 +531,7 @@ impl GenerationCtx {
         let args_count: i32 = self.rng.get_mut().gen_range(2..=16);
         let args: Vec<Operand> = (0..args_count)
             .map(|_| {
-                let (places, weights) = PlaceSelector::for_operand()
+                let (places, weights) = PlaceSelector::for_argument()
                     .except(&return_place)
                     .into_weighted(&self.pt)
                     .ok_or(SelectionError::Exhausted)?;
