@@ -100,14 +100,10 @@ fn main() {
             warn!("Protector UB");
         } else {
             let results = results.to_string();
-            if results.contains("compiler/rustc_mir_transform/src/nrvo.rs") {
-                warn!("Known bug: NVRO");
-            } else {
-                error!(
-                    "{} didn't pass:\n{results}",
-                    source.as_os_str().to_string_lossy(),
-                );
-            }
+            error!(
+                "{} didn't pass:\n{results}",
+                source.as_os_str().to_string_lossy(),
+            );
         }
     }
 }

@@ -51,13 +51,12 @@ impl From<process::Output> for ProcessOutput {
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub struct CompExecError(pub ProcessOutput);
 
-// #[derive(Debug, PartialEq, Eq, Clone)]
-// pub struct ProgramOutput(pub process::Output);
-
 pub type ExecResult = Result<ProcessOutput, CompExecError>;
 
 #[derive(Debug)]
 pub struct BackendInitError(pub String);
+
+const PATCH_FLAGS: &'static str = "-Zmir-enable-passes=-RenameReturnPlace";
 
 pub trait Backend: Send + Sync {
     fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
@@ -116,6 +115,7 @@ impl Backend for LLVM {
             .args(["-o", target.to_str().unwrap()])
             .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
             .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
+            .arg(PATCH_FLAGS)
             .output()
             .expect("can execute rustc and get output");
 
@@ -310,6 +310,7 @@ impl Backend for Cranelift {
             .args(["-o", target.to_str().unwrap()])
             .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
             .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
+            .arg(PATCH_FLAGS)
             .output()
             .expect("can run rustc-clif and get output");
         compile_out.into()
@@ -370,6 +371,7 @@ impl Backend for GCC {
             .args(["-o", target.to_str().unwrap()])
             .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
             .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
+            .arg(PATCH_FLAGS)
             .output()
             .expect("can run rustc-clif and get output");
         compile_out.into()
