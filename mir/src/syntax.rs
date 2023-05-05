@@ -16,6 +16,7 @@ pub struct Body {
     pub basic_blocks: IndexVec<BasicBlock, BasicBlockData>,
     pub local_decls: LocalDecls,
     arg_count: usize,
+    pub public: bool,
 }
 
 define_index_type! {pub struct BasicBlock = u32;}
@@ -642,7 +643,7 @@ impl Local {
 }
 
 impl Body {
-    pub fn new(args: &[Ty], return_ty: Ty) -> Self {
+    pub fn new(args: &[Ty], return_ty: Ty, public: bool) -> Self {
         let mut locals = IndexVec::new();
         locals.push(LocalDecl::new_mut(return_ty));
         // TODO: args shouldn't always be mut
@@ -652,7 +653,7 @@ impl Body {
         Self {
             basic_blocks: IndexVec::new(),
             local_decls: locals,
-
+            public,
             arg_count: args.len(),
         }
     }

@@ -551,7 +551,8 @@ impl GenerationCtx {
 
         // We don't know the name of the new function here, so we save the current cursor and write the terminator after frame switch
         let (caller_fn, caller_bb) = (self.current_function, self.current_bb);
-        let new_fn = self.enter_new_fn(&args, return_place.ty(self.current_decls()));
+        // TODO: randomise privacy
+        let new_fn = self.enter_new_fn(&args, return_place.ty(self.current_decls()), true);
         self.program.functions[caller_fn].basic_blocks[caller_bb].set_terminator(
             Terminator::Call {
                 callee: Callee::Generated(new_fn),
@@ -633,12 +634,12 @@ impl GenerationCtx {
 // Frame controls
 impl GenerationCtx {
     // Move generation context to an executed function
-    fn enter_new_fn(&mut self, args: &[Operand], return_ty: Ty) -> Function {
+    fn enter_new_fn(&mut self, args: &[Operand], return_ty: Ty, public: bool) -> Function {
         let args_ty: Vec<Ty> = args
             .iter()
             .map(|arg| arg.ty(self.current_decls()))
             .collect::<Vec<_>>();
-        let mut body = Body::new(&args_ty, return_ty.clone());
+        let mut body = Body::new(&args_ty, return_ty.clone(), public);
 
         let starting_bb = body.new_basic_block(BasicBlockData::new());
         let new_fn = self.program.push_fn(body);
@@ -660,7 +661,7 @@ impl GenerationCtx {
 
     fn enter_fn0(&mut self, args_ty: &[Ty], return_ty: Ty, args: &[Literal]) {
         self.program.set_entry_args(&args);
-        let mut body = Body::new(args_ty, return_ty);
+        let mut body = Body::new(args_ty, return_ty, true);
 
         let starting_bb = body.new_basic_block(BasicBlockData::new());
         let new_fn = self.program.push_fn(body);

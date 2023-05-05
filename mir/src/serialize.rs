@@ -237,8 +237,9 @@ impl Serialize for Program {
         let mut program = Program::HEADER.to_string();
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
             format!(
-                "{}\npub fn {}({}) -> {} {{\n{}\n}}\n",
+                "{}\n{}fn {}({}) -> {} {{\n{}\n}}\n",
                 Program::FUNCTION_ATTRIBUTE,
+                if body.public { "pub " } else { "" },
                 idx.identifier(),
                 body.args_list(),
                 body.return_ty().serialize(),
@@ -285,7 +286,7 @@ mod tests {
 
     #[test]
     fn serialize_body() {
-        let mut body = Body::new(&vec![Ty::BOOL], Ty::BOOL);
+        let mut body = Body::new(&vec![Ty::BOOL], Ty::BOOL, true);
         let statements = vec![Statement::Assign(
             Place::RETURN_SLOT,
             Rvalue::UnaryOp(UnOp::Not, Operand::Copy(Place::from_local(Local::new(1)))),
