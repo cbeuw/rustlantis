@@ -124,7 +124,8 @@ impl GenerationCtx {
             Bool => &[BitAnd, BitOr, BitXor, Eq, Lt, Le, Ne, Ge, Gt][..],
             // FIXME: Floating point rem https://github.com/rust-lang/rust/issues/109567
             Float(_) => &[Add, Sub, Mul, Div /*, Rem */][..],
-            Uint(_) | Int(_) => &[BitAnd, BitOr, BitXor, Add, Sub, Mul, Div, Rem, Shl, Shr][..],
+            Int(_) => &[BitAnd, BitOr, BitXor, Add, Sub, Mul, Shl, Shr][..],
+            Uint(_) => &[BitAnd, BitOr, BitXor, Add, Sub, Mul, Div, Rem, Shl, Shr][..],
             // RawPtr(..) => &[Offset],
             _ => &[][..],
         };
