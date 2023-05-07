@@ -1,4 +1,4 @@
-use mir::syntax::{BasicBlock, Callee, Operand, Place, Terminator, Ty};
+use mir::syntax::{BasicBlock, Callee, Mutability, Operand, Place, Terminator, Ty};
 
 use crate::place_select::PlaceSelector;
 
@@ -51,7 +51,7 @@ impl CoreIntrinsic for ArithOffset {
     }
 
     fn dest_type(&self, ty: Ty) -> bool {
-        ty.is_unsafe_ptr()
+        matches!(ty, Ty::RawPtr(.., Mutability::Not))
     }
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>> {
