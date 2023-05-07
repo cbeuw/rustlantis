@@ -148,7 +148,6 @@ impl PlaceTable {
         self.copy_place(caller_dest, callee_ret);
 
         // Deinit places
-        // can't use current_locals() here as that keeps the borrow
         for pidx in popped_frame.right_values() {
             self.memory.deallocate(self.places[*pidx].alloc_id);
         }

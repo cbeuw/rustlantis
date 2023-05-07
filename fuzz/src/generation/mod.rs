@@ -893,7 +893,7 @@ impl GenerationCtx {
                 self.pt.mark_place_init(lhs);
                 match rvalue {
                     Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs)) => {
-                        self.pt.copy_place(rhs, lhs)
+                        self.pt.copy_place(lhs, rhs)
                     }
                     Rvalue::BinaryOp(BinOp::Offset, _, _) => todo!(),
                     Rvalue::AddressOf(_, referent) => self.pt.set_ref(lhs, referent),

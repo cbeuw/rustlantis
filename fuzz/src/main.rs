@@ -9,10 +9,10 @@
 
 mod generation;
 mod literal;
+mod mem;
 mod place_select;
 mod ptable;
 mod ty;
-mod mem;
 
 use std::env::args;
 

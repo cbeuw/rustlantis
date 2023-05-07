@@ -26,7 +26,10 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 */
-use std::{fmt, ops::{Add, Sub, Mul, AddAssign}};
+use std::{
+    fmt,
+    ops::{Add, AddAssign, Mul, Sub},
+};
 
 use super::align::Align;
 
@@ -158,7 +161,11 @@ impl Add for Size {
     #[inline]
     fn add(self, other: Size) -> Size {
         Size::from_bytes(self.bytes().checked_add(other.bytes()).unwrap_or_else(|| {
-            panic!("Size::add: {} + {} doesn't fit in u64", self.bytes(), other.bytes())
+            panic!(
+                "Size::add: {} + {} doesn't fit in u64",
+                self.bytes(),
+                other.bytes()
+            )
         }))
     }
 }
@@ -168,7 +175,11 @@ impl Sub for Size {
     #[inline]
     fn sub(self, other: Size) -> Size {
         Size::from_bytes(self.bytes().checked_sub(other.bytes()).unwrap_or_else(|| {
-            panic!("Size::sub: {} - {} would result in negative size", self.bytes(), other.bytes())
+            panic!(
+                "Size::sub: {} - {} would result in negative size",
+                self.bytes(),
+                other.bytes()
+            )
         }))
     }
 }
@@ -198,4 +209,3 @@ impl AddAssign for Size {
         *self = *self + other;
     }
 }
-
