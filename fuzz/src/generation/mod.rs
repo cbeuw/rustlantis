@@ -18,7 +18,7 @@ use crate::ptable::{HasDataflow, PlaceTable};
 use crate::ty::TyCtxt;
 
 /// Max. number of statements & declarations in a bb
-const BB_MAX_LEN: usize = 128;
+const BB_MAX_LEN: usize = 32;
 /// Max. number of switch targets in a SwitchInt terminator
 const MAX_SWITCH_TARGETS: usize = 8;
 const MAX_FN_COUNT: usize = 50;
@@ -874,7 +874,7 @@ impl GenerationCtx {
         self.enter_fn0(&arg_tys, return_ty, &arg_literals);
 
         loop {
-            let statement_count = self.rng.get_mut().gen_range(1..=32);
+            let statement_count = self.rng.get_mut().gen_range(1..=BB_MAX_LEN);
             debug!("Generating a bb with {statement_count} statements");
             for _ in 0..statement_count {
                 self.choose_statement();

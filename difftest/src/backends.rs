@@ -1,6 +1,5 @@
 use std::{
     ffi::{OsStr, OsString},
-    fs::read_to_string,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::{self, Command, ExitStatus},
@@ -59,7 +58,7 @@ pub struct BackendInitError(pub String);
 const PATCH_FLAGS: &'static str = "-Zmir-enable-passes=-RenameReturnPlace";
 
 pub trait Backend: Send + Sync {
-    fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
+    fn compile(&self, _: &Path, _: &Path) -> ProcessOutput {
         panic!("not implemented")
     }
 

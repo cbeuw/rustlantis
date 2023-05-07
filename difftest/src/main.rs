@@ -1,5 +1,4 @@
 #![feature(iter_intersperse)]
-#![feature(is_some_and)]
 
 use core::panic;
 use std::{collections::HashMap, path::PathBuf, str::FromStr};

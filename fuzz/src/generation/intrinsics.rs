@@ -1,6 +1,4 @@
-use mir::syntax::{BasicBlock, Callee, Mutability, Operand, Place, Terminator, Ty};
-
-use crate::place_select::PlaceSelector;
+use mir::syntax::{Callee, Mutability, Operand, Place, Ty};
 
 use super::{GenerationCtx, Result, SelectionError};
 

@@ -1,7 +1,6 @@
 #![feature(byte_slice_trim_ascii)]
 #![feature(iter_intersperse)]
 #![feature(let_chains)]
-#![feature(is_some_and)]
 
 pub mod backends;
 

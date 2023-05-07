@@ -1,4 +1,3 @@
-use log::info;
 use mir::syntax::{Place, ProjectionElem, Ty};
 use rand_distr::WeightedIndex;
 
@@ -26,7 +25,6 @@ pub type Weight = usize;
 const LHS_WEIGH_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 2;
-const PTR_ARG_FACTOR: Weight = 2;
 
 impl PlaceSelector {
     pub fn for_pointee() -> Self {

@@ -1,5 +1,3 @@
-#![feature(is_some_and)]
-
 use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
 use config::Config;
