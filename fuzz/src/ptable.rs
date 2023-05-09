@@ -26,7 +26,7 @@ pub struct PlaceTable {
 pub struct PlaceNode {
     pub ty: Ty,
     alloc_id: AllocId,
-    pub dataflow: usize,
+    dataflow: usize,
 
     // Only Tys fitting into a single Run have these
     run_ptr: Option<RunPointer>,
@@ -164,6 +164,14 @@ impl PlaceTable {
         pidx
     }
 
+    pub fn deallocate_local(&mut self, local: Local) {
+        let (_, pidx) = self
+            .current_locals_mut()
+            .remove_by_left(&local)
+            .expect("local exists");
+        self.memory.deallocate(self.places[pidx].alloc_id);
+    }
+
     fn add_place(
         places: &mut PlaceGraph,
         ty: Ty,
@@ -297,7 +305,7 @@ impl PlaceTable {
     }
 
     fn update_dataflow(&mut self, target: PlaceIndex, new_flow: usize) {
-        let new_flow = new_flow.min(10000);
+        let new_flow = new_flow.min(100);
 
         // Subplaces' complexity is overwritten as target's new complexity
         self.update_transitive_subfields(target, |this, place| {
@@ -322,6 +330,21 @@ impl PlaceTable {
         let new_flow = source.dataflow(self);
         let target = target.to_place_index(self).expect("place exists");
         self.update_dataflow(target, new_flow)
+    }
+
+    pub fn get_dataflow(&self, p: impl ToPlaceIndex) -> usize {
+        let pidx = p.to_place_index(self).unwrap();
+        let node = &self.places[pidx];
+        if node.ty.is_any_ptr() {
+            if let Some(pointee) = self.project_from_node(pidx, &ProjectionElem::Deref) {
+                self.get_dataflow(pointee)
+            } else {
+                // Use the initial dataflow
+                node.dataflow
+            }
+        } else {
+            node.dataflow
+        }
     }
 
     pub fn mark_place_moved(&mut self, p: impl ToPlaceIndex) {
@@ -421,7 +444,9 @@ impl PlaceTable {
     }
 
     pub fn is_place_live(&self, p: impl ToPlaceIndex) -> bool {
-        let pidx = p.to_place_index(self).unwrap();
+        let Some(pidx) = p.to_place_index(self) else {
+            return false;
+        };
         let node = &self.places[pidx];
         self.memory.is_live(node.alloc_id)
     }

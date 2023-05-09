@@ -23,11 +23,12 @@ impl TyCtxt {
     }
 
     fn distribute_weights(tys: &IndexVec<TyId, Ty>) -> WeightedIndex<f32> {
-        let p_bool = 0.1;
-        let p_char = 0.1;
+        let p_bool = 0.05;
+        let p_char = 0.05;
         let p_floats = 0.1;
-        let p_ints = 0.2;
-        let p_checked_binop_tuples = 0.2;
+        let p_ints = 0.1;
+        let p_checked_binop_tuples = 0.1;
+        let p_pointers = 0.3;
 
         let checked_binary_op_lhs_count = tys
             .iter()
@@ -37,6 +38,10 @@ impl TyCtxt {
         // Types with special treatment as we want to increase their weighting
         let mut weights: BTreeMap<TyId, f32> = BTreeMap::new();
         let mut p_sum: f32 = weights.values().sum();
+        let num_ptrs = tys
+            .iter()
+            .filter(|ty| ty.contains(|ty| ty.is_any_ptr()))
+            .count();
 
         // All the types without special weighting
         let mut residual: Vec<TyId> = Vec::new();
@@ -52,6 +57,7 @@ impl TyCtxt {
                 tup @ Ty::Tuple(..) if tup.is_checked_binary_op_lhs() => {
                     Some(p_checked_binop_tuples / checked_binary_op_lhs_count as f32)
                 }
+                _ if ty.contains(|ty| ty.is_any_ptr()) => Some(p_pointers / num_ptrs as f32),
                 _ => None,
             };
             if let Some(rate) = p {

@@ -346,11 +346,11 @@ impl GenerationCtx {
     fn generate_rvalue(&self, lhs: &Place) -> Result<Rvalue> {
         let choices_and_weights: Vec<(fn(&GenerationCtx, &Place) -> Result<Rvalue>, usize)> = vec![
             (Self::generate_use, 1),
-            (Self::generate_unary_op, 10),
-            (Self::generate_binary_op, 10),
-            (Self::generate_checked_binary_op, 10),
-            (Self::generate_cast, 5),
-            (Self::generate_address_of, 10),
+            (Self::generate_unary_op, 2),
+            (Self::generate_binary_op, 2),
+            (Self::generate_checked_binary_op, 2),
+            (Self::generate_cast, 4),
+            (Self::generate_address_of, 8),
         ];
 
         let (choices, weights): (
@@ -403,38 +403,54 @@ impl GenerationCtx {
         local
     }
 
-    // fn generate_storage_live(&self) -> Result<Statement> {
-    //     todo!()
-    // }
+    fn generate_storage_live(&self) -> Result<Statement> {
+        let local = self
+            .current_decls()
+            .indices()
+            .filter(|local| !self.pt.is_place_live(local))
+            .choose(&mut *self.rng.borrow_mut())
+            .ok_or(SelectionError::Exhausted)?;
+        Ok(Statement::StorageLive(local))
+    }
 
-    // fn generate_storage_dead(&self) -> Result<Statement> {
-    //     todo!()
-    // }
+    fn generate_storage_dead(&self) -> Result<Statement> {
+        let local = self
+            .current_decls()
+            .indices()
+            .filter(|local| self.pt.is_place_live(local))
+            .choose(&mut *self.rng.borrow_mut())
+            .ok_or(SelectionError::Exhausted)?;
+        Ok(Statement::StorageDead(local))
+    }
 
-    // fn generate_deinit(&self) -> Result<Statement> {
-    //     todo!()
-    // }
+    fn generate_deinit(&self) -> Result<Statement> {
+        let place = PlaceSelector::for_operand()
+            .into_iter_place(&self.pt)
+            .choose(&mut *self.rng.borrow_mut())
+            .ok_or(SelectionError::Exhausted)?;
+        Ok(Statement::Deinit(place))
+    }
 
     // fn generate_set_discriminant(&self) -> Result<Statement> {
     //     todo!()
     // }
     fn choose_statement(&mut self) {
-        let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<Statement>, usize)> = vec![
+        let choices_and_weights: Vec<(fn(&GenerationCtx) -> Result<Statement>, usize)> = vec![
             (Self::generate_assign, 5),
-            (Self::generate_new_var, 1), // Self::generate_storage_live,
-                                         // Self::generate_storage_dead,
-                                         // Self::generate_deinit,
-                                         // Self::generate_set_discriminant,
+            (Self::generate_new_var, 1),
+            // (Self::generate_deinit, 1),
+            // (Self::generate_storage_live, 5),
+            // (Self::generate_storage_dead, 2),
         ];
 
-        let (choices, weights): (Vec<fn(&mut GenerationCtx) -> Result<Statement>>, Vec<usize>) =
+        let (choices, weights): (Vec<fn(&GenerationCtx) -> Result<Statement>>, Vec<usize>) =
             choices_and_weights.into_iter().unzip();
 
         let statement = self
-            .make_choice_weighted_mut(
+            .make_choice_weighted(
                 choices.into_iter(),
                 WeightedIndex::new(weights).expect("weights are valid"),
-                |ctx, f| f(ctx),
+                |f| f(self),
             )
             .expect("deadend");
 
@@ -521,6 +537,8 @@ impl GenerationCtx {
                 IntTy::I32,
             ))),
         ));
+        // self.current_bb_mut()
+        //     .insert_statement(Statement::StorageLive(discr));
 
         let branches: Vec<(u128, BasicBlock)> = targets
             .iter()
@@ -933,9 +951,12 @@ impl GenerationCtx {
                 }
                 // FIXME: move logic
             }
-            Statement::StorageLive(_) => todo!(),
-            Statement::StorageDead(_) => todo!(),
-            Statement::Deinit(_) => todo!(),
+            Statement::StorageLive(local) => {
+                self.pt
+                    .allocate_local(*local, self.current_decls()[*local].ty.clone());
+            }
+            Statement::StorageDead(local) => self.pt.deallocate_local(*local),
+            Statement::Deinit(place) => self.pt.mark_place_uninit(place),
             Statement::SetDiscriminant(_, _) => todo!(),
             Statement::Nop => {}
             Statement::Retag(_) => todo!(),

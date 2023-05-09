@@ -25,6 +25,7 @@ pub type Weight = usize;
 const LHS_WEIGH_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 2;
+const PTR_WEIGHT_FACTOR: Weight = 10;
 
 impl PlaceSelector {
     pub fn for_pointee() -> Self {
@@ -110,7 +111,11 @@ impl PlaceSelector {
                     .into_iter_path(pt)
                     .map(|ppath| {
                         let place = ppath.to_place(pt);
-                        let weight = ppath.target_node(pt).dataflow;
+                        let mut weight = pt.get_dataflow(&place);
+                        let node = ppath.target_node(pt);
+                        if node.ty.contains(|ty| ty.is_any_ptr()) {
+                            weight *= PTR_WEIGHT_FACTOR;
+                        }
                         (place, weight)
                     })
                     .unzip();
@@ -139,7 +144,7 @@ impl PlaceSelector {
                     .into_iter_path(pt)
                     .map(|ppath| {
                         let place = ppath.to_place(pt);
-                        let mut weight = ppath.target_node(pt).dataflow;
+                        let mut weight = pt.get_dataflow(&place);
                         if place.projection().contains(&ProjectionElem::Deref) {
                             // Encourage dereference
                             weight *= DEREF_WEIGHT_FACTOR;
