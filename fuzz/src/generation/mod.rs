@@ -597,10 +597,12 @@ impl GenerationCtx {
             .push((self.current_function, self.current_bb));
         let target_bb = self.add_new_bb();
 
+        let public = self.rng.get_mut().gen_bool(0.5);
+
         // We don't know the name of the new function here, so we save the current cursor and write the terminator after frame switch
         let (caller_fn, caller_bb) = (self.current_function, self.current_bb);
         // TODO: randomise privacy
-        let new_fn = self.enter_new_fn(&args, return_place.ty(self.current_decls()), true);
+        let new_fn = self.enter_new_fn(&args, return_place.ty(self.current_decls()), public);
         self.program.functions[caller_fn].basic_blocks[caller_bb].set_terminator(
             Terminator::Call {
                 callee: Callee::Generated(new_fn),
