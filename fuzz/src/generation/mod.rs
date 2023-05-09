@@ -368,7 +368,7 @@ impl GenerationCtx {
 
 // Statement
 impl GenerationCtx {
-    fn generate_assign(&mut self) -> Result<Statement> {
+    fn generate_assign(&self) -> Result<Statement> {
         let (lhs_choices, weights) = PlaceSelector::for_lhs()
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
@@ -385,9 +385,8 @@ impl GenerationCtx {
         })
     }
 
-    fn generate_new_var(&mut self) -> Result<Statement> {
-        let ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
-        self.declare_new_var(Mutability::Mut, ty);
+    // Hack to take &self
+    fn generate_new_var(&self) -> Result<Statement> {
         Ok(Statement::Nop)
     }
 
@@ -438,6 +437,12 @@ impl GenerationCtx {
                 |ctx, f| f(ctx),
             )
             .expect("deadend");
+
+        // We're generating a new var
+        if matches!(statement, Statement::Nop) {
+            let ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
+            self.declare_new_var(Mutability::Mut, ty);
+        }
 
         self.post_generation(&statement);
         if !matches!(statement, Statement::Nop) {
