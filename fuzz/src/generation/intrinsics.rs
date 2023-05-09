@@ -82,8 +82,7 @@ impl CoreIntrinsic for Bswap {
 
 impl GenerationCtx {
     pub fn choose_intrinsic(&self, dest: &Place) -> Result<(Callee, Vec<Operand>)> {
-        let choices: [Box<dyn CoreIntrinsic>; 2] =
-            [Box::new(Fmaf64), Box::new(Bswap)];
+        let choices: [Box<dyn CoreIntrinsic>; 2] = [Box::new(Fmaf64), Box::new(Bswap)];
 
         let intrinsic = self.make_choice(choices.iter(), Result::Ok)?;
         intrinsic.generate_terminator(self, dest)

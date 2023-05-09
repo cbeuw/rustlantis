@@ -142,7 +142,7 @@ impl PlaceTable {
         let callee_ret = Place::RETURN_SLOT
             .to_place_index(self)
             .expect("place exists");
-        let popped_frame = self.frames.pop().expect("call stack isn't empyt");
+        let popped_frame = self.frames.pop().expect("call stack isn't empty");
         let caller_dest = caller_dest.to_place_index(self).expect("place exists");
         // Copy ret
         self.copy_place(caller_dest, callee_ret);
