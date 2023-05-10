@@ -82,8 +82,24 @@ pub trait Backend: Send + Sync {
 
 #[derive(Debug, Clone, Copy)]
 pub enum OptLevel {
-    Unoptimised = 0,
-    Optimised = 3,
+    Unoptimised,
+    Optimised,
+}
+
+impl OptLevel {
+    fn codegen_opt_level(&self) -> usize {
+        match self {
+            OptLevel::Unoptimised => 0,
+            OptLevel::Optimised => 3,
+        }
+    }
+
+    fn mir_opt_level(&self) -> usize {
+        match self {
+            OptLevel::Unoptimised => 0,
+            OptLevel::Optimised => 4,
+        }
+    }
 }
 
 pub struct LLVM {
@@ -112,8 +128,14 @@ impl Backend for LLVM {
         let compile_out = command
             .arg(source)
             .args(["-o", target.to_str().unwrap()])
-            .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
-            .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
+            .args([
+                "-C",
+                &format!("opt-level={}", self.codegen_opt.codegen_opt_level()),
+            ])
+            .args([
+                "-Z",
+                &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
+            ])
             .arg(PATCH_FLAGS)
             .output()
             .expect("can execute rustc and get output");
@@ -307,8 +329,14 @@ impl Backend for Cranelift {
         let compile_out = Command::new(&self.binary)
             .arg(source)
             .args(["-o", target.to_str().unwrap()])
-            .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
-            .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
+            .args([
+                "-C",
+                &format!("opt-level={}", self.codegen_opt.codegen_opt_level()),
+            ])
+            .args([
+                "-Z",
+                &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
+            ])
             .arg(PATCH_FLAGS)
             .output()
             .expect("can run rustc-clif and get output");
@@ -368,8 +396,14 @@ impl Backend for GCC {
             .arg("--sysroot")
             .arg(&self.sysroot)
             .args(["-o", target.to_str().unwrap()])
-            .args(["-C", &format!("opt-level={}", self.codegen_opt as u32)])
-            .args(["-Z", &format!("mir-opt-level={}", self.mir_opt as u32)])
+            .args([
+                "-C",
+                &format!("opt-level={}", self.codegen_opt.codegen_opt_level()),
+            ])
+            .args([
+                "-Z",
+                &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
+            ])
             .arg(PATCH_FLAGS)
             .output()
             .expect("can run rustc-clif and get output");
