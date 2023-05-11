@@ -15,8 +15,9 @@ pub type Path = SmallVec<[ProjectionIndex; 4]>;
 type Frame = BiBTreeMap<Local, PlaceIndex>;
 
 pub struct PlaceTable {
-    /// The callstack
-    frames: Vec<Frame>,
+    /// The callstack and return destination stack
+    frames: Vec<(Frame, PlaceIndex)>,
+
     /// A program-global graph recording all places that can be reached through projections
     places: PlaceGraph,
     memory: BasicMemory,
@@ -66,22 +67,21 @@ where
 impl PlaceTable {
     pub fn new() -> Self {
         Self {
-            frames: vec![BiBTreeMap::new()],
+            frames: vec![(
+                BiBTreeMap::new(),
+                /* fn0 dummy */ PlaceIndex::new(usize::MAX),
+            )],
             places: Graph::default(),
             memory: BasicMemory::new(),
         }
     }
 
     fn current_locals(&self) -> &BiBTreeMap<Local, PlaceIndex> {
-        self.frames.last().expect("call stack isn't empty")
+        &self.frames.last().expect("call stack isn't empty").0
     }
 
     fn current_locals_mut(&mut self) -> &mut BiBTreeMap<Local, PlaceIndex> {
-        self.frames.last_mut().expect("call stack isn't empty")
-    }
-
-    fn new_frame(&mut self) {
-        self.frames.push(BiBTreeMap::new());
+        &mut self.frames.last_mut().expect("call stack isn't empty").0
     }
 
     pub fn enter_fn0(&mut self, body: &Body) {
@@ -95,7 +95,7 @@ impl PlaceTable {
         });
     }
 
-    pub fn enter_fn(&mut self, body: &Body, args: &[Operand]) {
+    pub fn enter_fn(&mut self, body: &Body, args: &[Operand], return_dest: &Place) {
         // Get the PlaceIndices before frame switch
         enum ArgOperand {
             Copy(PlaceIndex),
@@ -116,8 +116,12 @@ impl PlaceTable {
             })
             .collect();
 
+        let return_dest = return_dest
+            .to_place_index(self)
+            .expect("return dest exists");
+
         // Frame switch
-        self.new_frame();
+        self.frames.push((BiBTreeMap::new(), return_dest));
         self.allocate_local(Local::RET, body.return_ty());
         body.args_decl_iter()
             .zip(args)
@@ -137,13 +141,12 @@ impl PlaceTable {
             });
     }
 
-    pub fn exit_fn(&mut self, caller_dest: &Place) {
+    pub fn exit_fn(&mut self) {
         // FIXME: this is quite flimsy wrt. statement order
         let callee_ret = Place::RETURN_SLOT
             .to_place_index(self)
             .expect("place exists");
-        let popped_frame = self.frames.pop().expect("call stack isn't empty");
-        let caller_dest = caller_dest.to_place_index(self).expect("place exists");
+        let (popped_frame, caller_dest) = self.frames.pop().expect("call stack isn't empty");
         // Copy ret
         self.copy_place(caller_dest, callee_ret);
 
