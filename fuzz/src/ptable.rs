@@ -496,6 +496,18 @@ impl PlaceTable {
         let a = a.to_place_index(self).expect("place exists");
         let b = b.to_place_index(self).expect("place exists");
 
+        if a == b {
+            return true;
+        }
+
+        // Locals never overlap with each other
+        if self.current_locals().contains_right(&a)
+            && self.current_locals().contains_right(&b)
+            && a != b
+        {
+            return false;
+        }
+
         let a_sub = ProjectionIter::new(self, a, true, false).map(|ppath| ppath.target_index(self));
         let b_sub: Vec<_> = ProjectionIter::new(self, b, true, false)
             .map(|ppath| ppath.target_index(self))
