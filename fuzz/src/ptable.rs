@@ -688,8 +688,14 @@ mod tests {
         let b = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);
         let c = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(2))]);
 
-        let d = b.project(ProjectionElem::TupleField(FieldIdx::new(0)));
-        let e = b.project(ProjectionElem::TupleField(FieldIdx::new(1)));
+        let d = b
+            .clone()
+            .project(ProjectionElem::TupleField(FieldIdx::new(0)))
+            .clone();
+        let e = b
+            .clone()
+            .project(ProjectionElem::TupleField(FieldIdx::new(1)))
+            .clone();
         (pt, local, a, b, c, d, e)
     }
 

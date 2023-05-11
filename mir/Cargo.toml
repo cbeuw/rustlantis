@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 index_vec = "0.1.3"
+smallvec = { version = "1.10.0", features = ["const_new"] }

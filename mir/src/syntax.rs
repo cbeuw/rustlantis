@@ -1,6 +1,7 @@
 use std::num::TryFromIntError;
 
 use index_vec::{define_index_type, IndexVec};
+use smallvec::SmallVec;
 
 use crate::serialize::Serialize;
 
@@ -64,54 +65,37 @@ define_index_type! {pub struct FieldIdx = u32;}
 define_index_type! {pub struct VariantIdx = u32;}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Place {
-    Hole,
-    Place {
-        local: Local,
-        projection: Vec<ProjectionElem>,
-    },
+pub struct Place {
+    local: Local,
+    projection: SmallVec<[ProjectionElem; 4]>,
 }
 impl Place {
     pub const fn from_local(local: Local) -> Self {
-        Place::Place {
+        Place {
             local,
-            projection: vec![],
+            projection: SmallVec::new_const(),
         }
     }
 
     pub fn from_projected(local: Local, projections: &[ProjectionElem]) -> Self {
-        Place::Place {
+        Place {
             local,
-            projection: Vec::from(projections),
+            projection: SmallVec::from(projections),
         }
     }
 
     pub fn local(&self) -> Local {
-        match self {
-            Place::Place { local, .. } => *local,
-            Place::Hole => panic!("place is a hole"),
-        }
+        self.local
     }
 
     pub fn projection(&self) -> &[ProjectionElem] {
-        match self {
-            Place::Place { projection, .. } => projection,
-            Place::Hole => panic!("place is a hole"),
-        }
+        &self.projection
     }
 
-    pub fn project(&self, proj: ProjectionElem) -> Self {
+    pub fn project(&mut self, proj: ProjectionElem) -> &mut Self {
         // TODO: validation
-        match self.clone() {
-            Place::Place {
-                local,
-                mut projection,
-            } => {
-                projection.push(proj);
-                Place::Place { local, projection }
-            }
-            Place::Hole => panic!("place is a hole"),
-        }
+        self.projection.push(proj);
+        self
     }
 
     pub fn ty(&self, local_decl: &LocalDecls) -> Ty {
