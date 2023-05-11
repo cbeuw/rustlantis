@@ -86,23 +86,10 @@ fn main() {
         info!("{} is all the same", source.as_os_str().to_string_lossy());
         debug!("{}", results);
     } else {
-        // FIXME: properly solve protectors
-        if results.has_ub().unwrap()
-            && results["miri"]
-                .as_ref()
-                .unwrap_err()
-                .0
-                .stderr
-                .to_string_lossy()
-                .contains("protected")
-        {
-            warn!("Protector UB");
-        } else {
-            let results = results.to_string();
-            error!(
-                "{} didn't pass:\n{results}",
-                source.as_os_str().to_string_lossy(),
-            );
-        }
+        let results = results.to_string();
+        error!(
+            "{} didn't pass:\n{results}",
+            source.as_os_str().to_string_lossy(),
+        );
     }
 }

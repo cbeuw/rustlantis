@@ -500,11 +500,7 @@ impl PlaceTable {
             return true;
         }
 
-        // Locals never overlap with each other
-        if self.current_locals().contains_right(&a)
-            && self.current_locals().contains_right(&b)
-            && a != b
-        {
+        if self.places[a].alloc_id != self.places[b].alloc_id {
             return false;
         }
 
@@ -521,6 +517,10 @@ impl PlaceTable {
             }
         }
         false
+    }
+
+    pub fn return_dest_stack(&self) -> impl Iterator<Item = PlaceIndex> + '_ {
+        self.frames.iter().skip(1).map(|(_, dst)| *dst)
     }
 
     pub fn place_count(&self) -> usize {

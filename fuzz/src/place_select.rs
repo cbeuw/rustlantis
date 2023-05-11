@@ -79,6 +79,7 @@ impl PlaceSelector {
             .exclusions
             .iter()
             .map(|place| place.to_place_index(pt).expect("excluded place exists"))
+            .chain(pt.return_dest_stack())
             .collect();
         pt.reachable_nodes().filter(move |ppath| {
             let live = pt.is_place_live(ppath.target_index(pt));

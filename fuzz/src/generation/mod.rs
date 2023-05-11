@@ -573,9 +573,6 @@ impl GenerationCtx {
         let return_place =
             self.make_choice_weighted(return_places.into_iter(), weights, Result::Ok)?;
 
-        // FIXME: not necessary
-        self.pt.mark_place_uninit(&return_place);
-
         let args_count: i32 = self.rng.get_mut().gen_range(2..=16);
         let args: Vec<Operand> = (0..args_count)
             .map(|_| {
