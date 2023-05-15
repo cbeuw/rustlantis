@@ -122,6 +122,7 @@ impl PlaceTable {
         let return_dest = return_dest
             .to_place_index(self)
             .expect("return dest exists");
+        self.assign_literal(return_dest, None);
 
         // Frame switch
         self.frames.push((BiBTreeMap::new(), return_dest));
@@ -552,11 +553,6 @@ impl PlaceTable {
         }
     }
 
-    pub fn get_literal(&self, p: impl ToPlaceIndex) -> Option<Literal> {
-        let p = p.to_place_index(self).expect("place exists");
-        self.places[p].val.clone()
-    }
-
     pub fn return_dest_stack(&self) -> impl Iterator<Item = PlaceIndex> + '_ {
         self.frames.iter().skip(1).map(|(_, dst)| *dst)
     }
@@ -580,6 +576,20 @@ impl PlacePath {
             *pt.current_locals().get_by_right(&self.source).unwrap(),
             &projs,
         )
+    }
+
+    pub fn projections<'pt>(
+        &'pt self,
+        pt: &'pt PlaceTable,
+    ) -> impl Iterator<Item = ProjectionElem> + 'pt {
+        self.path.iter().map(|e| pt.places[*e])
+    }
+
+    pub fn is_return_proj(&self, pt: &PlaceTable) -> bool {
+        *pt.current_locals()
+            .get_by_right(&self.source)
+            .expect("source exists")
+            == Local::RET
     }
 
     pub fn target_index(&self, pt: &PlaceTable) -> PlaceIndex {

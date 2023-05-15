@@ -44,16 +44,16 @@ pub struct GenerationCtx {
 impl GenerationCtx {
     fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand> {
         let operand: Result<Operand> = try {
-            let (places, weights) = PlaceSelector::for_operand()
+            let (ppath, weights) = PlaceSelector::for_operand()
                 .except(excluded)
                 .of_tys(tys)
                 .into_weighted(&self.pt)
                 .ok_or(SelectionError::Exhausted)?;
-            self.make_choice_weighted(places.into_iter(), weights, |place| {
-                if self.tcx.is_copy(&place.ty(self.current_decls())) {
-                    Ok(Operand::Copy(place))
+            self.make_choice_weighted(ppath.into_iter(), weights, |ppath| {
+                if self.tcx.is_copy(&ppath.target_node(&self.pt).ty) {
+                    Ok(Operand::Copy(ppath.to_place(&self.pt)))
                 } else {
-                    Ok(Operand::Move(place))
+                    Ok(Operand::Move(ppath.to_place(&self.pt)))
                 }
             })?
         };
@@ -326,8 +326,8 @@ impl GenerationCtx {
             .except(lhs)
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
-        self.make_choice_weighted(candidates.into_iter(), weights, |place| {
-            Ok(Rvalue::AddressOf(mutability, place))
+        self.make_choice_weighted(candidates.into_iter(), weights, |ppath| {
+            Ok(Rvalue::AddressOf(mutability, ppath.to_place(&self.pt)))
         })
     }
 
@@ -373,7 +373,8 @@ impl GenerationCtx {
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
-        self.make_choice_weighted(lhs_choices.into_iter(), weights, |lhs| {
+        self.make_choice_weighted(lhs_choices.into_iter(), weights, |ppath| {
+            let lhs = ppath.to_place(&self.pt);
             debug!(
                 "generating an assignment statement with lhs {}: {}",
                 lhs.serialize(),
@@ -537,8 +538,11 @@ impl GenerationCtx {
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
-        let literal = self.make_choice_weighted(literals.into_iter(), weights, Result::Ok)?;
-        let literal_val = self.pt.get_literal(&literal).expect("has value");
+        let (literal, literal_val) =
+            self.make_choice_weighted(literals.into_iter(), weights, |ppath| {
+                let val = ppath.target_node(&self.pt).val.as_ref().expect("has value");
+                Ok((ppath.to_place(&self.pt), val.clone()))
+            })?;
 
         let decoy_count = self.rng.get_mut().gen_range(1..=MAX_SWITCH_TARGETS);
         let mut targets = self.decoy_bbs(decoy_count);
@@ -594,7 +598,9 @@ impl GenerationCtx {
             .ok_or(SelectionError::Exhausted)?;
 
         let return_place =
-            self.make_choice_weighted(return_places.into_iter(), weights, Result::Ok)?;
+            self.make_choice_weighted(return_places.into_iter(), weights, |ppath| {
+                Result::Ok(ppath.to_place(&self.pt))
+            })?;
 
         let args_count: i32 = self.rng.get_mut().gen_range(2..=16);
         let args: Vec<Operand> = (0..args_count)
@@ -603,13 +609,14 @@ impl GenerationCtx {
                     .except(&return_place)
                     .into_weighted(&self.pt)
                     .ok_or(SelectionError::Exhausted)?;
-                let place = self.make_choice_weighted(places.into_iter(), weights, Result::Ok)?;
-                let ty = place.ty(self.current_decls());
-                if self.tcx.is_copy(&ty) {
-                    Ok(Operand::Copy(place))
-                } else {
-                    Ok(Operand::Move(place))
-                }
+                self.make_choice_weighted(places.into_iter(), weights, |ppath| {
+                    let ty = &ppath.target_node(&self.pt).ty;
+                    if self.tcx.is_copy(&ty) {
+                        Ok(Operand::Copy(ppath.to_place(&self.pt)))
+                    } else {
+                        Ok(Operand::Move(ppath.to_place(&self.pt)))
+                    }
+                })
             })
             .collect::<Result<Vec<Operand>>>()?;
 
@@ -641,7 +648,11 @@ impl GenerationCtx {
             .ok_or(SelectionError::Exhausted)?;
 
         let return_place =
-            self.make_choice_weighted(return_places.into_iter(), weights, Result::Ok)?;
+            self.make_choice_weighted(return_places.into_iter(), weights, |ppath| {
+                Result::Ok(ppath.to_place(&self.pt))
+            })?;
+        
+        self.pt.assign_literal(&return_place, None);
 
         let (callee, args) = self.choose_intrinsic(&return_place)?;
 

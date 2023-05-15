@@ -122,15 +122,14 @@ impl PlaceSelector {
         })
     }
 
-    pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<Place>, WeightedIndex<Weight>)> {
-        let (places, weights) = match self.usage {
+    pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
+        let (places, weights): (Vec<PlacePath>, Vec<Weight>) = match self.usage {
             PlaceUsage::Argument => {
                 // Like Operand, but we don't encourage deref to pass in pointers
-                let (places, weights): (Vec<Place>, Vec<Weight>) = self
-                    .into_iter_path(pt)
+                self.into_iter_path(pt)
                     .map(|ppath| {
-                        let place = ppath.to_place(pt);
-                        let mut weight = pt.get_dataflow(&place);
+                        let place = ppath.target_index(pt);
+                        let mut weight = pt.get_dataflow(place);
                         let node = ppath.target_node(pt);
                         if node.ty.contains(|ty| ty.is_any_ptr()) {
                             weight *= PTR_WEIGHT_FACTOR;
@@ -138,62 +137,47 @@ impl PlaceSelector {
                         if node.val.is_some() {
                             weight *= LIT_ARG_WEIGHT_FACTOR;
                         }
-                        (place, weight)
+                        (ppath, weight)
                     })
-                    .unzip();
-                (places, weights)
+                    .unzip()
             }
-            PlaceUsage::LHS => {
-                let (places, weights): (Vec<Place>, Vec<Weight>) = self
-                    .into_iter_path(pt)
-                    .map(|ppath| {
-                        let mut weight = if !pt.is_place_init(ppath.target_index(pt)) {
-                            UNINIT_WEIGHT_FACTOR
-                        } else {
-                            1
-                        };
-                        let place = ppath.to_place(pt);
-                        if place == Place::RETURN_SLOT {
-                            weight *= LHS_WEIGH_FACTOR;
-                        }
-                        (place, weight)
-                    })
-                    .unzip();
-                (places, weights)
-            }
+            PlaceUsage::LHS => self
+                .into_iter_path(pt)
+                .map(|ppath| {
+                    let place = ppath.target_index(pt);
+                    let mut weight = if !pt.is_place_init(place) {
+                        UNINIT_WEIGHT_FACTOR
+                    } else {
+                        1
+                    };
+                    if ppath.is_return_proj(pt) {
+                        weight *= LHS_WEIGH_FACTOR;
+                    }
+                    (ppath, weight)
+                })
+                .unzip(),
             PlaceUsage::Operand => {
-                let (places, weights): (Vec<Place>, Vec<Weight>) = self
-                    .into_iter_path(pt)
+                self.into_iter_path(pt)
                     .map(|ppath| {
-                        let place = ppath.to_place(pt);
-                        let mut weight = pt.get_dataflow(&place);
-                        if place.projection().contains(&ProjectionElem::Deref) {
+                        let place = ppath.target_index(pt);
+                        let mut weight = pt.get_dataflow(place);
+                        if ppath.projections(pt).any(|p| p == ProjectionElem::Deref) {
                             // Encourage dereference
                             weight *= DEREF_WEIGHT_FACTOR;
                         }
-                        (place, weight)
+                        (ppath, weight)
                     })
-                    .unzip();
-                (places, weights)
+                    .unzip()
             }
-            PlaceUsage::Pointee => {
-                let (places, weights): (Vec<Place>, Vec<Weight>) = self
-                    .into_iter_path(pt)
-                    .map(|ppath| (ppath.to_place(pt), 1))
-                    .unzip();
-                (places, weights)
-            }
-            PlaceUsage::Literal => {
-                let (places, weights): (Vec<Place>, Vec<Weight>) = self
-                    .into_iter_path(pt)
-                    .map(|ppath| {
-                        let place = ppath.to_place(pt);
-                        let weight = pt.get_dataflow(&place);
-                        (place, weight)
-                    })
-                    .unzip();
-                (places, weights)
-            }
+            PlaceUsage::Pointee => self.into_iter_path(pt).map(|ppath| (ppath, 1)).unzip(),
+            PlaceUsage::Literal => self
+                .into_iter_path(pt)
+                .map(|ppath| {
+                    let place = ppath.target_index(pt);
+                    let weight = pt.get_dataflow(&place);
+                    (ppath, weight)
+                })
+                .unzip(),
         };
         if let Some(weighted_index) = WeightedIndex::new(weights).ok() {
             Some((places, weighted_index))
