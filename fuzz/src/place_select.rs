@@ -10,6 +10,7 @@ enum PlaceUsage {
     LHS,
     Pointee,
     Argument,
+    Literal,
 }
 
 #[derive(Clone, Default)]
@@ -25,6 +26,7 @@ pub type Weight = usize;
 const LHS_WEIGH_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 2;
+const LIT_ARG_WEIGHT_FACTOR: Weight = 2;
 const PTR_WEIGHT_FACTOR: Weight = 10;
 
 impl PlaceSelector {
@@ -51,6 +53,13 @@ impl PlaceSelector {
         Self {
             usage: PlaceUsage::LHS,
             allow_uninit: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn for_literal() -> Self {
+        Self {
+            usage: PlaceUsage::Literal,
             ..Self::default()
         }
     }
@@ -82,25 +91,34 @@ impl PlaceSelector {
             .chain(pt.return_dest_stack())
             .collect();
         pt.reachable_nodes().filter(move |ppath| {
-            let live = pt.is_place_live(ppath.target_index(pt));
+            let index = ppath.target_index(pt);
+            let node = ppath.target_node(pt);
+
+            let live = pt.is_place_live(index);
 
             let ty_allowed = if self.tys.is_empty() {
                 true
             } else {
-                self.tys.contains(&ppath.target_node(pt).ty)
+                self.tys.contains(&node.ty)
             };
 
             let not_excluded = !exclusion_indicies
                 .iter()
-                .any(|excl| pt.overlap(ppath.target_index(pt), excl));
+                .any(|excl| pt.overlap(index, excl));
             let initness_allowed = if self.allow_uninit {
                 true
             } else {
-                pt.is_place_init(ppath.target_index(pt))
+                pt.is_place_init(index)
+            };
+
+            let literalness = if matches!(self.usage, PlaceUsage::Literal) {
+                node.val.is_some()
+            } else {
+                true
             };
 
             // FIXME: are we allowed to use moved-from places?
-            live && ty_allowed && not_excluded && initness_allowed
+            live && ty_allowed && not_excluded && initness_allowed && literalness
         })
     }
 
@@ -116,6 +134,9 @@ impl PlaceSelector {
                         let node = ppath.target_node(pt);
                         if node.ty.contains(|ty| ty.is_any_ptr()) {
                             weight *= PTR_WEIGHT_FACTOR;
+                        }
+                        if node.val.is_some() {
+                            weight *= LIT_ARG_WEIGHT_FACTOR;
                         }
                         (place, weight)
                     })
@@ -159,6 +180,17 @@ impl PlaceSelector {
                 let (places, weights): (Vec<Place>, Vec<Weight>) = self
                     .into_iter_path(pt)
                     .map(|ppath| (ppath.to_place(pt), 1))
+                    .unzip();
+                (places, weights)
+            }
+            PlaceUsage::Literal => {
+                let (places, weights): (Vec<Place>, Vec<Weight>) = self
+                    .into_iter_path(pt)
+                    .map(|ppath| {
+                        let place = ppath.to_place(pt);
+                        let weight = pt.get_dataflow(&place);
+                        (place, weight)
+                    })
                     .unzip();
                 (places, weights)
             }

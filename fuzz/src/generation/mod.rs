@@ -517,37 +517,60 @@ impl GenerationCtx {
 
     fn generate_switch_int(&mut self) -> Result<()> {
         debug!("generating a SwitchInt terminator");
-        let discr = self
-            .current_fn_mut()
-            .declare_new_var(Mutability::Mut, Ty::I32);
+        let (literals, weights) = PlaceSelector::for_literal()
+            .of_tys(&[
+                Ty::ISIZE,
+                Ty::I8,
+                Ty::I16,
+                Ty::I32,
+                Ty::I64,
+                Ty::I128,
+                Ty::USIZE,
+                Ty::U8,
+                Ty::U16,
+                Ty::U32,
+                Ty::U64,
+                Ty::U128,
+                // Ty::Char,
+                // Ty::Bool,
+            ])
+            .into_weighted(&self.pt)
+            .ok_or(SelectionError::Exhausted)?;
 
-        let target_bb = self.add_new_bb();
+        let literal = self.make_choice_weighted(literals.into_iter(), weights, Result::Ok)?;
+        let literal_val = self.pt.get_literal(&literal).expect("has value");
 
         let decoy_count = self.rng.get_mut().gen_range(1..=MAX_SWITCH_TARGETS);
         let mut targets = self.decoy_bbs(decoy_count);
         let otherwise = targets.pop().unwrap();
 
+        let target_bb = self.add_new_bb();
         targets.push(target_bb);
-        // TODO: obfuscate the real choice so codegen can't optimise this easily
-        let target_discr = targets.len() - 1;
-        self.current_bb_mut().insert_statement(Statement::Assign(
-            Place::from_local(discr),
-            Rvalue::Use(Operand::Constant(Literal::Int(
-                target_discr as i128,
-                IntTy::I32,
-            ))),
-        ));
-        // self.current_bb_mut()
-        //     .insert_statement(Statement::StorageLive(discr));
+        let target_discr = match literal_val {
+            Literal::Uint(i, _) => i,
+            Literal::Int(i, _) => i as u128,
+            // Literal::Bool(b) => b as u128,
+            // Literal::Char(c) => c as u128,
+            _ => unreachable!("invalid switchint discriminant"),
+        };
 
         let branches: Vec<(u128, BasicBlock)> = targets
             .iter()
             .enumerate()
-            .map(|(i, &bb)| (i as u128, bb))
+            .filter_map(|(i, &bb)| {
+                if bb == target_bb {
+                    Some((target_discr, bb))
+                } else if i as u128 == target_discr {
+                    // Prevent duplicate
+                    None
+                } else {
+                    Some((i as u128, bb))
+                }
+            })
             .collect();
 
         let term = Terminator::SwitchInt {
-            discr: Operand::Copy(Place::from_local(discr)),
+            discr: Operand::Copy(literal),
             targets: SwitchTargets {
                 branches,
                 otherwise,
@@ -941,10 +964,14 @@ impl GenerationCtx {
                     Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs)) => {
                         self.pt.copy_place(lhs, rhs)
                     }
+                    Rvalue::Use(Operand::Constant(lit)) => {
+                        self.pt.assign_literal(lhs, Some(lit.clone()))
+                    }
                     Rvalue::BinaryOp(BinOp::Offset, _, _) => todo!(),
                     Rvalue::AddressOf(_, referent) => self.pt.set_ref(lhs, referent),
                     _ => {
                         self.pt.combine_dataflow(lhs, rvalue);
+                        self.pt.assign_literal(lhs, None)
                     }
                 }
                 // FIXME: move logic

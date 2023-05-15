@@ -1,7 +1,7 @@
 use std::vec;
 
 use bimap::BiBTreeMap;
-use mir::syntax::{Body, FieldIdx, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
+use mir::syntax::{Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
@@ -31,6 +31,9 @@ pub struct PlaceNode {
 
     // Only Tys fitting into a single Run have these
     run_ptr: Option<RunPointer>,
+
+    // Remember the value of simple literals
+    pub val: Option<Literal>,
 }
 
 pub trait ToPlaceIndex {
@@ -100,7 +103,7 @@ impl PlaceTable {
         enum ArgOperand {
             Copy(PlaceIndex),
             Move(PlaceIndex),
-            Constant,
+            Constant(Literal),
         }
 
         let args: Vec<ArgOperand> = args
@@ -112,7 +115,7 @@ impl PlaceTable {
                 Operand::Move(place) => {
                     ArgOperand::Move(place.to_place_index(self).expect("arg exists"))
                 }
-                Operand::Constant(_) => ArgOperand::Constant,
+                Operand::Constant(lit) => ArgOperand::Constant(lit.clone()),
             })
             .collect();
 
@@ -128,12 +131,15 @@ impl PlaceTable {
             .for_each(|((local, decl), arg)| {
                 let pidx = self.allocate_local(local, decl.ty.clone());
 
-                if let ArgOperand::Copy(source_pidx) | ArgOperand::Move(source_pidx) = arg {
-                    debug_assert!(
-                        self.is_place_init(source_pidx),
-                        "function arguments must be init"
-                    );
-                    self.copy_place(pidx, source_pidx);
+                match &arg {
+                    ArgOperand::Copy(source_pidx) | ArgOperand::Move(source_pidx) => {
+                        debug_assert!(
+                            self.is_place_init(source_pidx),
+                            "function arguments must be init"
+                        );
+                        self.copy_place(pidx, source_pidx);
+                    }
+                    ArgOperand::Constant(lit) => self.assign_literal(pidx, Some(lit.clone())),
                 }
                 if let ArgOperand::Move(source_pidx) = arg {
                     self.mark_place_moved(source_pidx);
@@ -194,6 +200,7 @@ impl PlaceTable {
                     run_and_offset,
                     size,
                 }),
+                val: None,
             })
         } else {
             places.add_node(PlaceNode {
@@ -201,6 +208,7 @@ impl PlaceTable {
                 alloc_id,
                 dataflow,
                 run_ptr: None,
+                val: None,
             })
         };
         match ty {
@@ -226,9 +234,11 @@ impl PlaceTable {
             return;
         }
         self.update_dataflow(dst, self.places[src].dataflow);
+        self.assign_literal(dst, self.places[src].val.clone());
 
         let (dst_node, src_node) = self.places.index_twice_mut(dst, src);
         assert_eq!(dst_node.ty, src_node.ty);
+
         if let Some(run_ptr) = src_node.run_ptr {
             self.memory
                 .copy(dst_node.run_ptr.expect("dst is terminal"), run_ptr);
@@ -517,6 +527,34 @@ impl PlaceTable {
             }
         }
         false
+    }
+
+    pub fn assign_literal(&mut self, p: impl ToPlaceIndex, val: Option<Literal>) {
+        let p = p.to_place_index(self).expect("place exists");
+
+        let node = &mut self.places[p];
+        node.val = val.clone();
+
+        if let Ty::Tuple(tys) = &node.ty {
+            for i in 0..tys.len() {
+                let child = self
+                    .project_from_node(p, &ProjectionElem::TupleField(i.into()))
+                    .expect("elem exists");
+                let elem = val.as_ref().map(|tup| {
+                    let Literal::Tuple(elems) = tup else {
+                        panic!("literal is also a tuple");
+                    };
+                    &elems[i]
+                });
+                // This doesn't have to be recursive
+                self.assign_literal(child, elem.cloned());
+            }
+        }
+    }
+
+    pub fn get_literal(&self, p: impl ToPlaceIndex) -> Option<Literal> {
+        let p = p.to_place_index(self).expect("place exists");
+        self.places[p].val.clone()
     }
 
     pub fn return_dest_stack(&self) -> impl Iterator<Item = PlaceIndex> + '_ {
