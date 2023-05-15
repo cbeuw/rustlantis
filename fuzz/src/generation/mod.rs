@@ -518,7 +518,7 @@ impl GenerationCtx {
 
     fn generate_switch_int(&mut self) -> Result<()> {
         debug!("generating a SwitchInt terminator");
-        let (literals, weights) = PlaceSelector::for_literal()
+        let (places, weights) = PlaceSelector::for_known_val()
             .of_tys(&[
                 Ty::ISIZE,
                 Ty::I8,
@@ -538,8 +538,8 @@ impl GenerationCtx {
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
-        let (literal, literal_val) =
-            self.make_choice_weighted(literals.into_iter(), weights, |ppath| {
+        let (place, place_val) =
+            self.make_choice_weighted(places.into_iter(), weights, |ppath| {
                 let val = ppath.target_node(&self.pt).val.as_ref().expect("has value");
                 Ok((ppath.to_place(&self.pt), val.clone()))
             })?;
@@ -550,7 +550,7 @@ impl GenerationCtx {
 
         let target_bb = self.add_new_bb();
         targets.push(target_bb);
-        let target_discr = match literal_val {
+        let target_discr = match place_val {
             Literal::Uint(i, _) => i,
             Literal::Int(i, _) => i as u128,
             // Literal::Bool(b) => b as u128,
@@ -574,7 +574,7 @@ impl GenerationCtx {
             .collect();
 
         let term = Terminator::SwitchInt {
-            discr: Operand::Copy(literal),
+            discr: Operand::Copy(place),
             targets: SwitchTargets {
                 branches,
                 otherwise,

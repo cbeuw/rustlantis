@@ -10,7 +10,7 @@ enum PlaceUsage {
     LHS,
     Pointee,
     Argument,
-    Literal,
+    KnownVal,
 }
 
 #[derive(Clone, Default)]
@@ -27,7 +27,7 @@ const LHS_WEIGH_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 2;
 const LIT_ARG_WEIGHT_FACTOR: Weight = 2;
-const PTR_WEIGHT_FACTOR: Weight = 10;
+const PTR_WEIGHT_FACTOR: Weight = 2;
 
 impl PlaceSelector {
     pub fn for_pointee() -> Self {
@@ -57,9 +57,9 @@ impl PlaceSelector {
         }
     }
 
-    pub fn for_literal() -> Self {
+    pub fn for_known_val() -> Self {
         Self {
-            usage: PlaceUsage::Literal,
+            usage: PlaceUsage::KnownVal,
             ..Self::default()
         }
     }
@@ -111,7 +111,7 @@ impl PlaceSelector {
                 pt.is_place_init(index)
             };
 
-            let literalness = if matches!(self.usage, PlaceUsage::Literal) {
+            let literalness = if matches!(self.usage, PlaceUsage::KnownVal) {
                 node.val.is_some()
             } else {
                 true
@@ -170,7 +170,7 @@ impl PlaceSelector {
                     .unzip()
             }
             PlaceUsage::Pointee => self.into_iter_path(pt).map(|ppath| (ppath, 1)).unzip(),
-            PlaceUsage::Literal => self
+            PlaceUsage::KnownVal => self
                 .into_iter_path(pt)
                 .map(|ppath| {
                     let place = ppath.target_index(pt);
