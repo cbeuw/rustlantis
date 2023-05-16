@@ -1,5 +1,19 @@
 use mir::syntax::{Literal, Ty};
 use rand::{seq::SliceRandom, Rng, RngCore};
+use rand_distr::Distribution;
+
+struct Sombrero;
+
+impl Distribution<isize> for Sombrero {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> isize {
+        match rng.gen_range(0..2) {
+            0 => rng.gen_range(-128..127),
+            1 => isize::MIN,
+            2 => isize::MAX,
+            _ => unreachable!(),
+        }
+    }
+}
 
 pub trait GenLiteral: Rng {
     fn is_literalble(ty: &Ty) -> bool {
@@ -30,10 +44,13 @@ pub trait GenLiteral: Rng {
             Ty::U32 => self.gen_range(u32::MIN..=u32::MAX).into(),
             Ty::U64 => self.gen_range(u64::MIN..=u64::MAX).into(),
             Ty::U128 => self.gen_range(u128::MIN..=u128::MAX).into(),
-            Ty::ISIZE => self
-                .gen_range(isize::MIN..=isize::MAX)
-                .try_into()
-                .expect("isize isn't greater than 128 bits"),
+            Ty::ISIZE => {
+                let distr = Sombrero;
+                distr
+                    .sample(self)
+                    .try_into()
+                    .expect("isize isn't greater than 128 bits")
+            }
             Ty::I8 => self.gen_range(i8::MIN..=i8::MAX).into(),
             Ty::I16 => self.gen_range(i16::MIN..=i16::MAX).into(),
             Ty::I32 => self.gen_range(i32::MIN..=i32::MAX).into(),

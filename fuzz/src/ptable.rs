@@ -1,7 +1,9 @@
 use std::vec;
 
 use bimap::BiBTreeMap;
-use mir::syntax::{Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
+use mir::syntax::{
+    Body, FieldIdx, IntTy, Literal, Local, Operand, Place, ProjectionElem, Rvalue, Ty,
+};
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
@@ -33,7 +35,10 @@ pub struct PlaceNode {
     run_ptr: Option<RunPointer>,
 
     // Remember the value of simple literals
-    pub val: Option<Literal>,
+    val: Option<Literal>,
+
+    // Offsetted pointer value
+    offset: Option<isize>,
 }
 
 pub trait ToPlaceIndex {
@@ -202,6 +207,7 @@ impl PlaceTable {
                     size,
                 }),
                 val: None,
+                offset: None,
             })
         } else {
             places.add_node(PlaceNode {
@@ -210,6 +216,7 @@ impl PlaceTable {
                 dataflow,
                 run_ptr: None,
                 val: None,
+                offset: None,
             })
         };
         match ty {
@@ -245,7 +252,10 @@ impl PlaceTable {
                 .copy(dst_node.run_ptr.expect("dst is terminal"), run_ptr);
 
             if dst_node.ty.is_any_ptr() {
-                self.alias_ref(src, dst);
+                if let Some(pointee) = self.pointee(src) {
+                    self.set_ref(dst, pointee);
+                }
+                self.places[dst].offset = self.places[src].offset;
             }
         } else {
             let projs: Vec<_> = self
@@ -421,14 +431,6 @@ impl PlaceTable {
             .map(|deref| deref.id())
     }
 
-    /// Make alias such that original_ref -[Deref]-> pointee <-[Deref]- alias_ref, if one exists
-    pub fn alias_ref(&mut self, original_ref: impl ToPlaceIndex, alias_ref: impl ToPlaceIndex) {
-        let original_ref = original_ref.to_place_index(self).expect("place exists");
-        if let Some(pointee) = self.pointee(original_ref) {
-            self.set_ref(alias_ref, pointee);
-        }
-    }
-
     /// Creates an edge reference -[Deref]-> pointee
     pub fn set_ref(&mut self, reference: impl ToPlaceIndex, pointee: impl ToPlaceIndex) {
         let reference = reference.to_place_index(self).expect("place exists");
@@ -449,6 +451,7 @@ impl PlaceTable {
                 .count(),
             0
         );
+        self.places[reference].offset = None;
 
         self.update_dataflow(reference, self.places[pointee].dataflow);
 
@@ -557,6 +560,67 @@ impl PlaceTable {
         self.frames.iter().skip(1).map(|(_, dst)| *dst)
     }
 
+    pub fn ty(&self, p: impl ToPlaceIndex) -> &Ty {
+        &self.places[p.to_place_index(self).expect("place exists")].ty
+    }
+
+    pub fn known_val(&self, p: impl ToPlaceIndex) -> Option<&Literal> {
+        self.places[p.to_place_index(self).expect("place exists")]
+            .val
+            .as_ref()
+    }
+
+    // Whether the pointer has been offsetted (and therefore unusable)
+    pub fn offseted(&self, p: impl ToPlaceIndex) -> bool {
+        let p = p.to_place_index(self).expect("place exists");
+        assert!(self.places[p].ty.is_any_ptr());
+
+        match self.places[p].offset {
+            None => false,
+            Some(0) => false,
+            _ => true,
+        }
+    }
+
+    pub fn get_offset(&self, p: impl ToPlaceIndex) -> Option<isize> {
+        let p = p.to_place_index(self).expect("place exists");
+        assert!(self.places[p].ty.is_any_ptr());
+
+        self.places[p].offset
+    }
+
+    pub fn offset_ptr(&mut self, p: impl ToPlaceIndex, offset: &Operand) {
+        let p = p.to_place_index(self).expect("place exists");
+        assert!(self.places[p].ty.is_any_ptr());
+
+        let lit = match offset {
+            Operand::Copy(p) | Operand::Move(p) => self.places
+                [p.to_place_index(self).expect("place exists")]
+            .val
+            .as_ref()
+            .expect("has known value"),
+            Operand::Constant(lit) => lit,
+        };
+
+        let Literal::Int(offset, IntTy::Isize) = lit else {
+            panic!("incorrect offset type");
+        };
+
+        let offset = *offset as isize;
+
+        self.places[p].offset = match self.places[p].offset {
+            None => Some(offset),
+            Some(o) => Some(offset + o),
+        };
+    }
+
+    pub fn has_offset_roundtripped(&self, p: impl ToPlaceIndex) -> bool {
+        let p = p.to_place_index(self).expect("place exists");
+        assert!(self.places[p].ty.is_any_ptr());
+
+        self.places[p].offset == Some(0)
+    }
+
     pub fn place_count(&self) -> usize {
         self.places.node_count()
     }
@@ -583,6 +647,14 @@ impl PlacePath {
         pt: &'pt PlaceTable,
     ) -> impl Iterator<Item = ProjectionElem> + 'pt {
         self.path.iter().map(|e| pt.places[*e])
+    }
+
+    pub fn nodes<'pt>(&'pt self, pt: &'pt PlaceTable) -> impl Iterator<Item = PlaceIndex> + 'pt {
+        [self.source].into_iter().chain(
+            self.path
+                .iter()
+                .map(|e| pt.places.edge_endpoints(*e).expect("edge exists").1),
+        )
     }
 
     pub fn is_return_proj(&self, pt: &PlaceTable) -> bool {
@@ -632,7 +704,7 @@ impl<'pt> ProjectionIter<'pt> {
                 .places
                 .edges_directed(root, Direction::Outgoing)
                 .filter_map(|e| {
-                    if follow_deref || !e.weight().is_deref() {
+                    if !e.weight().is_deref() || (follow_deref && !pt.offseted(e.source())) {
                         Some((e.id(), 1))
                     } else {
                         None

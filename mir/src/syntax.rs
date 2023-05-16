@@ -404,6 +404,7 @@ impl Ty {
         }
         match self {
             Ty::Tuple(elems) => elems.iter().any(|ty| ty.contains(predicate)),
+            Ty::RawPtr(pointee, _) => pointee.contains(predicate),
             Ty::Adt(_) => todo!(),
             _ => false,
         }

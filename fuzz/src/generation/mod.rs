@@ -17,6 +17,9 @@ use crate::place_select::{PlaceSelector, Weight};
 use crate::ptable::{HasDataflow, PlaceTable};
 use crate::ty::TyCtxt;
 
+use self::intrinsics::ArithOffset;
+use crate::generation::intrinsics::CoreIntrinsic;
+
 /// Max. number of statements & declarations in a bb
 const BB_MAX_LEN: usize = 32;
 /// Max. number of switch targets in a SwitchInt terminator
@@ -346,11 +349,11 @@ impl GenerationCtx {
     fn generate_rvalue(&self, lhs: &Place) -> Result<Rvalue> {
         let choices_and_weights: Vec<(fn(&GenerationCtx, &Place) -> Result<Rvalue>, usize)> = vec![
             (Self::generate_use, 1),
-            (Self::generate_unary_op, 2),
-            (Self::generate_binary_op, 2),
-            (Self::generate_checked_binary_op, 2),
-            (Self::generate_cast, 4),
-            (Self::generate_address_of, 8),
+            (Self::generate_unary_op, 1),
+            (Self::generate_binary_op, 1),
+            (Self::generate_checked_binary_op, 1),
+            (Self::generate_cast, 1),
+            (Self::generate_address_of, 2),
         ];
 
         let (choices, weights): (
@@ -558,7 +561,10 @@ impl GenerationCtx {
 
         let (place, place_val) =
             self.make_choice_weighted(places.into_iter(), weights, |ppath| {
-                let val = ppath.target_node(&self.pt).val.as_ref().expect("has value");
+                let val = self
+                    .pt
+                    .known_val(ppath.target_index(&self.pt))
+                    .expect("has_value");
                 Ok((ppath.to_place(&self.pt), val.clone()))
             })?;
 
@@ -670,9 +676,18 @@ impl GenerationCtx {
                 Result::Ok(ppath.to_place(&self.pt))
             })?;
 
+        let (callee, args) = self.choose_intrinsic(&return_place)?;
+
         self.pt.assign_literal(&return_place, None);
 
-        let (callee, args) = self.choose_intrinsic(&return_place)?;
+        if let Callee::Intrinsic(n) = callee && n == ArithOffset.name() {
+            let Operand::Copy(ptr) = &args[0] else {
+                unreachable!("first operand is pointer");
+            };
+            self.pt.copy_place(&return_place, ptr);
+
+            self.pt.offset_ptr(&return_place, &args[1]);
+        }
 
         let bb = self.add_new_bb();
         self.current_bb_mut().set_terminator(Terminator::Call {
@@ -792,7 +807,7 @@ impl GenerationCtx {
 }
 
 impl GenerationCtx {
-    fn make_choice_weighted<T, F, R>(
+    pub fn make_choice_weighted<T, F, R>(
         &self,
         choices: impl Iterator<Item = T> + Clone,
         mut weights: WeightedIndex<Weight>,

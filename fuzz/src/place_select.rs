@@ -1,11 +1,9 @@
-use std::cmp::max;
-
-use mir::syntax::{Place, ProjectionElem, Ty};
+use mir::syntax::{Place, Ty};
 use rand_distr::WeightedIndex;
 
 use crate::ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex};
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum PlaceUsage {
     #[default]
     Operand,
@@ -13,6 +11,7 @@ enum PlaceUsage {
     Pointee,
     Argument,
     KnownVal,
+    Offsetee,
 }
 
 #[derive(Clone, Default)]
@@ -29,7 +28,9 @@ const RET_LHS_WEIGH_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 2;
 const LIT_ARG_WEIGHT_FACTOR: Weight = 2;
-const PTR_WEIGHT_FACTOR: Weight = 10;
+const PTR_ARG_WEIGHT_FACTOR: Weight = 2;
+const OFFSETTED_PTR_WEIGHT_FACTOR: Weight = 10;
+const ROUNDTRIPPED_PTR_WEIGHT_FACTOR: Weight = 100;
 
 impl PlaceSelector {
     pub fn for_pointee() -> Self {
@@ -66,6 +67,13 @@ impl PlaceSelector {
         }
     }
 
+    pub fn for_offsetee() -> Self {
+        Self {
+            usage: PlaceUsage::Offsetee,
+            ..Self::default()
+        }
+    }
+
     pub fn of_ty(self, ty: Ty) -> Self {
         let mut tys = self.tys;
         tys.push(ty);
@@ -94,14 +102,13 @@ impl PlaceSelector {
             .collect();
         pt.reachable_nodes().filter(move |ppath| {
             let index = ppath.target_index(pt);
-            let node = ppath.target_node(pt);
 
             let live = pt.is_place_live(index);
 
             let ty_allowed = if self.tys.is_empty() {
                 true
             } else {
-                self.tys.contains(&node.ty)
+                self.tys.contains(pt.ty(index))
             };
 
             let not_excluded = !exclusion_indicies
@@ -113,8 +120,8 @@ impl PlaceSelector {
                 pt.is_place_init(index)
             };
 
-            let literalness = if matches!(self.usage, PlaceUsage::KnownVal) {
-                node.val.is_some()
+            let literalness = if self.usage == PlaceUsage::KnownVal {
+                pt.known_val(index).is_some()
             } else {
                 true
             };
@@ -132,13 +139,22 @@ impl PlaceSelector {
                 let place = ppath.target_index(pt);
                 let mut weight = match usage {
                     PlaceUsage::Argument => {
-                        let mut weight = pt.get_dataflow(place);
+                        // let mut weight = pt.get_dataflow(place);
                         let node = ppath.target_node(pt);
+                        let index = ppath.target_index(pt);
+                        let mut weight = 1;
                         if node.ty.contains(|ty| ty.is_any_ptr()) {
-                            weight *= PTR_WEIGHT_FACTOR;
+                            weight *= PTR_ARG_WEIGHT_FACTOR;
                         }
-                        if node.val.is_some() {
+                        if pt.known_val(index).is_some() {
                             weight *= LIT_ARG_WEIGHT_FACTOR;
+                        }
+                        // Encourage isize for pointer offset
+                        if node.ty.contains(|ty| *ty == Ty::ISIZE) {
+                            weight *= LIT_ARG_WEIGHT_FACTOR;
+                        }
+                        if node.ty.is_any_ptr() && pt.offseted(index) {
+                            weight *= OFFSETTED_PTR_WEIGHT_FACTOR;
                         }
                         weight
                     }
@@ -151,20 +167,36 @@ impl PlaceSelector {
                         if ppath.is_return_proj(pt) {
                             weight *= RET_LHS_WEIGH_FACTOR;
                         }
-                        // Avoid assigning to high dataflow places
-                        weight = weight * 1000 / max(pt.get_dataflow(place), 1);
+                        let target = ppath.target_index(pt);
+                        if pt.ty(target).is_any_ptr() && pt.get_offset(target).is_some() {
+                            weight = 0;
+                        }
                         weight
                     }
                     PlaceUsage::Operand => pt.get_dataflow(place),
                     PlaceUsage::Pointee => 1,
                     PlaceUsage::KnownVal => pt.get_dataflow(place),
+                    PlaceUsage::Offsetee => {
+                        assert!(pt.ty(place).is_any_ptr());
+                        if pt.has_offset_roundtripped(place) {
+                            0
+                        } else if pt.offseted(place) {
+                            1
+                        } else {
+                            2
+                        }
+                    }
                 };
 
-                if ppath
-                    .projections(pt)
-                    .any(|proj| matches!(proj, ProjectionElem::Deref))
-                {
+                if ppath.projections(pt).any(|proj| proj.is_deref()) {
                     weight *= DEREF_WEIGHT_FACTOR;
+                }
+
+                if ppath
+                    .nodes(pt)
+                    .any(|place| pt.ty(place).is_any_ptr() && pt.has_offset_roundtripped(place))
+                {
+                    weight *= ROUNDTRIPPED_PTR_WEIGHT_FACTOR;
                 }
 
                 (ppath, weight)

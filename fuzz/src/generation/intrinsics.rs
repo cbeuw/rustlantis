@@ -1,4 +1,9 @@
+use std::borrow::BorrowMut;
+
 use mir::syntax::{Callee, Mutability, Operand, Place, Ty};
+use rand::{seq::IteratorRandom, Rng};
+
+use crate::{literal::GenLiteral, place_select::PlaceSelector};
 
 use super::{GenerationCtx, Result, SelectionError};
 
@@ -42,7 +47,7 @@ impl CoreIntrinsic for Fmaf64 {
     }
 }
 
-struct ArithOffset;
+pub(super) struct ArithOffset;
 impl CoreIntrinsic for ArithOffset {
     fn name(&self) -> &'static str {
         "arith_offset"
@@ -53,12 +58,42 @@ impl CoreIntrinsic for ArithOffset {
     }
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>> {
+        let (ptrs, weights) = PlaceSelector::for_offsetee()
+            .of_ty(dest.ty(ctx.current_decls()))
+            .except(dest)
+            .into_weighted(&ctx.pt)?;
         let ptr = ctx
-            .choose_operand(&[dest.ty(ctx.current_decls())], dest)
+            .make_choice_weighted(ptrs.into_iter(), weights, |ppath| {
+                Ok(ppath.to_place(&ctx.pt))
+            })
             .ok()?;
-        let offset = ctx.choose_operand(&[Ty::ISIZE], dest).ok()?;
 
-        Some(vec![ptr, offset])
+        let offset = ctx.pt.get_offset(&ptr);
+
+        let mut rng = ctx.rng.borrow_mut();
+        let new_offset = match offset {
+            // Don't break roundtripped pointer
+            Some(0) => {
+                return None;
+            }
+            Some(existing) if rng.gen_bool(0.5) => {
+                Operand::Constant((-existing).try_into().unwrap())
+            }
+            _ => PlaceSelector::for_known_val()
+                .of_ty(Ty::ISIZE)
+                .into_iter_place(&ctx.pt)
+                .choose(&mut *rng)
+                .map(|p| Operand::Copy(p))
+                .unwrap_or_else(|| {
+                    Operand::Constant(
+                        rng.borrow_mut()
+                            .gen_literal(&Ty::ISIZE)
+                            .expect("can generate a literal"),
+                    )
+                }),
+        };
+
+        Some(vec![Operand::Copy(ptr), new_offset])
     }
 }
 
@@ -82,7 +117,8 @@ impl CoreIntrinsic for Bswap {
 
 impl GenerationCtx {
     pub fn choose_intrinsic(&self, dest: &Place) -> Result<(Callee, Vec<Operand>)> {
-        let choices: [Box<dyn CoreIntrinsic>; 2] = [Box::new(Fmaf64), Box::new(Bswap)];
+        let choices: [Box<dyn CoreIntrinsic>; 3] =
+            [Box::new(Fmaf64), Box::new(ArithOffset), Box::new(Bswap)];
 
         let intrinsic = self.make_choice(choices.iter(), Result::Ok)?;
         intrinsic.generate_terminator(self, dest)

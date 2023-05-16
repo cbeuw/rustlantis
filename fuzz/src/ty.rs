@@ -27,6 +27,7 @@ impl TyCtxt {
         let p_char = 0.05;
         let p_floats = 0.1;
         let p_ints = 0.1;
+        let p_isize = 0.1;
         let p_checked_binop_tuples = 0.1;
         let p_pointers = 0.3;
 
@@ -51,6 +52,7 @@ impl TyCtxt {
                 Ty::Unit => Some(0.),
                 Ty::Bool => Some(p_bool),
                 Ty::Char => Some(p_char),
+                &Ty::ISIZE => Some(p_isize),
                 Ty::Int(..) => Some(p_ints / Ty::INTS.len() as f32),
                 Ty::Uint(..) => Some(p_ints / Ty::INTS.len() as f32),
                 Ty::Float(..) => Some(p_floats / Ty::FLOATS.len() as f32),
