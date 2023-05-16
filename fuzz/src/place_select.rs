@@ -1,3 +1,5 @@
+use std::cmp::max;
+
 use mir::syntax::{Place, ProjectionElem, Ty};
 use rand_distr::WeightedIndex;
 
@@ -23,11 +25,11 @@ pub struct PlaceSelector {
 
 pub type Weight = usize;
 
-const LHS_WEIGH_FACTOR: Weight = 2;
+const RET_LHS_WEIGH_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 2;
 const LIT_ARG_WEIGHT_FACTOR: Weight = 2;
-const PTR_WEIGHT_FACTOR: Weight = 2;
+const PTR_WEIGHT_FACTOR: Weight = 10;
 
 impl PlaceSelector {
     pub fn for_pointee() -> Self {
@@ -123,12 +125,13 @@ impl PlaceSelector {
     }
 
     pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
-        let (places, weights): (Vec<PlacePath>, Vec<Weight>) = match self.usage {
-            PlaceUsage::Argument => {
-                // Like Operand, but we don't encourage deref to pass in pointers
-                self.into_iter_path(pt)
-                    .map(|ppath| {
-                        let place = ppath.target_index(pt);
+        let usage = self.usage;
+        let (places, weights): (Vec<PlacePath>, Vec<Weight>) = self
+            .into_iter_path(pt)
+            .map(|ppath| {
+                let place = ppath.target_index(pt);
+                let mut weight = match usage {
+                    PlaceUsage::Argument => {
                         let mut weight = pt.get_dataflow(place);
                         let node = ppath.target_node(pt);
                         if node.ty.contains(|ty| ty.is_any_ptr()) {
@@ -137,48 +140,36 @@ impl PlaceSelector {
                         if node.val.is_some() {
                             weight *= LIT_ARG_WEIGHT_FACTOR;
                         }
-                        (ppath, weight)
-                    })
-                    .unzip()
-            }
-            PlaceUsage::LHS => self
-                .into_iter_path(pt)
-                .map(|ppath| {
-                    let place = ppath.target_index(pt);
-                    let mut weight = if !pt.is_place_init(place) {
-                        UNINIT_WEIGHT_FACTOR
-                    } else {
-                        1
-                    };
-                    if ppath.is_return_proj(pt) {
-                        weight *= LHS_WEIGH_FACTOR;
+                        weight
                     }
-                    (ppath, weight)
-                })
-                .unzip(),
-            PlaceUsage::Operand => {
-                self.into_iter_path(pt)
-                    .map(|ppath| {
-                        let place = ppath.target_index(pt);
-                        let mut weight = pt.get_dataflow(place);
-                        if ppath.projections(pt).any(|p| p == ProjectionElem::Deref) {
-                            // Encourage dereference
-                            weight *= DEREF_WEIGHT_FACTOR;
+                    PlaceUsage::LHS => {
+                        let mut weight = if !pt.is_place_init(place) {
+                            UNINIT_WEIGHT_FACTOR
+                        } else {
+                            1
+                        };
+                        if ppath.is_return_proj(pt) {
+                            weight *= RET_LHS_WEIGH_FACTOR;
                         }
-                        (ppath, weight)
-                    })
-                    .unzip()
-            }
-            PlaceUsage::Pointee => self.into_iter_path(pt).map(|ppath| (ppath, 1)).unzip(),
-            PlaceUsage::KnownVal => self
-                .into_iter_path(pt)
-                .map(|ppath| {
-                    let place = ppath.target_index(pt);
-                    let weight = pt.get_dataflow(&place);
-                    (ppath, weight)
-                })
-                .unzip(),
-        };
+                        // Avoid assigning to high dataflow places
+                        weight = weight * 1000 / max(pt.get_dataflow(place), 1);
+                        weight
+                    }
+                    PlaceUsage::Operand => pt.get_dataflow(place),
+                    PlaceUsage::Pointee => 1,
+                    PlaceUsage::KnownVal => pt.get_dataflow(place),
+                };
+
+                if ppath
+                    .projections(pt)
+                    .any(|proj| matches!(proj, ProjectionElem::Deref))
+                {
+                    weight *= DEREF_WEIGHT_FACTOR;
+                }
+
+                (ppath, weight)
+            })
+            .unzip();
         if let Some(weighted_index) = WeightedIndex::new(weights).ok() {
             Some((places, weighted_index))
         } else {
