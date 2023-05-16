@@ -6,7 +6,7 @@ use std::{cmp, vec};
 use log::{debug, trace};
 use mir::serialize::Serialize;
 use mir::syntax::{
-    BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal, Local, LocalDecls,
+    BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, Literal, Local, LocalDecls,
     Mutability, Operand, Place, Program, Rvalue, Statement, SwitchTargets, Terminator, Ty, UnOp,
 };
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
@@ -502,14 +502,32 @@ impl GenerationCtx {
             .current_fn()
             .basic_blocks
             .indices()
-            .skip(1)
+            .skip(1) // avoid the unnamable first bb
             .filter(|&bb| bb != self.current_bb)
             .choose_multiple(self.rng.get_mut(), pick_from_existing);
         assert_eq!(picked.len(), pick_from_existing);
 
-        for _ in 0..new {
+        let copies = self
+            .current_fn()
+            .basic_blocks
+            .indices()
+            .skip(1) // avoid the unnamable first bb
+            .rev()
+            .skip(1) // avoid the current bb
+            .choose_multiple(self.rng.get_mut(), new);
+
+        for i in 0..new {
             let new_bb = self.add_new_bb();
-            self.current_fn_mut().basic_blocks[new_bb].set_terminator(Terminator::Return);
+            if let Some(copied_bb) = copies.get(i) {
+                assert!(!matches!(
+                    self.current_fn().basic_blocks[*copied_bb].terminator(),
+                    Terminator::Hole
+                ));
+                self.current_fn_mut().basic_blocks[new_bb] =
+                    self.current_fn().basic_blocks[*copied_bb].clone();
+            } else {
+                self.current_fn_mut().basic_blocks[new_bb].set_terminator(Terminator::Return);
+            }
             picked.push(new_bb);
         }
 
@@ -651,7 +669,7 @@ impl GenerationCtx {
             self.make_choice_weighted(return_places.into_iter(), weights, |ppath| {
                 Result::Ok(ppath.to_place(&self.pt))
             })?;
-        
+
         self.pt.assign_literal(&return_place, None);
 
         let (callee, args) = self.choose_intrinsic(&return_place)?;

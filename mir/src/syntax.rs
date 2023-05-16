@@ -21,6 +21,7 @@ pub struct Body {
 }
 
 define_index_type! {pub struct BasicBlock = u32;}
+#[derive(Clone)]
 pub struct BasicBlockData {
     pub(crate) statements: Vec<Statement>,
     pub(crate) terminator: Terminator,
@@ -130,11 +131,13 @@ impl ProjectionElem {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum Callee {
     Generated(Function),
     Intrinsic(&'static str),
 }
 
+#[derive(Clone)]
 pub enum Terminator {
     Hole,
     // define!("mir_return", fn Return() -> BasicBlock);
@@ -172,11 +175,13 @@ pub enum Terminator {
     },
 }
 
+#[derive(Clone)]
 pub struct SwitchTargets {
     pub branches: Vec<(u128, BasicBlock)>,
     pub otherwise: BasicBlock,
 }
 
+#[derive(Clone)]
 pub enum Rvalue {
     Use(Operand),
     UnaryOp(UnOp, Operand),
@@ -202,6 +207,7 @@ pub enum Literal {
     Float(f64, FloatTy),
 }
 
+#[derive(Clone)]
 pub enum Operand {
     Copy(Place),
     // define!("mir_move", fn Move<T>(place: T) -> T);
@@ -221,6 +227,7 @@ impl Operand {
     }
 }
 
+#[derive(Clone)]
 pub enum Statement {
     Assign(Place, Rvalue),
     // define!("mir_storage_live", fn StorageLive<T>(local: T));
