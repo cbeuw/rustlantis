@@ -945,9 +945,6 @@ impl GenerationCtx {
             new_bb.identifier(),
             self.current_function.identifier()
         );
-        if self.current_function.index() == 1 && new_bb.index() == 5 {
-            debug!("what");
-        }
         new_bb
     }
 
