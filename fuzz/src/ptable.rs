@@ -610,7 +610,7 @@ impl PlaceTable {
 
         self.places[p].offset = match self.places[p].offset {
             None => Some(offset),
-            Some(o) => Some(offset + o),
+            Some(o) => Some(offset.wrapping_add(o)),
         };
     }
 

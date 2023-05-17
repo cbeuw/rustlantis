@@ -76,7 +76,7 @@ impl CoreIntrinsic for ArithOffset {
             Some(0) => {
                 return None;
             }
-            Some(existing) if rng.gen_bool(0.5) => {
+            Some(existing) if existing.checked_neg().is_some() && rng.gen_bool(0.5) => {
                 Operand::Constant((-existing).try_into().unwrap())
             }
             _ => PlaceSelector::for_known_val()
