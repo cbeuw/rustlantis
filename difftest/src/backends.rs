@@ -164,6 +164,7 @@ impl Backend for LLVM {
 pub struct Miri {
     binary: PathBuf,
     sysroot: PathBuf,
+    check_ub: bool,
 }
 
 impl Miri {
@@ -203,7 +204,10 @@ impl Miri {
         Ok(sysroot)
     }
 
-    pub fn from_repo<P: AsRef<Path>>(miri_dir: P) -> Result<Self, BackendInitError> {
+    pub fn from_repo<P: AsRef<Path>>(
+        miri_dir: P,
+        check_ub: bool,
+    ) -> Result<Self, BackendInitError> {
         let miri_dir = miri_dir.as_ref();
 
         // Detect if Miri already built
@@ -244,13 +248,15 @@ impl Miri {
         Ok(Self {
             binary: miri_dir.join("target/release/miri"),
             sysroot,
+            check_ub,
         })
     }
 
-    pub fn from_binary<P: AsRef<Path>>(binary_path: P, sysroot: P) -> Self {
+    pub fn from_binary<P: AsRef<Path>>(binary_path: P, sysroot: P, check_ub: bool) -> Self {
         Self {
             binary: binary_path.as_ref().to_owned(),
             sysroot: sysroot.as_ref().to_owned(),
+            check_ub,
         }
     }
 }
@@ -258,13 +264,21 @@ impl Miri {
 impl Backend for Miri {
     fn execute(&self, source: &Path) -> ExecResult {
         debug!("Executing {} with Miri", source.to_string_lossy());
-        let miri_out = Command::new(&self.binary)
-            .args([OsStr::new("--sysroot"), self.sysroot.as_os_str()])
-            .arg("-Zmiri-tree-borrows")
-            .arg(source)
+        let mut command = Command::new(&self.binary);
+        if self.check_ub {
+            command.arg("-Zmiri-tree-borrows");
+        } else {
+            command
+                .arg("-Zmiri-disable-stacked-borrows")
+                .arg("-Zmiri-disable-validation")
+                .arg("-Zmiri-disable-alignment-check");
+        }
+        command
+            .arg("-Zmiri-disable-abi-check") // we don't ever generate FFI
             .env_clear()
-            .output()
-            .expect("can run miri and get output");
+            .args([OsStr::new("--sysroot"), self.sysroot.as_os_str()])
+            .arg(source);
+        let miri_out = command.output().expect("can run miri and get output");
         // FIXME: we assume the source always exits with 0, and any non-zero return code
         // came from Miri itself (e.g. UB and type check errors)
         if !miri_out.status.success() {

@@ -38,9 +38,13 @@ fn main() {
     }
 
     if let Ok(miri_dir) = settings.get_string("miri_dir") {
-        let miri = Miri::from_repo(miri_dir);
+        let check_ub = !settings
+            .get_string("miri_check_ub")
+            .is_ok_and(|config| config == "false" || config == "0");
+        let miri = Miri::from_repo(miri_dir, check_ub);
         match miri {
-            Ok(miri) => backends.insert("miri", Box::new(miri)),
+            Ok(miri) if check_ub => backends.insert("miri-checked", Box::new(miri)),
+            Ok(miri) => backends.insert("miri-unchecked", Box::new(miri)),
             Err(e) => panic!("miri init failed\n{}", e.0),
         };
     }

@@ -25,7 +25,7 @@ fn correct_mir() {
     }
 
     if let Ok(miri_dir) = settings.get_string("miri_dir") {
-        let miri = Miri::from_repo(miri_dir);
+        let miri = Miri::from_repo(miri_dir, true);
         match miri {
             Ok(miri) => backends.insert("miri", Box::new(miri)),
             Err(e) => panic!("miri init failed\n{}", e.0),
