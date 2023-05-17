@@ -6,7 +6,7 @@ use std::{cmp, vec};
 use log::{debug, trace};
 use mir::serialize::Serialize;
 use mir::syntax::{
-    BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, Literal, Local, LocalDecls,
+    BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal, Local, LocalDecls,
     Mutability, Operand, Place, Program, Rvalue, Statement, SwitchTargets, Terminator, Ty, UnOp,
 };
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
@@ -684,9 +684,19 @@ impl GenerationCtx {
             let Operand::Copy(ptr) = &args[0] else {
                 unreachable!("first operand is pointer");
             };
-            self.pt.copy_place(&return_place, ptr);
 
-            self.pt.offset_ptr(&return_place, &args[1]);
+            let lit = match &args[1] {
+                Operand::Copy(p) | Operand::Move(p) =>  self.pt.known_val(p).expect("has known value"),
+                Operand::Constant(lit) => lit,
+            };
+
+            let Literal::Int(offset, IntTy::Isize) = lit else {
+                panic!("incorrect offset type");
+            };
+            let offset = *offset as isize;
+
+            self.pt.copy_place(&return_place, ptr);
+            self.pt.offset_ptr(&return_place, offset);
         }
 
         let bb = self.add_new_bb();

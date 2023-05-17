@@ -1,9 +1,7 @@
 use std::vec;
 
 use bimap::BiBTreeMap;
-use mir::syntax::{
-    Body, FieldIdx, IntTy, Literal, Local, Operand, Place, ProjectionElem, Rvalue, Ty,
-};
+use mir::syntax::{Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, Ty};
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
@@ -589,24 +587,9 @@ impl PlaceTable {
         self.places[p].offset
     }
 
-    pub fn offset_ptr(&mut self, p: impl ToPlaceIndex, offset: &Operand) {
+    pub fn offset_ptr(&mut self, p: impl ToPlaceIndex, offset: isize) {
         let p = p.to_place_index(self).expect("place exists");
         assert!(self.places[p].ty.is_any_ptr());
-
-        let lit = match offset {
-            Operand::Copy(p) | Operand::Move(p) => self.places
-                [p.to_place_index(self).expect("place exists")]
-            .val
-            .as_ref()
-            .expect("has known value"),
-            Operand::Constant(lit) => lit,
-        };
-
-        let Literal::Int(offset, IntTy::Isize) = lit else {
-            panic!("incorrect offset type");
-        };
-
-        let offset = *offset as isize;
 
         self.places[p].offset = match self.places[p].offset {
             None => Some(offset),
