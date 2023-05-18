@@ -126,8 +126,14 @@ impl PlaceSelector {
                 true
             };
 
+            let not_ret_ptr = if self.usage == PlaceUsage::Pointee {
+                !pt.overlap(index, Place::RETURN_SLOT)
+            } else {
+                true
+            };
+
             // FIXME: are we allowed to use moved-from places?
-            live && ty_allowed && not_excluded && initness_allowed && literalness
+            live && ty_allowed && not_excluded && initness_allowed && literalness && not_ret_ptr
         })
     }
 
