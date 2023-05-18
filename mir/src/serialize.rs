@@ -176,6 +176,7 @@ impl Serialize for Terminator {
                     .collect();
                 let fn_name = match callee {
                     Callee::Generated(func) => func.identifier(),
+                    Callee::Named(func) => func.to_string(),
                     Callee::Intrinsic(func) => format!("core::intrinsics::{func}"),
                 };
                 format!(
@@ -235,6 +236,7 @@ impl Serialize for Body {
 impl Serialize for Program {
     fn serialize(&self) -> String {
         let mut program = Program::HEADER.to_string();
+        program += Program::PRINTER;
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
             format!(
                 "{}\n{}fn {}({}) -> {} {{\n{}\n}}\n",
@@ -263,6 +265,9 @@ impl Serialize for Program {
         program.push_str(&format!(
             "pub fn main() {{
                 println!(\"{{:?}}\", {first_fn}({arg_list}));
+                unsafe {{
+                    println!(\"hash: {{}}\", H.finish());
+                }}
             }}"
         ));
         program

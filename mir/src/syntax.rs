@@ -134,6 +134,7 @@ impl ProjectionElem {
 #[derive(Clone, Copy)]
 pub enum Callee {
     Generated(Function),
+    Named(&'static str),
     Intrinsic(&'static str),
 }
 
@@ -428,6 +429,11 @@ impl Ty {
             _ => None,
         }
     }
+
+    // If doesn't contain printer
+    pub fn determ_printable(&self) -> bool {
+        !self.contains(|ty| matches!(ty, Ty::RawPtr(..)))
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
@@ -574,10 +580,35 @@ impl Program {
     pub const FUNCTION_ATTRIBUTE: &str =
         "#[custom_mir(dialect = \"runtime\", phase = \"initial\")]";
     pub const HEADER: &str = "#![recursion_limit = \"256\"]
-    #![feature(custom_mir, core_intrinsics)]
+    #![feature(custom_mir, core_intrinsics, const_hash)]
     #![allow(unused_parens, unused_assignments, overflowing_literals)]
     extern crate core;
     use core::intrinsics::mir::*;\n";
+
+    pub const PRINTER: &str = r#"
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    static mut H: DefaultHasher = DefaultHasher::new();
+
+    fn dump_var<T: Hash, U: Hash, V: Hash, W: Hash>(
+        val0: T,
+        val1: U,
+        val2: V,
+        val3: W,
+    ) {
+        unsafe {
+            val0.hash(&mut H);
+            val1.hash(&mut H);
+            val2.hash(&mut H);
+            val3.hash(&mut H);
+        }
+    }
+    "#;
+
+    // Fake "intrinsic"
+    pub const DUMPER_CALL: Callee = Callee::Named("dump_var");
+    pub const DUMPER_ARITY: usize = 4;
 
     // A new, empty function
     pub fn new() -> Self {

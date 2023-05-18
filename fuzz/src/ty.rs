@@ -29,7 +29,7 @@ impl TyCtxt {
         let p_ints = 0.1;
         let p_isize = 0.1;
         let p_checked_binop_tuples = 0.1;
-        let p_pointers = 0.3;
+        let p_pointers = 0.2;
 
         let checked_binary_op_lhs_count = tys
             .iter()

@@ -9,6 +9,7 @@ use mir::syntax::{
     BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal, Local, LocalDecls,
     Mutability, Operand, Place, Program, Rvalue, Statement, SwitchTargets, Terminator, Ty, UnOp,
 };
+use rand::seq::SliceRandom;
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
 use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
@@ -25,6 +26,7 @@ const BB_MAX_LEN: usize = 32;
 /// Max. number of switch targets in a SwitchInt terminator
 const MAX_SWITCH_TARGETS: usize = 8;
 const MAX_FN_COUNT: usize = 50;
+const VAR_DUMP_CHANCE: f32 = 0.5;
 
 #[derive(Debug)]
 pub enum SelectionError {
@@ -720,6 +722,54 @@ impl GenerationCtx {
             return Err(SelectionError::Exhausted);
         }
 
+        // Dump vars
+        let unit = self.declare_new_var(Mutability::Not, Ty::Unit);
+        let unit2 = self.declare_new_var(Mutability::Not, Ty::Unit);
+
+        let dumpable: Vec<Local> = self
+            .current_fn()
+            .args_decl_iter()
+            .chain(self.current_fn().vars_decl_iter())
+            .filter_map(|(local, decl)| {
+                (decl.ty.determ_printable()
+                    && !decl.ty.contains(|ty| ty == &Ty::F32 || ty == &Ty::F64)
+                    && decl.ty != Ty::Unit
+                    && self.pt.is_place_init(local))
+                .then_some(local)
+            })
+            .collect();
+        let dump_count = (dumpable.len() as f32 * VAR_DUMP_CHANCE) as usize;
+        // TODO: weight this?
+        let dumpped: Vec<Local> = dumpable
+            .choose_multiple(self.rng.get_mut(), dump_count)
+            .copied()
+            .collect();
+
+        let new_bb = self.add_new_bb();
+        self.current_bb_mut()
+            .set_terminator(Terminator::Goto { target: new_bb });
+        self.enter_bb(new_bb);
+
+        for vars in dumpped.chunks(Program::DUMPER_ARITY) {
+            let new_bb = self.add_new_bb();
+            let mut args = Vec::with_capacity(Program::DUMPER_ARITY);
+            for var in vars {
+                args.push(Operand::Move(Place::from_local(*var)));
+            }
+
+            while args.len() < Program::DUMPER_ARITY {
+                args.push(Operand::Copy(Place::from_local(unit2)));
+            }
+
+            self.current_bb_mut().set_terminator(Terminator::Call {
+                callee: Program::DUMPER_CALL,
+                destination: Place::from_local(unit),
+                target: new_bb,
+                args,
+            });
+            self.enter_bb(new_bb);
+        }
+
         self.current_bb_mut().set_terminator(Terminator::Return);
         Ok(self.exit_fn())
     }
@@ -988,9 +1038,7 @@ impl GenerationCtx {
 
         let return_ty = self
             .tcx
-            .choose_ty_filtered(&mut *self.rng.borrow_mut(), |ty| {
-                !ty.contains(|ty| matches!(ty, Ty::RawPtr(..)))
-            });
+            .choose_ty_filtered(&mut *self.rng.borrow_mut(), Ty::determ_printable);
         self.enter_fn0(&arg_tys, return_ty, &arg_literals);
 
         loop {
