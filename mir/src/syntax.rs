@@ -8,6 +8,7 @@ use crate::serialize::Serialize;
 pub struct Program {
     pub functions: IndexVec<Function, Body>,
     pub entry_args: Vec<Literal>,
+    pub use_debug_dumper: bool,
 }
 
 pub type LocalDecls = IndexVec<Local, LocalDecl>;
@@ -585,7 +586,7 @@ impl Program {
     extern crate core;
     use core::intrinsics::mir::*;\n";
 
-    pub const PRINTER: &str = r#"
+    pub const DUMPER: &str = r#"
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -606,15 +607,30 @@ impl Program {
     }
     "#;
 
+    pub const DEBUG_DUMPER: &str = r#"
+    use std::fmt::Debug;
+
+    #[inline(never)]
+    pub fn dump_var<T: Debug, U: Debug, V: Debug, W: Debug>(f: usize,
+        var0: usize, val0: T,
+        var1: usize, val1: U,
+        var2: usize, val2: V,
+        var3: usize, val3: W,
+    ) {
+        println!("fn{f}:_{var0} = {val0:?}\n_{var1} = {val1:?}\n_{var2} = {val2:?}\n_{var3} = {val3:?}");
+    }
+    "#;
+
     // Fake "intrinsic"
     pub const DUMPER_CALL: Callee = Callee::Named("dump_var");
     pub const DUMPER_ARITY: usize = 4;
 
     // A new, empty function
-    pub fn new() -> Self {
+    pub fn new(debug: bool) -> Self {
         Self {
             functions: IndexVec::default(),
             entry_args: vec![],
+            use_debug_dumper: debug,
         }
     }
 

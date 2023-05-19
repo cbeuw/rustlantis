@@ -236,7 +236,11 @@ impl Serialize for Body {
 impl Serialize for Program {
     fn serialize(&self) -> String {
         let mut program = Program::HEADER.to_string();
-        program += Program::PRINTER;
+        if self.use_debug_dumper {
+            program += Program::DEBUG_DUMPER;
+        } else {
+            program += Program::DUMPER;
+        }
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
             format!(
                 "{}\n{}fn {}({}) -> {} {{\n{}\n}}\n",
@@ -262,12 +266,20 @@ impl Serialize for Program {
             .expect("program has functions")
             .identifier();
 
+        let hash_printer = if self.use_debug_dumper {
+            ""
+        } else {
+            r#"
+                unsafe {
+                    println!("hash: {}", H.finish());
+                }
+            "#
+        };
+
         program.push_str(&format!(
             "pub fn main() {{
                 println!(\"{{:?}}\", {first_fn}({arg_list}));
-                unsafe {{
-                    println!(\"hash: {{}}\", H.finish());
-                }}
+                {hash_printer}
             }}"
         ));
         program

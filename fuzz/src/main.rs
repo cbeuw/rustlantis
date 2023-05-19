@@ -14,7 +14,7 @@ mod place_select;
 mod ptable;
 mod ty;
 
-use std::env::args;
+use std::env::{self, args};
 
 use log::info;
 use mir::serialize::Serialize;
@@ -26,7 +26,8 @@ fn main() {
 
     let seed: u64 = args().nth(1).unwrap().parse().unwrap();
     info!("Generating a program with seed {seed}");
-    let genctxt = GenerationCtx::new(seed);
+    let debug_dump = env::var("RUSTLANTIS_DEBUG").is_ok_and(|v| v == "true" || v == "1");
+    let genctxt = GenerationCtx::new(seed, debug_dump);
     let program = genctxt.generate();
     println!("{}", program.serialize());
 }

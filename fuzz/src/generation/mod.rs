@@ -731,15 +731,33 @@ impl GenerationCtx {
 
         for vars in dumpped.chunks(Program::DUMPER_ARITY) {
             let new_bb = self.add_new_bb();
-            let mut args = Vec::with_capacity(Program::DUMPER_ARITY);
-            for var in vars {
-                args.push(Operand::Move(Place::from_local(*var)));
-            }
 
-            while args.len() < Program::DUMPER_ARITY {
-                args.push(Operand::Copy(Place::from_local(unit2)));
-            }
+            let args = if self.program.use_debug_dumper {
+                let mut args = Vec::with_capacity(1 + Program::DUMPER_ARITY * 2);
+                args.push(Operand::Constant(
+                    self.current_function.index().try_into().unwrap(),
+                ));
+                for var in vars {
+                    args.push(Operand::Constant(var.index().try_into().unwrap()));
+                    args.push(Operand::Move(Place::from_local(*var)));
+                }
 
+                while args.len() < 1 + Program::DUMPER_ARITY * 2 {
+                    args.push(Operand::Constant(unit2.index().try_into().unwrap()));
+                    args.push(Operand::Copy(Place::from_local(unit2)));
+                }
+                args
+            } else {
+                let mut args = Vec::with_capacity(Program::DUMPER_ARITY);
+                for var in vars {
+                    args.push(Operand::Move(Place::from_local(*var)));
+                }
+
+                while args.len() < Program::DUMPER_ARITY {
+                    args.push(Operand::Copy(Place::from_local(unit2)));
+                }
+                args
+            };
             self.current_bb_mut().set_terminator(Terminator::Call {
                 callee: Program::DUMPER_CALL,
                 destination: Place::from_local(unit),
@@ -952,14 +970,14 @@ impl GenerationCtx {
         }
     }
 
-    pub fn new(seed: u64) -> Self {
+    pub fn new(seed: u64, debug_dump: bool) -> Self {
         let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(seed)));
         let tcx = TyCtxt::new(&mut *rng.borrow_mut());
         // TODO: don't zero-initialize current_function and current_bb
         Self {
             rng,
             tcx,
-            program: Program::new(),
+            program: Program::new(debug_dump),
             pt: PlaceTable::new(),
             return_stack: vec![],
             current_function: Function::new(0),
