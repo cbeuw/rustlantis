@@ -173,29 +173,7 @@ impl GenerationCtx {
                     )?;
                     (l, r)
                 }
-                Eq | Ne => {
-                    // neither left or right operand needs to be the sme type as lhs
-                    let tys: Vec<Ty> = self
-                        .tcx
-                        .iter()
-                        .filter(|ty| {
-                            matches!(
-                                ty,
-                                Ty::Bool
-                                    | Ty::Char
-                                    | Ty::Int(..)
-                                    | Ty::Uint(..)
-                                    | Ty::Float(..)
-                                    | Ty::RawPtr(..)
-                            )
-                        })
-                        .cloned()
-                        .collect();
-                    let l = self.choose_operand(&tys, lhs)?;
-                    let r = self.choose_operand(&[l.ty(self.current_decls())], lhs)?;
-                    (l, r)
-                }
-                Lt | Le | Ge | Gt => {
+                Eq | Ne | Lt | Le | Ge | Gt => {
                     // neither left or right operand needs to be the sme type as lhs
                     let tys = [
                         Ty::Bool,
