@@ -25,7 +25,8 @@ use crate::generation::intrinsics::CoreIntrinsic;
 const BB_MAX_LEN: usize = 32;
 /// Max. number of switch targets in a SwitchInt terminator
 const MAX_SWITCH_TARGETS: usize = 8;
-const MAX_FN_COUNT: usize = 50;
+const MAX_BB_COUNT: usize = 15;
+const MAX_FN_COUNT: usize = 20;
 const VAR_DUMP_CHANCE: f32 = 0.5;
 
 #[derive(Debug)]
@@ -757,16 +758,16 @@ impl GenerationCtx {
         assert!(matches!(self.current_bb().terminator(), Terminator::Hole));
         if self.pt.is_place_init(Place::RETURN_SLOT) {
             if Place::RETURN_SLOT.dataflow(&self.pt) > 10
-                || self.current_fn().basic_blocks.len() >= 32
+                || self.current_fn().basic_blocks.len() >= MAX_BB_COUNT
             {
                 return self.generate_return().unwrap();
             }
         }
 
         let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> = vec![
-            (Self::generate_goto, 50),
-            (Self::generate_switch_int, 50),
-            (Self::generate_intrinsic_call, 50),
+            (Self::generate_goto, 20),
+            (Self::generate_switch_int, 20),
+            (Self::generate_intrinsic_call, 20),
             (
                 Self::generate_call,
                 MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
