@@ -207,6 +207,7 @@ pub enum Literal {
     Tuple(Vec<Literal>),
     // Every f32 can be expressed exactly as f64
     Float(f64, FloatTy),
+    Array(Box<Literal>, usize),
 }
 
 #[derive(Clone)]
@@ -293,6 +294,7 @@ pub enum Ty {
     Tuple(Vec<Ty>),
     // User-defined
     Adt(Adt),
+    Array(Box<Ty>, usize),
     // TODO: more types
 }
 
@@ -388,8 +390,10 @@ impl Ty {
                         self.tuple_elems().expect("is a tuple")[idx.index()].clone()
                     }
                     ProjectionElem::Downcast(_) => self.clone(),
-                    ProjectionElem::Index(_) => todo!(),
-                    ProjectionElem::ConstantIndex { .. } => todo!(),
+                    ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } => match self {
+                        Ty::Array(ty, ..) => *ty.clone(),
+                        _ => panic!("not an array"),
+                    },
                     ProjectionElem::Field(_) => todo!(),
                 };
                 projected.projected_ty(tail)
@@ -407,6 +411,7 @@ impl Ty {
         match self {
             Ty::Tuple(elems) => elems.iter().any(|ty| ty.contains(predicate)),
             Ty::RawPtr(pointee, _) => pointee.contains(predicate),
+            Ty::Array(ty, ..) => ty.contains(predicate),
             Ty::Adt(_) => todo!(),
             _ => false,
         }
@@ -484,6 +489,7 @@ impl Literal {
             Literal::Char(_) => Ty::Char,
             Literal::Tuple(elems) => Ty::Tuple(elems.iter().map(|lit| lit.ty()).collect()),
             Literal::Float(_, ty) => Ty::Float(*ty),
+            Literal::Array(lit, len) => Ty::Array(Box::new(lit.ty()), *len),
         }
     }
 }

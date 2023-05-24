@@ -70,6 +70,10 @@ impl RunAndOffset {
     pub fn same_run(&self, other: &Self) -> bool {
         self.0 == other.0
     }
+
+    pub fn offset(&self, offset: isize) -> Self {
+        Self(self.0, Size::from_bytes(self.1.bytes() as isize + offset))
+    }
 }
 struct Allocation {
     /// The data stored in this allocation.
@@ -220,6 +224,9 @@ impl BasicMemory {
             Ty::F32 => Size::from_bits(32),
             Ty::F64 => Size::from_bits(64),
             Ty::RawPtr(..) | Ty::ISIZE | Ty::USIZE => Self::PTR_SIZE,
+            Ty::Array(ref ty, len) => {
+                return Self::ty_size(ty).map(|elem| Size::from_bytes(elem.bytes_usize() * len))
+            }
             _ => return None,
         })
     }

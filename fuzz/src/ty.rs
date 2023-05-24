@@ -10,6 +10,9 @@ use mir::{
 use rand::{seq::IteratorRandom, Rng};
 use rand_distr::{Distribution, Poisson, WeightedIndex};
 
+const TUPLE_MAX_LEN: usize = 12;
+pub const ARRAY_MAX_LEN: usize = 8;
+
 pub struct TyCtxt {
     tys: IndexVec<TyId, Ty>,
     weights: WeightedIndex<f32>,
@@ -28,13 +31,7 @@ impl TyCtxt {
         let p_floats = 0.1;
         let p_ints = 0.1;
         let p_isize = 0.1;
-        let p_checked_binop_tuples = 0.1;
         let p_pointers = 0.2;
-
-        let checked_binary_op_lhs_count = tys
-            .iter()
-            .filter(|ty| ty.is_checked_binary_op_lhs())
-            .count();
 
         // Types with special treatment as we want to increase their weighting
         let mut weights: BTreeMap<TyId, f32> = BTreeMap::new();
@@ -56,9 +53,6 @@ impl TyCtxt {
                 Ty::Int(..) => Some(p_ints / Ty::INTS.len() as f32),
                 Ty::Uint(..) => Some(p_ints / Ty::INTS.len() as f32),
                 Ty::Float(..) => Some(p_floats / Ty::FLOATS.len() as f32),
-                tup @ Ty::Tuple(..) if tup.is_checked_binary_op_lhs() => {
-                    Some(p_checked_binop_tuples / checked_binary_op_lhs_count as f32)
-                }
                 _ if ty.contains(|ty| ty.is_any_ptr()) => Some(p_pointers / num_ptrs as f32),
                 _ => None,
             };
@@ -89,7 +83,7 @@ impl TyCtxt {
         WeightedIndex::new(weights.values()).expect("can produce weighted index")
     }
 
-    fn seed_tys(rng: &mut impl Rng) -> IndexVec<TyId, Ty> {
+    fn seed_tys<R: Rng>(rng: &mut R) -> IndexVec<TyId, Ty> {
         // Seed with primitives
         let mut tys: IndexVec<TyId, Ty> = IndexVec::new();
         let primitives = [
@@ -114,17 +108,12 @@ impl TyCtxt {
             tys.push(ty.clone());
         });
 
-        for ty in Vec::from_iter(Ty::INTS.into_iter().chain(Ty::UINTS).chain(Ty::FLOATS)) {
-            tys.push(Ty::Tuple(vec![ty, Ty::Bool]));
-        }
-
         // Generate composite types
-        let count = rng.gen_range(0..=16);
-        for _ in 0..count {
-            let new_ty = match rng.gen_range(0..=1) {
+        for _ in 0..=32 {
+            let new_ty = match rng.gen_range(0..=2) {
                 0 => Ty::Tuple({
                     let dist = Poisson::<f32>::new(2.7).unwrap();
-                    let length = dist.sample(rng).clamp(1., 12.) as usize;
+                    let length = dist.sample(rng).clamp(1., TUPLE_MAX_LEN as f32) as usize;
                     (0..length)
                         .map(|_| tys.iter().choose(rng).unwrap().clone())
                         .collect()
@@ -136,6 +125,16 @@ impl TyCtxt {
                     } else {
                         Mutability::Not
                     },
+                ),
+                2 => Ty::Array(
+                    Box::new(
+                        tys.iter()
+                            .filter(|ty| ty.is_scalar())
+                            .choose(rng)
+                            .unwrap()
+                            .clone(),
+                    ),
+                    rng.gen_range(1..=ARRAY_MAX_LEN),
                 ),
                 // 2 => Ty::Adt(todo!()),
                 _ => unreachable!(),

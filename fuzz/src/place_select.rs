@@ -182,16 +182,7 @@ impl PlaceSelector {
                     PlaceUsage::Operand => pt.get_dataflow(place),
                     PlaceUsage::Pointee => 1,
                     PlaceUsage::KnownVal => pt.get_dataflow(place),
-                    PlaceUsage::Offsetee => {
-                        assert!(pt.ty(place).is_any_ptr());
-                        if pt.has_offset_roundtripped(place) {
-                            0
-                        } else if pt.offseted(place) {
-                            1
-                        } else {
-                            2
-                        }
-                    }
+                    PlaceUsage::Offsetee => 1, 
                 };
 
                 if ppath.projections(pt).any(|proj| proj.is_deref()) {

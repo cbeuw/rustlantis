@@ -2,12 +2,24 @@ use mir::syntax::{Literal, Ty};
 use rand::{seq::SliceRandom, Rng, RngCore};
 use rand_distr::Distribution;
 
+use crate::ty::ARRAY_MAX_LEN;
+
 struct Sombrero;
+
+impl Distribution<usize> for Sombrero {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> usize {
+        match rng.gen_range(0..=1) {
+            0 => rng.gen_range(0..ARRAY_MAX_LEN),
+            1 => rng.gen_range(usize::MIN..=usize::MAX),
+            _ => unreachable!(),
+        }
+    }
+}
 
 impl Distribution<isize> for Sombrero {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> isize {
-        match rng.gen_range(0..2) {
-            0 => rng.gen_range(-128..127),
+        match rng.gen_range(0..=2) {
+            0 => rng.gen_range(-128..=127),
             1 => isize::MIN,
             2 => isize::MAX,
             _ => unreachable!(),
@@ -19,6 +31,7 @@ pub trait GenLiteral: Rng {
     fn is_literalble(ty: &Ty) -> bool {
         match *ty {
             Ty::Tuple(ref elems) => elems.iter().all(Ty::is_scalar),
+            Ty::Array(ref ty, ..) => ty.is_scalar(),
             _ => ty.is_scalar(),
         }
     }
@@ -35,21 +48,18 @@ pub trait GenLiteral: Rng {
                     char::from_u32(ordinal - 0xD800 + 0xE000).unwrap().into()
                 }
             }
-            Ty::USIZE => self
-                .gen_range(usize::MIN..=usize::MAX)
-                .try_into()
-                .expect("usize isn't greater than 128 bits"),
+            Ty::USIZE => {
+                let i: usize = Sombrero.sample(self);
+                i.try_into().expect("usize isn't greater than 128 bits")
+            }
             Ty::U8 => self.gen_range(u8::MIN..=u8::MAX).into(),
             Ty::U16 => self.gen_range(u16::MIN..=u16::MAX).into(),
             Ty::U32 => self.gen_range(u32::MIN..=u32::MAX).into(),
             Ty::U64 => self.gen_range(u64::MIN..=u64::MAX).into(),
             Ty::U128 => self.gen_range(u128::MIN..=u128::MAX).into(),
             Ty::ISIZE => {
-                let distr = Sombrero;
-                distr
-                    .sample(self)
-                    .try_into()
-                    .expect("isize isn't greater than 128 bits")
+                let i: isize = Sombrero.sample(self);
+                i.try_into().expect("isize isn't greater than 128 bits")
             }
             Ty::I8 => self.gen_range(i8::MIN..=i8::MAX).into(),
             Ty::I16 => self.gen_range(i16::MIN..=i16::MAX).into(),
@@ -63,6 +73,11 @@ pub trait GenLiteral: Rng {
                 let lits: Option<Vec<Literal>> =
                     elems.iter().map(|ty| self.gen_literal(ty)).collect();
                 return lits.map(|lits| Literal::Tuple(lits));
+            }
+            Ty::Array(ref ty, len) if ty.is_scalar() => {
+                return self
+                    .gen_literal(&ty)
+                    .map(|lit| Literal::Array(Box::new(lit), len))
             }
             _ => return None,
         };

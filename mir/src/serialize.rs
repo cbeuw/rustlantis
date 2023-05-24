@@ -38,6 +38,9 @@ impl Serialize for Ty {
                     format!("({})", elems.as_slice().serialize())
                 }
             }
+            Self::Array(ty, len) => {
+                format!("[{}; {len}]", ty.serialize())
+            }
         }
     }
 }
@@ -49,7 +52,7 @@ impl Serialize for Place {
             ProjectionElem::Deref => format!("(*{acc})"),
             ProjectionElem::TupleField(id) => format!("{acc}.{}", id.index()),
             ProjectionElem::Field(_) => todo!(),
-            ProjectionElem::Index(_) => todo!(),
+            ProjectionElem::Index(local) => format!("{acc}[{}]", local.identifier()),
             ProjectionElem::Downcast(_) => todo!(),
             ProjectionElem::ConstantIndex { offset } => format!("{acc}[{offset}]"),
         })
@@ -91,6 +94,7 @@ impl Serialize for Literal {
                         .collect::<String>()
                 ),
             },
+            Literal::Array(lit, len) => format!("[{}; {len}]", lit.serialize()),
         }
     }
 }
