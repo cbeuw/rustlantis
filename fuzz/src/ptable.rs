@@ -342,31 +342,42 @@ impl PlaceTable {
     }
 
     /// Call update on all transitive superfields of start, *excluding* start
-    fn update_transitive_superfields<F>(&mut self, start: PlaceIndex, mut update: F)
+    fn update_transitive_superfields<F>(&mut self, start: PlaceIndex, mut visit: F)
     where
-        F: FnMut(&mut Self, PlaceIndex) -> bool + Copy,
+        F: FnMut(&mut Self, PlaceIndex) -> bool,
     {
-        let supers: Vec<PlaceIndex> = self.immediate_superfields(start).collect();
-        for place in supers {
-            let cont = update(self, place);
+        let mut to_visit: Vec<NodeIndex> = self.immediate_superfields(start).collect();
+        while let Some(node) = to_visit.pop() {
+            let cont = visit(self, node);
             if cont {
-                self.update_transitive_superfields(place, update);
-            } else {
-                continue;
+                to_visit.extend(self.immediate_superfields(node));
             }
         }
     }
 
-    /// Call update on all transitive subfields of start, *including* start
-    fn update_transitive_subfields<F>(&mut self, start: PlaceIndex, mut update: F)
+    /// Call visit on all transitive subfields of start, *including* start
+    fn update_transitive_subfields<F>(&mut self, start: PlaceIndex, mut visit: F)
     where
-        F: FnMut(&mut Self, PlaceIndex) -> bool + Copy,
+        F: FnMut(&mut Self, PlaceIndex) -> bool,
     {
-        let cont = update(self, start);
-        if cont {
-            let subs: Vec<PlaceIndex> = self.immediate_subfields(start).collect();
-            for place in subs {
-                self.update_transitive_subfields(place, update);
+        let mut to_visit = vec![start];
+        while let Some(node) = to_visit.pop() {
+            let cont = visit(self, node);
+            if cont {
+                to_visit.extend(self.immediate_subfields(node));
+            }
+        }
+    }
+
+    fn visit_transitive_subfields<F>(&self, start: PlaceIndex, mut visit: F)
+    where
+        F: FnMut(PlaceIndex) -> bool,
+    {
+        let mut to_visit = vec![start];
+        while let Some(node) = to_visit.pop() {
+            let cont = visit(node);
+            if cont {
+                to_visit.extend(self.immediate_subfields(node));
             }
         }
     }
@@ -540,7 +551,7 @@ impl PlaceTable {
     // Returns an iterator over all places reachable from local through projections
     fn reachable_from_local(&self, local: Local) -> ProjectionIter<'_> {
         let local_node = *self.current_locals().get_by_left(&local).unwrap();
-        ProjectionIter::new(self, local_node, true, true)
+        ProjectionIter::new(self, local_node)
     }
 
     pub fn reachable_nodes(&self) -> impl Iterator<Item = PlacePath> + Clone + '_ {
@@ -561,11 +572,19 @@ impl PlaceTable {
             return false;
         }
 
-        let a_sub = ProjectionIter::new(self, a, true, false).map(|ppath| ppath.target_index(self));
-        let b_sub: Vec<_> = ProjectionIter::new(self, b, true, false)
-            .map(|ppath| ppath.target_index(self))
-            .collect();
+        let mut a_sub: Vec<PlaceIndex> = vec![];
+        self.visit_transitive_subfields(a, |sub| {
+            a_sub.push(sub);
+            true
+        });
 
+        let mut b_sub: Vec<PlaceIndex> = vec![];
+        self.visit_transitive_subfields(b, |sub| {
+            b_sub.push(sub);
+            true
+        });
+
+        // TODO: should I use a hashmap here?
         for a_node in a_sub {
             for b_node in &b_sub {
                 if a_node == *b_node {
@@ -750,7 +769,7 @@ impl PlacePath {
     }
 }
 
-/// A depth-first iterator over all projections from a local variable
+/// A depth-first iterator over all reachable projections from a local variable
 /// FIXME: this breaks if there's a reference cycle in the graph
 #[derive(Clone)]
 pub struct ProjectionIter<'pt> {
@@ -766,7 +785,7 @@ pub struct ProjectionIter<'pt> {
 }
 
 impl<'pt> ProjectionIter<'pt> {
-    fn new(pt: &'pt PlaceTable, root: PlaceIndex, visit_root: bool, follow_deref: bool) -> Self {
+    fn new(pt: &'pt PlaceTable, root: PlaceIndex) -> Self {
         let known_vals = HashMap::from_iter(pt.local_by_knownval());
         ProjectionIter {
             pt,
@@ -780,14 +799,14 @@ impl<'pt> ProjectionIter<'pt> {
                         return None;
                     }
 
-                    if e.weight().is_deref() && (!follow_deref || pt.offseted(e.source())) {
+                    if e.weight().is_deref() && pt.offseted(e.source()) {
                         return None;
                     }
 
                     Some((e.id(), 1))
                 })
                 .collect(),
-            root_visited: !visit_root,
+            root_visited: false,
             known_vals,
         }
     }
