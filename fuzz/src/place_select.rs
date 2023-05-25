@@ -182,7 +182,7 @@ impl PlaceSelector {
                     PlaceUsage::Operand => pt.get_dataflow(place),
                     PlaceUsage::Pointee => 1,
                     PlaceUsage::KnownVal => pt.get_dataflow(place),
-                    PlaceUsage::Offsetee => 1, 
+                    PlaceUsage::Offsetee => 1,
                 };
 
                 if ppath.projections(pt).any(|proj| proj.is_deref()) {

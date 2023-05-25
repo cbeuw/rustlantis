@@ -1,4 +1,4 @@
-use std::{vec, collections::HashMap};
+use std::{collections::HashMap, vec};
 
 use bimap::BiBTreeMap;
 use mir::syntax::{
@@ -288,29 +288,28 @@ impl PlaceTable {
         if let Some(run_ptr) = src_node.run_ptr {
             self.memory
                 .copy(dst_node.run_ptr.expect("dst is terminal"), run_ptr);
+        }
 
-            if dst_node.ty.is_any_ptr() {
-                if let Some(pointee) = self.pointee(src) {
-                    self.set_ref(dst, pointee);
-                }
-                self.places[dst].offset = self.places[src].offset;
+        if dst_node.ty.is_any_ptr() {
+            if let Some(pointee) = self.pointee(src) {
+                self.set_ref(dst, pointee);
             }
-        } else {
-            let projs: Vec<_> = self
-                .places
-                .edges_directed(dst, Direction::Outgoing)
-                .filter_map(|e| (!e.weight().is_deref()).then_some(e.weight()))
-                .copied()
-                .collect();
-            for proj in projs {
-                let new_dst = self
-                    .project_from_node(dst, proj)
-                    .expect("projection exists");
-                let new_src = self
-                    .project_from_node(src, proj)
-                    .expect("projection exists");
-                self.copy_place(new_dst, new_src);
-            }
+            self.places[dst].offset = self.places[src].offset;
+        }
+        let projs: Vec<_> = self
+            .places
+            .edges_directed(dst, Direction::Outgoing)
+            .filter_map(|e| (!e.weight().is_deref()).then_some(e.weight()))
+            .copied()
+            .collect();
+        for proj in projs {
+            let new_dst = self
+                .project_from_node(dst, proj)
+                .expect("projection exists");
+            let new_src = self
+                .project_from_node(src, proj)
+                .expect("projection exists");
+            self.copy_place(new_dst, new_src);
         }
     }
 
@@ -583,20 +582,38 @@ impl PlaceTable {
         let node = &mut self.places[p];
         node.val = val.clone();
 
-        if let Ty::Tuple(tys) = &node.ty {
-            for i in 0..tys.len() {
-                let child = self
-                    .project_from_node(p, ProjectionElem::TupleField(i.into()))
-                    .expect("elem exists");
-                let elem = val.as_ref().map(|tup| {
-                    let Literal::Tuple(elems) = tup else {
-                        panic!("literal is also a tuple");
-                    };
-                    &elems[i]
-                });
-                // This doesn't have to be recursive
-                self.assign_literal(child, elem.cloned());
+        match &node.ty {
+            Ty::Tuple(tys) => {
+                for i in 0..tys.len() {
+                    let child = self
+                        .project_from_node(p, ProjectionElem::TupleField(i.into()))
+                        .expect("elem exists");
+                    let elem = val.as_ref().map(|tup| {
+                        let Literal::Tuple(elems) = tup else {
+                            panic!("literal is also a tuple");
+                        };
+                        &elems[i]
+                    });
+                    // This doesn't have to be recursive
+                    self.assign_literal(child, elem.cloned());
+                }
             }
+            Ty::Array(_, len) => {
+                for i in 0..*len {
+                    let child = self
+                        .project_from_node(p, ProjectionElem::ConstantIndex { offset: i as u64 })
+                        .expect("child exists");
+                    let init = val.as_ref().map(|arr| {
+                        let Literal::Array(init, ..) = arr else {
+                            panic!("literal is also an array");
+                        };
+                        *init.clone()
+                    });
+                    self.places[child].val = init;
+                }
+            }
+            Ty::Adt(..) => todo!(),
+            _ => {}
         }
     }
 
@@ -653,7 +670,7 @@ impl PlaceTable {
     fn local_by_knownval(&self) -> impl Iterator<Item = (usize, Local)> + '_ {
         self.current_locals().iter().filter_map(|(local, pidx)| {
             if let Some(lit) = self.known_val(pidx) && let Literal::Uint(i, UintTy::Usize) = lit {
-                Some((*i as usize, *local))      
+                Some((*i as usize, *local))
             } else {
                 None
             }
@@ -673,15 +690,21 @@ pub struct PlacePath {
 
 impl PlacePath {
     pub fn to_place(&self, pt: &PlaceTable) -> Place {
-        let projs: SmallVec<[ProjectionElem; 8]> =
-            self.path.iter().map(|&proj| {
+        let projs: SmallVec<[ProjectionElem; 8]> = self
+            .path
+            .iter()
+            .map(|&proj| {
                 let mut proj = pt.places[proj];
                 if let ProjectionElem::ConstantIndex { offset } = proj {
-                    let local = pt.local_by_knownval().find_map(|(i, local)| (i == offset as usize).then_some(local)).expect("has a local with index");
+                    let local = pt
+                        .local_by_knownval()
+                        .find_map(|(i, local)| (i == offset as usize).then_some(local))
+                        .expect("has a local with index");
                     proj = ProjectionElem::Index(local);
                 }
                 proj
-        }).collect();
+            })
+            .collect();
         Place::from_projected(
             *pt.current_locals().get_by_right(&self.source).unwrap(),
             &projs,
@@ -759,7 +782,7 @@ impl<'pt> ProjectionIter<'pt> {
 
                     if e.weight().is_deref() && (!follow_deref || pt.offseted(e.source())) {
                         return None;
-                    } 
+                    }
 
                     Some((e.id(), 1))
                 })
