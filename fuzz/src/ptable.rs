@@ -1,6 +1,6 @@
 use std::{collections::HashMap, vec};
 
-use bimap::BiBTreeMap;
+use bimap::BiHashMap;
 use mir::syntax::{
     Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, Ty, UintTy,
 };
@@ -14,7 +14,7 @@ pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
 
-type Frame = BiBTreeMap<Local, PlaceIndex>;
+type Frame = BiHashMap<Local, PlaceIndex>;
 
 pub struct PlaceTable {
     /// The callstack and return destination stack
@@ -76,7 +76,7 @@ impl PlaceTable {
     pub fn new() -> Self {
         Self {
             frames: vec![(
-                BiBTreeMap::new(),
+                BiHashMap::new(),
                 /* fn0 dummy */ PlaceIndex::new(usize::MAX),
             )],
             places: Graph::default(),
@@ -84,11 +84,11 @@ impl PlaceTable {
         }
     }
 
-    fn current_locals(&self) -> &BiBTreeMap<Local, PlaceIndex> {
+    fn current_locals(&self) -> &Frame {
         &self.frames.last().expect("call stack isn't empty").0
     }
 
-    fn current_locals_mut(&mut self) -> &mut BiBTreeMap<Local, PlaceIndex> {
+    fn current_locals_mut(&mut self) -> &mut Frame {
         &mut self.frames.last_mut().expect("call stack isn't empty").0
     }
 
@@ -130,7 +130,7 @@ impl PlaceTable {
         self.assign_literal(return_dest, None);
 
         // Frame switch
-        self.frames.push((BiBTreeMap::new(), return_dest));
+        self.frames.push((BiHashMap::new(), return_dest));
         self.allocate_local(Local::RET, body.return_ty());
         body.args_decl_iter()
             .zip(args)

@@ -1,5 +1,5 @@
 use core::slice;
-use std::{collections::BTreeMap, fmt::Write};
+use std::{collections::HashMap, fmt::Write, hash::Hash};
 
 use index_vec::IndexVec;
 use log::{debug, log_enabled};
@@ -34,7 +34,7 @@ impl TyCtxt {
         let p_pointers = 0.2;
 
         // Types with special treatment as we want to increase their weighting
-        let mut weights: BTreeMap<TyId, f32> = BTreeMap::new();
+        let mut weights: HashMap<TyId, f32> = HashMap::new();
         let mut p_sum: f32 = weights.values().sum();
         let num_ptrs = tys
             .iter()
