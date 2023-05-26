@@ -19,6 +19,7 @@ type Frame = BiHashMap<Local, PlaceIndex>;
 pub struct PlaceTable {
     /// The callstack and return destination stack
     frames: Vec<(Frame, PlaceIndex)>,
+    index_candidates: HashMap<usize, SmallVec<[Local; 1]>>,
 
     /// A program-global graph recording all places that can be reached through projections
     places: PlaceGraph,
@@ -79,6 +80,7 @@ impl PlaceTable {
                 BiHashMap::new(),
                 /* fn0 dummy */ PlaceIndex::new(usize::MAX),
             )],
+            index_candidates: HashMap::new(),
             places: Graph::default(),
             memory: BasicMemory::new(),
         }
@@ -131,6 +133,7 @@ impl PlaceTable {
 
         // Frame switch
         self.frames.push((BiHashMap::new(), return_dest));
+        self.index_candidates.clear();
         self.allocate_local(Local::RET, body.return_ty());
         body.args_decl_iter()
             .zip(args)
@@ -158,7 +161,9 @@ impl PlaceTable {
         let callee_ret = Place::RETURN_SLOT
             .to_place_index(self)
             .expect("place exists");
+        // Frame switch
         let (popped_frame, caller_dest) = self.frames.pop().expect("call stack isn't empty");
+        self.index_candidates.clear();
         // Copy ret
         self.copy_place(caller_dest, callee_ret);
 
@@ -597,6 +602,22 @@ impl PlaceTable {
 
     pub fn assign_literal(&mut self, p: impl ToPlaceIndex, val: Option<Literal>) {
         let p = p.to_place_index(self).expect("place exists");
+        if let Some(local) = self.frames.last().unwrap().0.get_by_right(&p) {
+            // If place is a local
+            if let Some(Literal::Uint(i, UintTy::Usize)) = self.known_val(p) &&
+                    let Some(old) = self.index_candidates.get_mut(&(*i as usize)) &&
+                    let Some(to_remove) = old.iter().position(|l| l == local) {
+                // unconditionally remove the old entry if it exists
+                old.remove(to_remove);
+            }
+            if let Some(Literal::Uint(i, UintTy::Usize)) = val.clone() {
+                // If we're assigning a new usize literal to it
+                self.index_candidates
+                    .entry(i as usize)
+                    .or_default()
+                    .push(*local)
+            }
+        }
 
         let node = &mut self.places[p];
         node.val = val.clone();
@@ -686,14 +707,12 @@ impl PlaceTable {
         self.places[p].offset == Some(0)
     }
 
-    fn local_by_knownval(&self) -> impl Iterator<Item = (usize, Local)> + '_ {
-        self.current_locals().iter().filter_map(|(local, pidx)| {
-            if let Some(lit) = self.known_val(pidx) && let Literal::Uint(i, UintTy::Usize) = lit {
-                Some((*i as usize, *local))
-            } else {
-                None
-            }
-        })
+    fn locals_with_val(&self, val: usize) -> &[Local] {
+        if let Some(locals) = self.index_candidates.get(&val) {
+            locals.as_slice()
+        } else {
+            &[]
+        }
     }
 
     pub fn place_count(&self) -> usize {
@@ -715,10 +734,7 @@ impl PlacePath {
             .map(|&proj| {
                 let mut proj = pt.places[proj];
                 if let ProjectionElem::ConstantIndex { offset } = proj {
-                    let local = pt
-                        .local_by_knownval()
-                        .find_map(|(i, local)| (i == offset as usize).then_some(local))
-                        .expect("has a local with index");
+                    let local = pt.locals_with_val(offset as usize)[0]; // TODO: randomise this?
                     proj = ProjectionElem::Index(local);
                 }
                 proj
@@ -780,13 +796,10 @@ pub struct ProjectionIter<'pt> {
     to_visit: Vec<(ProjectionIndex, usize)>,
 
     root_visited: bool,
-
-    known_vals: HashMap<usize, Local>,
 }
 
 impl<'pt> ProjectionIter<'pt> {
     fn new(pt: &'pt PlaceTable, root: PlaceIndex) -> Self {
-        let known_vals = HashMap::from_iter(pt.local_by_knownval());
         ProjectionIter {
             pt,
             root,
@@ -795,7 +808,7 @@ impl<'pt> ProjectionIter<'pt> {
                 .places
                 .edges_directed(root, Direction::Outgoing)
                 .filter_map(|e| {
-                    if let ProjectionElem::ConstantIndex { offset } = e.weight() && !known_vals.contains_key(&(*offset as usize)) {
+                    if let ProjectionElem::ConstantIndex { offset } = e.weight() && pt.locals_with_val(*offset as usize).is_empty() {
                         return None;
                     }
 
@@ -807,7 +820,6 @@ impl<'pt> ProjectionIter<'pt> {
                 })
                 .collect(),
             root_visited: false,
-            known_vals,
         }
     }
 }
@@ -834,7 +846,7 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
                     return None;
                 }
 
-                if let ProjectionElem::ConstantIndex { offset } = e.weight() && !self.known_vals.contains_key(&(*offset as usize)) {
+                if let ProjectionElem::ConstantIndex { offset } = e.weight() && self.pt.locals_with_val(*offset as usize).is_empty() {
                     return None;
                 }
                 Some((e.id(), depth+1))
