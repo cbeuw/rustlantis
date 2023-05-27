@@ -1,25 +1,27 @@
-use std::{collections::HashMap, vec};
+use std::vec;
 
-use bimap::BiHashMap;
 use mir::syntax::{
     Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, Ty, UintTy,
 };
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
-use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunPointer};
+use crate::{
+    hashmap::{StableBiHashMap, StableHashMap, StableRandomState},
+    mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunPointer},
+};
 
 type PlaceGraph = Graph<PlaceNode, ProjectionElem>;
 pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
 
-type Frame = BiHashMap<Local, PlaceIndex>;
+type Frame = StableBiHashMap<Local, PlaceIndex>;
 
 pub struct PlaceTable {
     /// The callstack and return destination stack
     frames: Vec<(Frame, PlaceIndex)>,
-    index_candidates: HashMap<usize, SmallVec<[Local; 1]>>,
+    index_candidates: StableHashMap<usize, SmallVec<[Local; 1]>>,
 
     /// A program-global graph recording all places that can be reached through projections
     places: PlaceGraph,
@@ -77,10 +79,10 @@ impl PlaceTable {
     pub fn new() -> Self {
         Self {
             frames: vec![(
-                BiHashMap::new(),
+                Frame::with_hashers(StableRandomState, StableRandomState),
                 /* fn0 dummy */ PlaceIndex::new(usize::MAX),
             )],
-            index_candidates: HashMap::new(),
+            index_candidates: StableHashMap::with_hasher(StableRandomState),
             places: Graph::default(),
             memory: BasicMemory::new(),
         }
@@ -132,7 +134,10 @@ impl PlaceTable {
         self.assign_literal(return_dest, None);
 
         // Frame switch
-        self.frames.push((BiHashMap::new(), return_dest));
+        self.frames.push((
+            Frame::with_hashers(StableRandomState, StableRandomState),
+            return_dest,
+        ));
         self.index_candidates.clear();
         self.allocate_local(Local::RET, body.return_ty());
         body.args_decl_iter()

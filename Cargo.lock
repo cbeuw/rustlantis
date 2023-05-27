@@ -238,6 +238,7 @@ dependencies = [
  "petgraph",
  "rand",
  "rand_distr",
+ "rand_seeder",
  "rangemap",
  "smallvec",
 ]
@@ -512,6 +513,15 @@ checksum = "32cb0b9bc82b0a0876c2dd994a7e7a2683d3e7390ca40e6886785ef0c7e3ee31"
 dependencies = [
  "num-traits",
  "rand",
+]
+
+[[package]]
+name = "rand_seeder"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf2890aaef0aa82719a50e808de264f9484b74b442e1a3a0e5ee38243ac40bdb"
+dependencies = [
+ "rand_core",
 ]
 
 [[package]]

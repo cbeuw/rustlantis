@@ -1,5 +1,5 @@
 use core::slice;
-use std::{collections::HashMap, fmt::Write, hash::Hash};
+use std::{collections::HashMap, fmt::Write};
 
 use index_vec::IndexVec;
 use log::{debug, log_enabled};
@@ -9,6 +9,8 @@ use mir::{
 };
 use rand::{seq::IteratorRandom, Rng};
 use rand_distr::{Distribution, Poisson, WeightedIndex};
+
+use crate::hashmap::{StableHashMap, StableRandomState};
 
 const TUPLE_MAX_LEN: usize = 12;
 pub const ARRAY_MAX_LEN: usize = 8;
@@ -34,8 +36,8 @@ impl TyCtxt {
         let p_pointers = 0.2;
 
         // Types with special treatment as we want to increase their weighting
-        let mut weights: HashMap<TyId, f32> = HashMap::new();
-        let mut p_sum: f32 = weights.values().sum();
+        let mut weights: StableHashMap<TyId, f32> = HashMap::with_hasher(StableRandomState);
+        let mut p_sum: f32 = 0.;
         let num_ptrs = tys
             .iter()
             .filter(|ty| ty.contains(|ty| ty.is_any_ptr()))
