@@ -72,9 +72,9 @@ if __name__ == "__main__":
         with open("repro.rs", "r", encoding='utf-8') as orig:
             source = orig.readlines()
 
-        progess = True
-        while progess:
-            progess = False
+        progress = True
+        while progress:
+            progress = False
             limit = source.index("Call(_505, bb322, dump_var(_506, _506, _506, _57))\n")
             for line in reversed(range(limit)):
                 if source[line].startswith("//"):
