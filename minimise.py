@@ -90,4 +90,8 @@ if __name__ == "__main__":
                     progress = True
                 else:
                     source[line] = source[line].removeprefix("//")
+            
+            working.seek(0)
+            working.writelines(source)
+            working.flush()
             print(f"done pass")
