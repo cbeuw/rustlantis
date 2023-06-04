@@ -1,4 +1,4 @@
-use std::vec;
+use std::{collections::HashMap, vec};
 
 use mir::syntax::{
     Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, Ty, UintTy,
@@ -7,7 +7,7 @@ use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Dire
 use smallvec::{smallvec, SmallVec};
 
 use crate::{
-    hashmap::{StableBiHashMap, StableHashMap, StableRandomState},
+    hashmap::{StableBiHashMap, StableRandomState},
     mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunPointer},
 };
 
@@ -16,12 +16,24 @@ pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
 
-type Frame = StableBiHashMap<Local, PlaceIndex>;
+struct Frame {
+    locals: StableBiHashMap<Local, PlaceIndex>,
+    return_destination: PlaceIndex,
+}
+
+impl Frame {
+    fn new(dest: PlaceIndex) -> Self {
+        Self {
+            locals: StableBiHashMap::with_hashers(StableRandomState, StableRandomState),
+            return_destination: dest,
+        }
+    }
+}
 
 pub struct PlaceTable {
-    /// The callstack and return destination stack
-    frames: Vec<(Frame, PlaceIndex)>,
-    index_candidates: StableHashMap<usize, SmallVec<[Local; 1]>>,
+    /// The callstack
+    frames: Vec<Frame>,
+    index_candidates: HashMap<usize, SmallVec<[Local; 1]>>,
 
     /// A program-global graph recording all places that can be reached through projections
     places: PlaceGraph,
@@ -78,22 +90,27 @@ where
 impl PlaceTable {
     pub fn new() -> Self {
         Self {
-            frames: vec![(
-                Frame::with_hashers(StableRandomState, StableRandomState),
-                /* fn0 dummy */ PlaceIndex::new(usize::MAX),
-            )],
-            index_candidates: StableHashMap::with_hasher(StableRandomState),
+            frames: vec![Frame::new(/* fn0 dummy */ PlaceIndex::new(usize::MAX))],
+            index_candidates: HashMap::new(),
             places: Graph::default(),
             memory: BasicMemory::new(),
         }
     }
 
-    fn current_locals(&self) -> &Frame {
-        &self.frames.last().expect("call stack isn't empty").0
+    fn current_frame_mut(&mut self) -> &mut Frame {
+        self.frames.last_mut().expect("call stack isn't empty")
     }
 
-    fn current_locals_mut(&mut self) -> &mut Frame {
-        &mut self.frames.last_mut().expect("call stack isn't empty").0
+    fn current_frame(&self) -> &Frame {
+        &self.frames.last().expect("call stack isn't empty")
+    }
+
+    fn current_locals(&self) -> &StableBiHashMap<Local, PlaceIndex> {
+        &self.current_frame().locals
+    }
+
+    fn current_locals_mut(&mut self) -> &mut StableBiHashMap<Local, PlaceIndex> {
+        &mut self.current_frame_mut().locals
     }
 
     pub fn enter_fn0(&mut self, body: &Body) {
@@ -134,11 +151,9 @@ impl PlaceTable {
         self.assign_literal(return_dest, None);
 
         // Frame switch
-        self.frames.push((
-            Frame::with_hashers(StableRandomState, StableRandomState),
-            return_dest,
-        ));
+        self.frames.push(Frame::new(return_dest));
         self.index_candidates.clear();
+
         self.allocate_local(Local::RET, body.return_ty());
         body.args_decl_iter()
             .zip(args)
@@ -167,13 +182,14 @@ impl PlaceTable {
             .to_place_index(self)
             .expect("place exists");
         // Frame switch
-        let (popped_frame, caller_dest) = self.frames.pop().expect("call stack isn't empty");
-        self.index_candidates.clear();
+        let old_frame = self.frames.pop().expect("call stack isn't empty");
+        self.index_candidates.clear(); // Invalidate cache
+
         // Copy ret
-        self.copy_place(caller_dest, callee_ret);
+        self.copy_place(old_frame.return_destination, callee_ret);
 
         // Deinit places
-        for pidx in popped_frame.right_values() {
+        for pidx in old_frame.locals.right_values() {
             self.memory.deallocate(self.places[*pidx].alloc_id);
         }
     }
@@ -558,15 +574,15 @@ impl PlaceTable {
             .filter_map(|e| (!e.weight().is_deref()).then_some(e.source()))
     }
 
-    // Returns an iterator over all places reachable from local through projections
-    fn reachable_from_local(&self, local: Local) -> ProjectionIter<'_> {
-        let local_node = *self.current_locals().get_by_left(&local).unwrap();
-        ProjectionIter::new(self, local_node)
+    // Returns an iterator over all places reachable from node through projections
+    fn reachable_from_node(&self, pidx: PlaceIndex) -> ProjectionIter<'_> {
+        ProjectionIter::new(self, pidx)
     }
 
     pub fn reachable_nodes(&self) -> impl Iterator<Item = PlacePath> + Clone + '_ {
-        let local_iter = self.current_locals().left_values();
-        local_iter.flat_map(|&local| self.reachable_from_local(local))
+        // FIXME: the iteration order is unstable
+        let local_iter = self.current_locals().right_values();
+        local_iter.flat_map(|&pidx| self.reachable_from_node(pidx))
     }
 
     /// Whether two places overlap or alias
@@ -607,11 +623,11 @@ impl PlaceTable {
 
     pub fn assign_literal(&mut self, p: impl ToPlaceIndex, val: Option<Literal>) {
         let p = p.to_place_index(self).expect("place exists");
-        if let Some(local) = self.frames.last().unwrap().0.get_by_right(&p) {
+        if let Some(&local) = self.current_locals().get_by_right(&p) {
             // If place is a local
-            if let Some(Literal::Uint(i, UintTy::Usize)) = self.known_val(p) &&
-                    let Some(old) = self.index_candidates.get_mut(&(*i as usize)) &&
-                    let Some(to_remove) = old.iter().position(|l| l == local) {
+            if let Some(&Literal::Uint(i, UintTy::Usize)) = self.known_val(p) &&
+                    let Some(old) = self.index_candidates.get_mut(&(i as usize)) &&
+                    let Some(to_remove) = old.iter().position(|&l| l == local) {
                 // unconditionally remove the old entry if it exists
                 old.remove(to_remove);
             }
@@ -620,7 +636,7 @@ impl PlaceTable {
                 self.index_candidates
                     .entry(i as usize)
                     .or_default()
-                    .push(*local)
+                    .push(local)
             }
         }
 
@@ -663,7 +679,7 @@ impl PlaceTable {
     }
 
     pub fn return_dest_stack(&self) -> impl Iterator<Item = PlaceIndex> + '_ {
-        self.frames.iter().skip(1).map(|(_, dst)| *dst)
+        self.frames.iter().skip(1).map(|f| f.return_destination)
     }
 
     pub fn ty(&self, p: impl ToPlaceIndex) -> &Ty {
@@ -960,7 +976,7 @@ mod tests {
         let (pt, local, ..) = prepare_t();
 
         let visited: Vec<Ty> = pt
-            .reachable_from_local(local)
+            .reachable_from_node(local.to_place_index(&pt).unwrap())
             .map(|ppath| ppath.target_node(&pt).ty.clone())
             .collect();
         assert_eq!(
@@ -1021,7 +1037,7 @@ mod tests {
         pt.set_ref(root, tuple);
 
         let visited: Vec<PlaceIndex> = pt
-            .reachable_from_local(root)
+            .reachable_from_node(root.to_place_index(&pt).unwrap())
             .map(|ppath| ppath.target_index(&pt))
             .collect();
 
@@ -1044,7 +1060,7 @@ mod tests {
         pt.allocate_local(local, ty);
 
         let place = pt
-            .reachable_from_local(local)
+            .reachable_from_node(local.to_place_index(&pt).unwrap())
             .filter(|ppath| !ppath.path.is_empty())
             .map(|ppath| ppath.to_place(&pt))
             .next()
