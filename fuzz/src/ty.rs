@@ -10,8 +10,6 @@ use mir::{
 use rand::{seq::IteratorRandom, Rng};
 use rand_distr::{Distribution, Poisson, WeightedIndex};
 
-use crate::hashmap::{StableHashMap, StableRandomState};
-
 const TUPLE_MAX_LEN: usize = 12;
 pub const ARRAY_MAX_LEN: usize = 8;
 
@@ -36,7 +34,7 @@ impl TyCtxt {
         let p_pointers = 0.2;
 
         // Types with special treatment as we want to increase their weighting
-        let mut weights: StableHashMap<TyId, f32> = HashMap::with_hasher(StableRandomState);
+        let mut weights: HashMap<TyId, f32> = HashMap::new();
         let mut p_sum: f32 = 0.;
         let num_ptrs = tys
             .iter()
@@ -82,7 +80,8 @@ impl TyCtxt {
             debug!("Typing context with weights:\n{s}");
         }
 
-        WeightedIndex::new(weights.values()).expect("can produce weighted index")
+        WeightedIndex::new(tys.iter_enumerated().map(|(tyid, _)| weights[&tyid]))
+            .expect("can produce weighted index")
     }
 
     fn seed_tys<R: Rng>(rng: &mut R) -> IndexVec<TyId, Ty> {
