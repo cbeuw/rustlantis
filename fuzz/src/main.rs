@@ -13,7 +13,6 @@ mod mem;
 mod place_select;
 mod ptable;
 mod ty;
-mod hashmap;
 
 use std::env::{self, args};
 

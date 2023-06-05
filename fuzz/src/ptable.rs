@@ -1,15 +1,16 @@
-use std::{collections::HashMap, vec};
+use std::{
+    collections::{BinaryHeap, HashMap},
+    vec,
+};
 
+use bimap::BiHashMap;
 use mir::syntax::{
     Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, Ty, UintTy,
 };
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
-use crate::{
-    hashmap::{StableBiHashMap, StableRandomState},
-    mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunPointer},
-};
+use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunPointer};
 
 type PlaceGraph = Graph<PlaceNode, ProjectionElem>;
 pub type PlaceIndex = NodeIndex;
@@ -17,16 +18,33 @@ pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
 
 struct Frame {
-    locals: StableBiHashMap<Local, PlaceIndex>,
+    locals: BiHashMap<Local, PlaceIndex>,
+    locals_ordered: BinaryHeap<PlaceIndex>,
     return_destination: PlaceIndex,
 }
 
 impl Frame {
     fn new(dest: PlaceIndex) -> Self {
         Self {
-            locals: StableBiHashMap::with_hashers(StableRandomState, StableRandomState),
+            locals: BiHashMap::new(),
+            locals_ordered: BinaryHeap::new(),
             return_destination: dest,
         }
+    }
+
+    fn add_local(&mut self, local: Local, pidx: PlaceIndex) {
+        self.locals
+            .insert_no_overwrite(local, pidx)
+            .expect("did not insert existing local or place");
+        self.locals_ordered.push(pidx);
+    }
+
+    fn get_by_index(&self, pidx: PlaceIndex) -> Option<Local> {
+        self.locals.get_by_right(&pidx).copied()
+    }
+
+    fn get_by_local(&self, local: Local) -> Option<PlaceIndex> {
+        self.locals.get_by_left(&local).copied()
     }
 }
 
@@ -103,14 +121,6 @@ impl PlaceTable {
 
     fn current_frame(&self) -> &Frame {
         &self.frames.last().expect("call stack isn't empty")
-    }
-
-    fn current_locals(&self) -> &StableBiHashMap<Local, PlaceIndex> {
-        &self.current_frame().locals
-    }
-
-    fn current_locals_mut(&mut self) -> &mut StableBiHashMap<Local, PlaceIndex> {
-        &mut self.current_frame_mut().locals
     }
 
     pub fn enter_fn0(&mut self, body: &Body) {
@@ -199,17 +209,13 @@ impl PlaceTable {
         self.memory.allocate_with_builder(|builder| {
             pidx = Self::add_place(&mut self.places, ty, builder, 0, None);
         });
-        self.current_locals_mut()
-            .insert_no_overwrite(local, pidx)
-            .expect("did not insert existing local or place");
+        self.current_frame_mut().add_local(local, pidx);
         pidx
     }
 
     pub fn deallocate_local(&mut self, local: Local) {
-        let (_, pidx) = self
-            .current_locals_mut()
-            .remove_by_left(&local)
-            .expect("local exists");
+        // FIXME: should we need to remove local from the frame?
+        let pidx = local.to_place_index(&self).expect("place exists");
         self.memory.deallocate(self.places[pidx].alloc_id);
     }
 
@@ -231,7 +237,6 @@ impl PlaceTable {
                 offset: None,
             })
         } else if let Some(size) = BasicMemory::ty_size(&ty) {
-            // FIXME: don't always allocate Runs
             let run_and_offset = alloc_builder.new_run(size);
             places.add_node(PlaceNode {
                 ty: ty.clone(),
@@ -354,7 +359,7 @@ impl PlaceTable {
 
     /// Get PlaceIndex from a Place
     fn get_node(&self, place: &Place) -> Option<PlaceIndex> {
-        let mut node = *self.current_locals().get_by_left(&place.local())?;
+        let mut node = self.current_frame().get_by_local(place.local())?;
         let proj_iter = place.projection().iter();
         for proj in proj_iter {
             let next = self.project_from_node(node, *proj);
@@ -580,8 +585,7 @@ impl PlaceTable {
     }
 
     pub fn reachable_nodes(&self) -> impl Iterator<Item = PlacePath> + Clone + '_ {
-        // FIXME: the iteration order is unstable
-        let local_iter = self.current_locals().right_values();
+        let local_iter = self.current_frame().locals_ordered.iter();
         local_iter.flat_map(|&pidx| self.reachable_from_node(pidx))
     }
 
@@ -623,7 +627,7 @@ impl PlaceTable {
 
     pub fn assign_literal(&mut self, p: impl ToPlaceIndex, val: Option<Literal>) {
         let p = p.to_place_index(self).expect("place exists");
-        if let Some(&local) = self.current_locals().get_by_right(&p) {
+        if let Some(local) = self.current_frame().get_by_index(p) {
             // If place is a local
             if let Some(&Literal::Uint(i, UintTy::Usize)) = self.known_val(p) &&
                     let Some(old) = self.index_candidates.get_mut(&(i as usize)) &&
@@ -762,7 +766,7 @@ impl PlacePath {
             })
             .collect();
         Place::from_projected(
-            *pt.current_locals().get_by_right(&self.source).unwrap(),
+            pt.current_frame().get_by_index(self.source).unwrap(),
             &projs,
         )
     }
@@ -783,8 +787,8 @@ impl PlacePath {
     }
 
     pub fn is_return_proj(&self, pt: &PlaceTable) -> bool {
-        *pt.current_locals()
-            .get_by_right(&self.source)
+        pt.current_frame()
+            .get_by_index(self.source)
             .expect("source exists")
             == Local::RET
     }
