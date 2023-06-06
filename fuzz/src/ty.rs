@@ -5,7 +5,7 @@ use index_vec::IndexVec;
 use log::{debug, log_enabled};
 use mir::{
     serialize::Serialize,
-    syntax::{Mutability, Ty, TyId},
+    syntax::{Mutability, Ty, TyId}, tyctxt::TyCtxt,
 };
 use rand::{seq::IteratorRandom, Rng};
 use rand_distr::{Distribution, Poisson, WeightedIndex};
@@ -13,19 +13,17 @@ use rand_distr::{Distribution, Poisson, WeightedIndex};
 const TUPLE_MAX_LEN: usize = 12;
 pub const ARRAY_MAX_LEN: usize = 8;
 
-pub struct TyCtxt {
-    tys: IndexVec<TyId, Ty>,
+pub struct TySelect {
     weights: WeightedIndex<f32>,
 }
 
-impl TyCtxt {
-    pub fn new(rng: &mut impl Rng) -> Self {
-        let tys = Self::seed_tys(rng);
-        let weights = Self::distribute_weights(&tys);
-        Self { tys, weights }
+impl TySelect {
+    pub fn new(tcx: &TyCtxt) -> Self {
+        Self {
+            weights: Self::distribute_weights(tcx),
+        }
     }
-
-    fn distribute_weights(tys: &IndexVec<TyId, Ty>) -> WeightedIndex<f32> {
+    fn distribute_weights(tcx: &TyCtxt) -> WeightedIndex<f32> {
         let p_bool = 0.05;
         let p_char = 0.05;
         let p_floats = 0.1;
@@ -36,7 +34,7 @@ impl TyCtxt {
         // Types with special treatment as we want to increase their weighting
         let mut weights: HashMap<TyId, f32> = HashMap::new();
         let mut p_sum: f32 = 0.;
-        let num_ptrs = tys
+        let num_ptrs = tcx
             .iter()
             .filter(|ty| ty.contains(|ty| ty.is_any_ptr()))
             .count();
@@ -44,7 +42,7 @@ impl TyCtxt {
         // All the types without special weighting
         let mut residual: Vec<TyId> = Vec::new();
 
-        for (idx, ty) in tys.iter_enumerated() {
+        for (idx, ty) in tcx.iter_enumerated() {
             let p = match ty {
                 Ty::Unit => Some(0.),
                 Ty::Bool => Some(p_bool),
@@ -73,94 +71,30 @@ impl TyCtxt {
 
         if log_enabled!(log::Level::Debug) {
             let mut s = String::new();
-            for (tyid, ty) in tys.iter_enumerated() {
+            for (tyid, ty) in tcx.iter_enumerated() {
                 s.write_fmt(format_args!("{}: {}\n", ty.serialize(), weights[&tyid]))
                     .unwrap();
             }
             debug!("Typing context with weights:\n{s}");
         }
 
-        WeightedIndex::new(tys.iter_enumerated().map(|(tyid, _)| weights[&tyid]))
+        WeightedIndex::new(tcx.iter_enumerated().map(|(tyid, _)| weights[&tyid]))
             .expect("can produce weighted index")
     }
 
-    fn seed_tys<R: Rng>(rng: &mut R) -> IndexVec<TyId, Ty> {
-        // Seed with primitives
-        let mut tys: IndexVec<TyId, Ty> = IndexVec::new();
-        let primitives = [
-            Ty::Bool,
-            Ty::Char,
-            Ty::ISIZE,
-            Ty::I8,
-            Ty::I16,
-            Ty::I32,
-            Ty::I64,
-            Ty::I128,
-            Ty::USIZE,
-            Ty::U8,
-            Ty::U16,
-            Ty::U32,
-            Ty::U64,
-            Ty::U128,
-            Ty::F32,
-            Ty::F64,
-        ];
-        primitives.iter().for_each(|ty| {
-            tys.push(ty.clone());
-        });
-
-        // Generate composite types
-        for _ in 0..=32 {
-            let new_ty = match rng.gen_range(0..=2) {
-                0 => Ty::Tuple({
-                    let dist = Poisson::<f32>::new(2.7).unwrap();
-                    let length = dist.sample(rng).clamp(1., TUPLE_MAX_LEN as f32) as usize;
-                    (0..length)
-                        .map(|_| tys.iter().choose(rng).unwrap().clone())
-                        .collect()
-                }),
-                1 => Ty::RawPtr(
-                    Box::new(tys.iter().choose(rng).unwrap().clone()),
-                    if rng.gen_bool(0.5) {
-                        Mutability::Mut
-                    } else {
-                        Mutability::Not
-                    },
-                ),
-                2 => Ty::Array(
-                    Box::new(
-                        tys.iter()
-                            .filter(|ty| ty.is_scalar())
-                            .choose(rng)
-                            .unwrap()
-                            .clone(),
-                    ),
-                    rng.gen_range(1..=ARRAY_MAX_LEN),
-                ),
-                // 2 => Ty::Adt(todo!()),
-                _ => unreachable!(),
-            };
-            if !tys.iter().any(|ty| *ty == new_ty) {
-                tys.push(new_ty);
-            }
-        }
-        tys
-    }
-
-    pub fn choose_ty(&self, rng: &mut impl Rng) -> Ty {
-        self.tys
-            .iter()
+    pub fn choose_ty(&self, rng: &mut impl Rng, tcx: &TyCtxt) -> Ty {
+        tcx.iter()
             .nth(self.weights.sample(rng))
             .expect("tyctxt isn't empty")
             .clone()
     }
 
-    pub fn choose_ty_filtered<P>(&self, rng: &mut impl Rng, predicate: P) -> Ty
+    pub fn choose_ty_filtered<P>(&self, rng: &mut impl Rng, tcx: &TyCtxt, predicate: P) -> Ty
     where
         P: Fn(&Ty) -> bool + Copy,
     {
         let mut weights = self.weights.clone();
-        self.tys.iter_enumerated().for_each(|(i, ty)| {
+        tcx.iter_enumerated().for_each(|(i, ty)| {
             if !predicate(ty) {
                 weights
                     .update_weights(&[(i.index(), &0.)])
@@ -168,21 +102,73 @@ impl TyCtxt {
             }
         });
 
-        self.tys
-            .iter()
+        tcx.iter()
             .nth(weights.sample(rng))
             .expect("tyctxt isn't empty")
             .clone()
     }
+}
+pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
+    // Seed with primitives
+    let mut tys: IndexVec<TyId, Ty> = IndexVec::new();
+    let primitives = [
+        Ty::Bool,
+        Ty::Char,
+        Ty::ISIZE,
+        Ty::I8,
+        Ty::I16,
+        Ty::I32,
+        Ty::I64,
+        Ty::I128,
+        Ty::USIZE,
+        Ty::U8,
+        Ty::U16,
+        Ty::U32,
+        Ty::U64,
+        Ty::U128,
+        Ty::F32,
+        Ty::F64,
+    ];
+    primitives.iter().for_each(|ty| {
+        tys.push(ty.clone());
+    });
 
-    pub fn iter(&self) -> slice::Iter<'_, Ty> {
-        self.tys.iter()
+    // Generate composite types
+    for _ in 0..=32 {
+        let new_ty = match rng.gen_range(0..=2) {
+            0 => Ty::Tuple({
+                let dist = Poisson::<f32>::new(2.7).unwrap();
+                let length = dist.sample(rng).clamp(1., TUPLE_MAX_LEN as f32) as usize;
+                (0..length)
+                    .map(|_| tys.iter().choose(rng).unwrap().clone())
+                    .collect()
+            }),
+            1 => Ty::RawPtr(
+                Box::new(tys.iter().choose(rng).unwrap().clone()),
+                if rng.gen_bool(0.5) {
+                    Mutability::Mut
+                } else {
+                    Mutability::Not
+                },
+            ),
+            2 => Ty::Array(
+                Box::new(
+                    tys.iter()
+                        .filter(|ty| ty.is_scalar())
+                        .choose(rng)
+                        .unwrap()
+                        .clone(),
+                ),
+                rng.gen_range(1..=ARRAY_MAX_LEN),
+            ),
+            // 2 => Ty::Adt(todo!()),
+            _ => unreachable!(),
+        };
+        if !tys.iter().any(|ty| *ty == new_ty) {
+            tys.push(new_ty);
+        }
     }
-
-    pub fn is_copy(&self, ty: &Ty) -> bool {
-        // TODO: implement this
-        true
-    }
+    TyCtxt::from_index_vec(tys)
 }
 
 #[cfg(test)]
@@ -192,13 +178,13 @@ mod tests {
     use mir::syntax::Ty;
     use rand::SeedableRng;
 
-    use super::TyCtxt;
+    use crate::ty::seed_tys;
 
     #[test]
     fn tys_unique() {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-        let tcx = TyCtxt::new(&mut rng);
+        let tcx = seed_tys(&mut rng);
         let set: HashSet<Ty> = tcx.iter().cloned().collect();
-        assert!(set.len() == tcx.tys.len())
+        assert!(set.len() == tcx.len())
     }
 }

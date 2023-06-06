@@ -9,6 +9,7 @@ use mir::syntax::{
     BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal, Local, LocalDecls,
     Mutability, Operand, Place, Program, Rvalue, Statement, SwitchTargets, Terminator, Ty, UnOp,
 };
+use mir::tyctxt::TyCtxt;
 use rand::seq::SliceRandom;
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
 use rand_distr::{Distribution, WeightedError, WeightedIndex};
@@ -16,7 +17,7 @@ use rand_distr::{Distribution, WeightedError, WeightedIndex};
 use crate::literal::GenLiteral;
 use crate::place_select::{PlaceSelector, Weight};
 use crate::ptable::{HasDataflow, PlaceTable};
-use crate::ty::TyCtxt;
+use crate::ty::{seed_tys, TySelect};
 
 use self::intrinsics::ArithOffset;
 use crate::generation::intrinsics::CoreIntrinsic;
@@ -40,6 +41,7 @@ pub struct GenerationCtx {
     rng: RefCell<Box<dyn RngCore>>,
     program: Program,
     tcx: TyCtxt,
+    ty_weights: TySelect,
     pt: PlaceTable,
     return_stack: Vec<(Function, BasicBlock)>,
     current_function: Function,
@@ -441,7 +443,9 @@ impl GenerationCtx {
 
         // We're generating a new var
         if matches!(statement, Statement::Nop) {
-            let ty = self.tcx.choose_ty(&mut *self.rng.borrow_mut());
+            let ty = self
+                .ty_weights
+                .choose_ty(&mut *self.rng.borrow_mut(), &self.tcx);
             self.declare_new_var(Mutability::Mut, ty);
         }
 
@@ -972,11 +976,13 @@ impl GenerationCtx {
 
     pub fn new(seed: u64, debug_dump: bool) -> Self {
         let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(seed)));
-        let tcx = TyCtxt::new(&mut *rng.borrow_mut());
+        let tcx = seed_tys(&mut *rng.borrow_mut());
+        let ty_weights = TySelect::new(&tcx);
         // TODO: don't zero-initialize current_function and current_bb
         Self {
             rng,
             tcx,
+            ty_weights,
             program: Program::new(debug_dump),
             pt: PlaceTable::new(),
             return_stack: vec![],
@@ -1033,9 +1039,11 @@ impl GenerationCtx {
             })
             .collect();
 
-        let return_ty = self
-            .tcx
-            .choose_ty_filtered(&mut *self.rng.borrow_mut(), Ty::determ_printable);
+        let return_ty = self.ty_weights.choose_ty_filtered(
+            &mut *self.rng.borrow_mut(),
+            &self.tcx,
+            Ty::determ_printable,
+        );
         self.enter_fn0(&arg_tys, return_ty, &arg_literals);
 
         loop {

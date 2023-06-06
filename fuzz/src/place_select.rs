@@ -222,15 +222,19 @@ mod tests {
     };
     use test::Bencher;
 
-    use crate::{ptable::PlaceTable, ty::TyCtxt};
+    use crate::{
+        ptable::PlaceTable,
+        ty::{seed_tys, TySelect},
+    };
 
     use super::PlaceSelector;
 
     fn build_pt(rng: &mut impl Rng) -> PlaceTable {
         let mut pt = PlaceTable::new();
-        let tcx = TyCtxt::new(rng);
+        let tcx = seed_tys(rng);
+        let ty_weights = TySelect::new(&tcx);
         for i in 0..=32 {
-            let pidx = pt.allocate_local(Local::new(i), tcx.choose_ty(rng));
+            let pidx = pt.allocate_local(Local::new(i), ty_weights.choose_ty(rng, &tcx));
             if i % 2 == 0 {
                 pt.mark_place_init(pidx);
             }
