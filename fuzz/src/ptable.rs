@@ -1,11 +1,16 @@
 use std::{
     collections::{BinaryHeap, HashMap},
+    rc::Rc,
     vec,
 };
 
 use bimap::BiHashMap;
-use mir::syntax::{
-    Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, Ty, UintTy,
+use mir::{
+    syntax::{
+        Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, TyId, TyKind,
+        UintTy,
+    },
+    tyctxt::TyCtxt,
 };
 use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
@@ -56,11 +61,12 @@ pub struct PlaceTable {
     /// A program-global graph recording all places that can be reached through projections
     places: PlaceGraph,
     memory: BasicMemory,
+    tcx: Rc<TyCtxt>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PlaceNode {
-    pub ty: Ty,
+    pub ty: TyId,
     alloc_id: AllocId,
     dataflow: usize,
 
@@ -106,12 +112,13 @@ where
 }
 
 impl PlaceTable {
-    pub fn new() -> Self {
+    pub fn new(tcx: Rc<TyCtxt>) -> Self {
         Self {
             frames: vec![Frame::new(/* fn0 dummy */ PlaceIndex::new(usize::MAX))],
             index_candidates: HashMap::new(),
             places: Graph::default(),
             memory: BasicMemory::new(),
+            tcx,
         }
     }
 
@@ -120,7 +127,7 @@ impl PlaceTable {
     }
 
     fn current_frame(&self) -> &Frame {
-        &self.frames.last().expect("call stack isn't empty")
+        self.frames.last().expect("call stack isn't empty")
     }
 
     pub fn enter_fn0(&mut self, body: &Body) {
@@ -128,7 +135,7 @@ impl PlaceTable {
         self.allocate_local(Local::RET, body.return_ty());
         // Declare args
         body.args_decl_iter().for_each(|(local, decl)| {
-            let pidx = self.allocate_local(local, decl.ty.clone());
+            let pidx = self.allocate_local(local, decl.ty);
             // encourage use of args
             self.places[pidx].dataflow = 5;
         });
@@ -168,7 +175,7 @@ impl PlaceTable {
         body.args_decl_iter()
             .zip(args)
             .for_each(|((local, decl), arg)| {
-                let pidx = self.allocate_local(local, decl.ty.clone());
+                let pidx = self.allocate_local(local, decl.ty);
 
                 match &arg {
                     ArgOperand::Copy(source_pidx) | ArgOperand::Move(source_pidx) => {
@@ -204,10 +211,10 @@ impl PlaceTable {
         }
     }
 
-    pub fn allocate_local(&mut self, local: Local, ty: Ty) -> PlaceIndex {
+    pub fn allocate_local(&mut self, local: Local, ty: TyId) -> PlaceIndex {
         let mut pidx = Default::default();
         self.memory.allocate_with_builder(|builder| {
-            pidx = Self::add_place(&mut self.places, ty, builder, 0, None);
+            pidx = Self::add_place(&mut self.places, ty, &self.tcx, builder, 0, None);
         });
         self.current_frame_mut().add_local(local, pidx);
         pidx
@@ -215,13 +222,14 @@ impl PlaceTable {
 
     pub fn deallocate_local(&mut self, local: Local) {
         // FIXME: should we need to remove local from the frame?
-        let pidx = local.to_place_index(&self).expect("place exists");
+        let pidx = local.to_place_index(self).expect("place exists");
         self.memory.deallocate(self.places[pidx].alloc_id);
     }
 
     fn add_place(
         places: &mut PlaceGraph,
-        ty: Ty,
+        ty: TyId,
+        tcx: &TyCtxt,
         alloc_builder: &mut AllocationBuilder,
         dataflow: usize,
         run_ptr: Option<RunPointer>,
@@ -229,17 +237,17 @@ impl PlaceTable {
         let alloc_id = alloc_builder.alloc_id();
         let pidx = if run_ptr.is_some() {
             places.add_node(PlaceNode {
-                ty: ty.clone(),
+                ty,
                 alloc_id,
                 dataflow,
                 run_ptr,
                 val: None,
                 offset: None,
             })
-        } else if let Some(size) = BasicMemory::ty_size(&ty) {
+        } else if let Some(size) = BasicMemory::ty_size(ty, tcx) {
             let run_and_offset = alloc_builder.new_run(size);
             places.add_node(PlaceNode {
-                ty: ty.clone(),
+                ty,
                 alloc_id,
                 dataflow,
                 run_ptr: Some(RunPointer {
@@ -252,7 +260,7 @@ impl PlaceTable {
             })
         } else {
             places.add_node(PlaceNode {
-                ty: ty.clone(),
+                ty,
                 alloc_id,
                 dataflow,
                 run_ptr: None,
@@ -260,19 +268,21 @@ impl PlaceTable {
                 offset: None,
             })
         };
-        match ty {
-            Ty::Tuple(elems) => elems.iter().enumerate().for_each(|(idx, elem)| {
-                let sub_pidx = Self::add_place(places, elem.clone(), alloc_builder, dataflow, None);
+        match ty.kind(tcx) {
+            TyKind::Tuple(elems) => elems.iter().enumerate().for_each(|(idx, elem)| {
+                let sub_pidx =
+                    Self::add_place(places, *elem, tcx, alloc_builder, dataflow, None);
                 places.add_edge(
                     pidx,
                     sub_pidx,
                     ProjectionElem::TupleField(FieldIdx::new(idx)),
                 );
             }),
-            Ty::Array(elem_ty, len) => {
-                for i in 0..len {
+            TyKind::Array(elem_ty, len) => {
+                for i in 0..*len {
                     let child_run_ptr = if let Some(run_ptr) = places[pidx].run_ptr {
-                        let child_size = BasicMemory::ty_size(&elem_ty).expect("ty has fixed size");
+                        let child_size =
+                            BasicMemory::ty_size(*elem_ty, tcx).expect("ty has fixed size");
                         Some(RunPointer {
                             alloc_id,
                             run_and_offset: run_ptr
@@ -285,7 +295,8 @@ impl PlaceTable {
                     };
                     let elem_pidx = Self::add_place(
                         places,
-                        *elem_ty.clone(),
+                        *elem_ty,
+                        tcx,
                         alloc_builder,
                         dataflow,
                         child_run_ptr,
@@ -297,8 +308,8 @@ impl PlaceTable {
                     );
                 }
             }
-            Ty::Adt(_) => todo!(),
-            Ty::RawPtr(..) => { /* pointer has no subfields  */ }
+            TyKind::Adt(_) => todo!(),
+            TyKind::RawPtr(..) => { /* pointer has no subfields  */ }
             _ => { /* primitives, no projection */ }
         }
         pidx
@@ -321,7 +332,7 @@ impl PlaceTable {
                 .copy(dst_node.run_ptr.expect("dst is terminal"), run_ptr);
         }
 
-        if dst_node.ty.is_any_ptr() {
+        if dst_node.ty.is_any_ptr(&self.tcx) {
             if let Some(pointee) = self.pointee(src) {
                 self.set_ref(dst, pointee);
             }
@@ -444,7 +455,7 @@ impl PlaceTable {
     pub fn get_dataflow(&self, p: impl ToPlaceIndex) -> usize {
         let pidx = p.to_place_index(self).unwrap();
         let node = &self.places[pidx];
-        if node.ty.is_any_ptr() {
+        if node.ty.is_any_ptr(&self.tcx) {
             if let Some(pointee) = self.project_from_node(pidx, ProjectionElem::Deref) {
                 self.get_dataflow(pointee)
             } else {
@@ -464,7 +475,7 @@ impl PlaceTable {
         let pidx = p.to_place_index(self).unwrap();
 
         // If this is a pointer, we have to remove the Deref edge, but not for other projections
-        if self.places[pidx].ty.is_any_ptr() && let Some(old) = self.ref_edge(pidx) {
+        if self.places[pidx].ty.is_any_ptr(&self.tcx) && let Some(old) = self.ref_edge(pidx) {
             self.places.remove_edge(old);
         }
 
@@ -500,7 +511,7 @@ impl PlaceTable {
 
     /// Returns the pointee in reference -[Deref]-> pointee, if one exists
     fn pointee(&self, reference: PlaceIndex) -> Option<PlaceIndex> {
-        assert!(self.places[reference].ty.is_any_ptr());
+        assert!(self.places[reference].ty.is_any_ptr(&self.tcx));
         self.places
             .edges_directed(reference, Direction::Outgoing)
             .next()
@@ -509,7 +520,7 @@ impl PlaceTable {
 
     /// Returns the edge in reference -[edge: Deref]-> pointee, if one exists
     fn ref_edge(&self, reference: PlaceIndex) -> Option<ProjectionIndex> {
-        assert!(self.places[reference].ty.is_any_ptr());
+        assert!(self.places[reference].ty.is_any_ptr(&self.tcx));
         self.places
             .edges_directed(reference, Direction::Outgoing)
             .next()
@@ -522,7 +533,7 @@ impl PlaceTable {
         let pointee = pointee.to_place_index(self).expect("place exists");
 
         assert_eq!(
-            self.places[reference].ty.pointee_ty().unwrap(),
+            self.places[reference].ty.pointee_ty(&self.tcx).unwrap(),
             self.places[pointee].ty
         );
 
@@ -635,7 +646,7 @@ impl PlaceTable {
                 // unconditionally remove the old entry if it exists
                 old.remove(to_remove);
             }
-            if let Some(Literal::Uint(i, UintTy::Usize)) = val.clone() {
+            if let Some(Literal::Uint(i, UintTy::Usize)) = val {
                 // If we're assigning a new usize literal to it
                 self.index_candidates
                     .entry(i as usize)
@@ -647,8 +658,8 @@ impl PlaceTable {
         let node = &mut self.places[p];
         node.val = val.clone();
 
-        match &node.ty {
-            Ty::Tuple(tys) => {
+        match &node.ty.kind(&self.tcx) {
+            TyKind::Tuple(tys) => {
                 for i in 0..tys.len() {
                     let child = self
                         .project_from_node(p, ProjectionElem::TupleField(i.into()))
@@ -663,7 +674,7 @@ impl PlaceTable {
                     self.assign_literal(child, elem.cloned());
                 }
             }
-            Ty::Array(_, len) => {
+            TyKind::Array(_, len) => {
                 for i in 0..*len {
                     let child = self
                         .project_from_node(p, ProjectionElem::ConstantIndex { offset: i as u64 })
@@ -677,7 +688,7 @@ impl PlaceTable {
                     self.places[child].val = init;
                 }
             }
-            Ty::Adt(..) => todo!(),
+            TyKind::Adt(..) => todo!(),
             _ => {}
         }
     }
@@ -686,8 +697,8 @@ impl PlaceTable {
         self.frames.iter().skip(1).map(|f| f.return_destination)
     }
 
-    pub fn ty(&self, p: impl ToPlaceIndex) -> &Ty {
-        &self.places[p.to_place_index(self).expect("place exists")].ty
+    pub fn ty(&self, p: impl ToPlaceIndex) -> TyId {
+        self.places[p.to_place_index(self).expect("place exists")].ty
     }
 
     pub fn known_val(&self, p: impl ToPlaceIndex) -> Option<&Literal> {
@@ -699,7 +710,7 @@ impl PlaceTable {
     // Whether the pointer has been offsetted (and therefore unusable)
     pub fn offseted(&self, p: impl ToPlaceIndex) -> bool {
         let p = p.to_place_index(self).expect("place exists");
-        assert!(self.places[p].ty.is_any_ptr());
+        assert!(self.places[p].ty.is_any_ptr(&self.tcx));
 
         match self.places[p].offset {
             None => false,
@@ -710,14 +721,14 @@ impl PlaceTable {
 
     pub fn get_offset(&self, p: impl ToPlaceIndex) -> Option<isize> {
         let p = p.to_place_index(self).expect("place exists");
-        assert!(self.places[p].ty.is_any_ptr());
+        assert!(self.places[p].ty.is_any_ptr(&self.tcx));
 
         self.places[p].offset
     }
 
     pub fn offset_ptr(&mut self, p: impl ToPlaceIndex, offset: isize) {
         let p = p.to_place_index(self).expect("place exists");
-        assert!(self.places[p].ty.is_any_ptr());
+        assert!(self.places[p].ty.is_any_ptr(&self.tcx));
 
         self.places[p].offset = match self.places[p].offset {
             None => Some(offset),
@@ -727,7 +738,7 @@ impl PlaceTable {
 
     pub fn has_offset_roundtripped(&self, p: impl ToPlaceIndex) -> bool {
         let p = p.to_place_index(self).expect("place exists");
-        assert!(self.places[p].ty.is_any_ptr());
+        assert!(self.places[p].ty.is_any_ptr(&self.tcx));
 
         self.places[p].offset == Some(0)
     }
@@ -933,9 +944,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use mir::syntax::{
-        BinOp, FieldIdx, Literal, Local, Mutability, Operand, Place, ProjectionElem, Rvalue, Ty,
-        UintTy,
+    use std::rc::Rc;
+
+    use mir::{
+        syntax::{
+            BinOp, FieldIdx, Literal, Local, Mutability, Operand, Place, ProjectionElem, Rvalue,
+            TyId, TyKind, UintTy,
+        },
+        tyctxt::TyCtxt,
     };
 
     use crate::{
@@ -955,10 +971,13 @@ mod tests {
                 d     e
         */
 
-        let mut pt = PlaceTable::new();
-        let ty = Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I16, Ty::I32]), Ty::I64]);
+        let mut tcx = TyCtxt::from_primitives();
+        let t_i16_i32 = tcx.push(TyKind::Tuple(vec![TyCtxt::I16, TyCtxt::I32]));
+        let t_root = tcx.push(TyKind::Tuple(vec![TyCtxt::I8, t_i16_i32, TyCtxt::I64]));
+
+        let mut pt = PlaceTable::new(Rc::new(tcx));
         let local = Local::new(1);
-        pt.allocate_local(local, ty);
+        pt.allocate_local(local, t_root);
 
         let a = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(0))]);
         let b = Place::from_projected(local, &[ProjectionElem::TupleField(FieldIdx::new(1))]);
@@ -979,19 +998,23 @@ mod tests {
     fn nested_tuple() {
         let (pt, local, ..) = prepare_t();
 
-        let visited: Vec<Ty> = pt
+        let visited: Vec<TyId> = pt
             .reachable_from_node(local.to_place_index(&pt).unwrap())
-            .map(|ppath| ppath.target_node(&pt).ty.clone())
+            .map(|ppath| ppath.target_node(&pt).ty)
             .collect();
         assert_eq!(
             &visited,
             &[
-                Ty::Tuple(vec![Ty::I8, Ty::Tuple(vec![Ty::I16, Ty::I32]), Ty::I64]), // (i8, (i16, i32), i64)
-                Ty::I8,                                                              // i8
-                Ty::Tuple(vec![Ty::I16, Ty::I32]),                                   // (i16, 132)
-                Ty::I16,                                                             // i16
-                Ty::I32,                                                             // i32
-                Ty::I64,                                                             // i64
+                pt.tcx.ty(&TyKind::Tuple(vec![
+                    TyCtxt::I8,
+                    pt.tcx.ty(&TyKind::Tuple(vec![TyCtxt::I16, TyCtxt::I32])),
+                    TyCtxt::I64
+                ])), // (i8, (i16, i32), i64)
+                TyCtxt::I8,                                                // i8
+                pt.tcx.ty(&TyKind::Tuple(vec![TyCtxt::I16, TyCtxt::I32])), // (i16, 132)
+                TyCtxt::I16,                                               // i16
+                TyCtxt::I32,                                               // i32
+                TyCtxt::I64,                                               // i64
             ]
         );
     }
@@ -1000,9 +1023,9 @@ mod tests {
     fn overlap_check() {
         let (pt, local, a, b, c, d, _) = prepare_t();
 
-        assert!(pt.overlap(&b, &local));
-        assert!(pt.overlap(&local, &b));
-        assert!(pt.overlap(&local, &d));
+        assert!(pt.overlap(&b, local));
+        assert!(pt.overlap(local, &b));
+        assert!(pt.overlap(local, &d));
 
         assert!(!pt.overlap(&a, &c));
         assert!(!pt.overlap(&a, &d))
@@ -1010,26 +1033,23 @@ mod tests {
 
     #[test]
     fn pointers() {
-        let mut pt = PlaceTable::new();
+        let mut tcx = TyCtxt::from_primitives();
+        // *const i32
+        let ptr = tcx.push(TyKind::RawPtr(TyCtxt::I32, Mutability::Not));
+        // (*const i32,)
+        let inner_ty = tcx.push(TyKind::Tuple(vec![ptr]));
         // *const (*const i32,)
-        let ty = Ty::RawPtr(
-            Box::new(Ty::Tuple(vec![Ty::RawPtr(
-                Box::new(Ty::I32),
-                Mutability::Not,
-            )])),
-            Mutability::Not,
-        );
+        let ty = tcx.push(TyKind::RawPtr(inner_ty, Mutability::Not));
+
+        let mut pt = PlaceTable::new(Rc::new(tcx));
         let root = Local::new(1);
         pt.allocate_local(root, ty);
 
         let tuple = Local::new(2);
-        pt.allocate_local(
-            tuple,
-            Ty::Tuple(vec![Ty::RawPtr(Box::new(Ty::I32), Mutability::Not)]),
-        );
+        pt.allocate_local(tuple, inner_ty);
 
         let int = Local::new(3);
-        pt.allocate_local(int, Ty::I32);
+        pt.allocate_local(int, TyCtxt::I32);
 
         // root -[Deref]-> tuple -[Field(0)]-> tuple.0 -[Deref]-> int
         let tuple_0 = Place::from_projected(
@@ -1058,9 +1078,11 @@ mod tests {
 
     #[test]
     fn tuple_projection() {
-        let mut pt = PlaceTable::new();
+        let mut tcx = TyCtxt::from_primitives();
+        let ty = tcx.push(TyKind::Tuple(vec![TyCtxt::I8, TyCtxt::I32]));
+
+        let mut pt = PlaceTable::new(Rc::new(tcx));
         let local = Local::new(1);
-        let ty = Ty::Tuple(vec![Ty::I8, Ty::I32]);
         pt.allocate_local(local, ty);
 
         let place = pt
@@ -1138,14 +1160,16 @@ mod tests {
 
     #[test]
     fn prim_arrays() {
-        let mut pt = PlaceTable::new();
-        let ty = Ty::Array(Box::new(Ty::I32), 4);
+        let mut tcx = TyCtxt::from_primitives();
+        let ty = tcx.push(TyKind::Array(TyCtxt::I32, 4));
+
+        let mut pt = PlaceTable::new(Rc::new(tcx));
         let local = Local::new(1);
         let local_pidx = pt.allocate_local(local, ty);
 
         let one = Local::new(2);
-        pt.allocate_local(one, Ty::USIZE);
-        pt.assign_literal(&one, Some(Literal::Uint(1, UintTy::Usize)));
+        pt.allocate_local(one, TyCtxt::USIZE);
+        pt.assign_literal(one, Some(Literal::Uint(1, UintTy::Usize)));
 
         let proj = ProjectionElem::Index(one);
 
@@ -1162,19 +1186,25 @@ mod tests {
                 .run_ptr
                 .unwrap()
                 .run_and_offset
-                .offset(BasicMemory::ty_size(&Ty::I32).unwrap().bytes_usize() as isize)
+                .offset(
+                    BasicMemory::ty_size(TyCtxt::I32, &pt.tcx)
+                        .unwrap()
+                        .bytes_usize() as isize
+                )
         )
     }
     #[test]
     fn composite_arrays() {
-        let mut pt = PlaceTable::new();
-        let ty = Ty::Array(Box::new(Ty::Tuple(vec![Ty::I32, Ty::I64])), 4);
+        let mut tcx = TyCtxt::from_primitives();
+        let elem_ty = tcx.push(TyKind::Tuple(vec![TyCtxt::I32, TyCtxt::I64]));
+        let ty = tcx.push(TyKind::Array(elem_ty, 4));
+        let mut pt = PlaceTable::new(Rc::new(tcx));
         let local = Local::new(1);
         let local_pidx = pt.allocate_local(local, ty);
 
         let one = Local::new(2);
-        pt.allocate_local(one, Ty::USIZE);
-        pt.assign_literal(&one, Some(Literal::Uint(1, UintTy::Usize)));
+        pt.allocate_local(one, TyCtxt::USIZE);
+        pt.assign_literal(one, Some(Literal::Uint(1, UintTy::Usize)));
 
         // local[one].0
         let one_zero = Place::from_projected(
@@ -1185,7 +1215,7 @@ mod tests {
             ],
         );
         let one_zero = pt.get_node(&one_zero).unwrap();
-        assert_eq!(pt.places[one_zero].ty, Ty::I32);
+        assert_eq!(pt.places[one_zero].ty, TyCtxt::I32);
         assert_eq!(pt.places[local_pidx].alloc_id, pt.places[one_zero].alloc_id);
     }
 }

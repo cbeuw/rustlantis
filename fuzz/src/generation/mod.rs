@@ -1,13 +1,15 @@
 mod intrinsics;
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::{cmp, vec};
 
 use log::{debug, trace};
 use mir::serialize::Serialize;
 use mir::syntax::{
     BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal, Local, LocalDecls,
-    Mutability, Operand, Place, Program, Rvalue, Statement, SwitchTargets, Terminator, Ty, UnOp,
+    Mutability, Operand, Place, Program, Rvalue, Statement, SwitchTargets, Terminator, TyId,
+    TyKind, UnOp,
 };
 use mir::tyctxt::TyCtxt;
 use rand::seq::SliceRandom;
@@ -40,7 +42,7 @@ type Result<Node> = std::result::Result<Node, SelectionError>;
 pub struct GenerationCtx {
     rng: RefCell<Box<dyn RngCore>>,
     program: Program,
-    tcx: TyCtxt,
+    tcx: Rc<TyCtxt>,
     ty_weights: TySelect,
     pt: PlaceTable,
     return_stack: Vec<(Function, BasicBlock)>,
@@ -50,15 +52,15 @@ pub struct GenerationCtx {
 
 // Operand
 impl GenerationCtx {
-    fn choose_operand(&self, tys: &[Ty], excluded: &Place) -> Result<Operand> {
+    fn choose_operand(&self, tys: &[TyId], excluded: &Place) -> Result<Operand> {
         let operand: Result<Operand> = try {
             let (ppath, weights) = PlaceSelector::for_operand()
                 .except(excluded)
                 .of_tys(tys)
-                .into_weighted(&self.pt)
+                .into_weighted(&self.pt, &self.tcx)
                 .ok_or(SelectionError::Exhausted)?;
             self.make_choice_weighted(ppath.into_iter(), weights, |ppath| {
-                if self.tcx.is_copy(&ppath.target_node(&self.pt).ty) {
+                if ppath.target_node(&self.pt).ty.is_copy(&self.tcx) {
                     Ok(Operand::Copy(ppath.to_place(&self.pt)))
                 } else {
                     Ok(Operand::Move(ppath.to_place(&self.pt)))
@@ -67,10 +69,10 @@ impl GenerationCtx {
         };
         operand.or_else(|_| {
             // TODO: allow array and tuple literals
-            let literalble: Vec<Ty> = tys
+            let literalble: Vec<TyId> = tys
                 .iter()
-                .filter(|ty| <dyn RngCore>::is_literalble(*ty))
-                .cloned()
+                .filter(|ty| <dyn RngCore>::is_literalble(**ty, &self.tcx))
+                .copied()
                 .collect();
             if literalble.is_empty() {
                 Err(SelectionError::Exhausted)
@@ -82,7 +84,7 @@ impl GenerationCtx {
                 let literal = self
                     .rng
                     .borrow_mut()
-                    .gen_literal(selected)
+                    .gen_literal(*selected, &self.tcx)
                     .expect("can always generate a literal of a literalble type");
                 Ok(Operand::Constant(literal))
             }
@@ -100,25 +102,25 @@ impl GenerationCtx {
     fn generate_use(&self, lhs: &Place) -> Result<Rvalue> {
         trace!(
             "generating use with {}: {}",
-            lhs.serialize(),
-            lhs.ty(self.current_decls()).serialize()
+            lhs.serialize(&self.tcx),
+            lhs.ty(self.current_decls(), &self.tcx).serialize(&self.tcx)
         );
-        let operand = self.choose_operand(&[lhs.ty(self.current_decls())], lhs)?;
+        let operand = self.choose_operand(&[lhs.ty(self.current_decls(), &self.tcx)], lhs)?;
         Ok(Rvalue::Use(operand))
     }
 
     fn generate_unary_op(&self, lhs: &Place) -> Result<Rvalue> {
-        use Ty::*;
+        use TyKind::*;
         use UnOp::*;
-        let lhs_ty = lhs.ty(self.current_decls());
-        let unops = match lhs_ty {
+        let lhs_ty = lhs.ty(self.current_decls(), &self.tcx);
+        let unops = match lhs_ty.kind(&self.tcx) {
             Int(_) => &[Neg, Not][..],
             Float(_) => &[Neg][..],
             Uint(_) | Bool => &[Not][..],
             _ => &[][..],
         };
         let rvalue = self.make_choice(unops.iter(), |unop| {
-            let operand = self.choose_operand(&[lhs_ty.clone()], lhs)?;
+            let operand = self.choose_operand(&[lhs_ty], lhs)?;
             Ok(Rvalue::UnaryOp(*unop, operand))
         })?;
         Ok(rvalue)
@@ -126,9 +128,9 @@ impl GenerationCtx {
 
     fn generate_binary_op(&self, lhs: &Place) -> Result<Rvalue> {
         use BinOp::*;
-        use Ty::*;
-        let lhs_ty = lhs.ty(self.current_decls());
-        let binops = match lhs_ty {
+        use TyKind::*;
+        let lhs_ty = lhs.ty(self.current_decls(), &self.tcx);
+        let binops = match lhs_ty.kind(&self.tcx) {
             Bool => &[BitAnd, BitOr, BitXor, Eq, Lt, Le, Ne, Ge, Gt][..],
             // FIXME: Floating point rem https://github.com/rust-lang/rust/issues/109567
             Float(_) => &[Add, Sub, Mul, Div /*, Rem */][..],
@@ -141,36 +143,36 @@ impl GenerationCtx {
             let (l, r) = match *binop {
                 Div | Rem => {
                     // Avoid div/rem by zero
-                    let l = self.choose_operand(&[lhs_ty.clone()], lhs)?;
-                    let r = Operand::Constant(self.rng.borrow_mut().gen_literal_non_zero(&lhs_ty).expect("can generate literal"));
+                    let l = self.choose_operand(&[lhs_ty], lhs)?;
+                    let r = Operand::Constant(self.rng.borrow_mut().gen_literal_non_zero(lhs_ty, &self.tcx).expect("can generate literal"));
                     (l, r)
                 }
                 Add | Sub | Mul | BitXor | BitAnd | BitOr => {
                     // Both operand same type as lhs
-                    let l = self.choose_operand(&[lhs_ty.clone()], lhs)?;
-                    let r = self.choose_operand(&[lhs_ty.clone()], lhs)?;
+                    let l = self.choose_operand(&[lhs_ty], lhs)?;
+                    let r = self.choose_operand(&[lhs_ty], lhs)?;
                     // As the types are all integers or floats which are Copy, Move/Copy
                     // probably doesn't make much difference
                     (l, r)
                 }
                 Shl | Shr => {
                     // left operand same type as lhs, right can be uint or int
-                    let l = self.choose_operand(&[lhs_ty.clone()], lhs)?;
+                    let l = self.choose_operand(&[lhs_ty], lhs)?;
                     // TODO: use a compile time concat
                     let r = self.choose_operand(
                         &[
-                            Ty::ISIZE,
-                            Ty::I8,
-                            Ty::I16,
-                            Ty::I32,
-                            Ty::I64,
-                            Ty::I128,
-                            Ty::USIZE,
-                            Ty::U8,
-                            Ty::U16,
-                            Ty::U32,
-                            Ty::U64,
-                            Ty::U128,
+                            TyCtxt::ISIZE,
+                            TyCtxt::I8,
+                            TyCtxt::I16,
+                            TyCtxt::I32,
+                            TyCtxt::I64,
+                            TyCtxt::I128,
+                            TyCtxt::USIZE,
+                            TyCtxt::U8,
+                            TyCtxt::U16,
+                            TyCtxt::U32,
+                            TyCtxt::U64,
+                            TyCtxt::U128,
                         ],
                         lhs,
                     )?;
@@ -179,39 +181,38 @@ impl GenerationCtx {
                 Eq | Ne | Lt | Le | Ge | Gt => {
                     // neither left or right operand needs to be the sme type as lhs
                     let tys = [
-                        Ty::Bool,
-                        Ty::Char,
-                        Ty::ISIZE,
-                        Ty::I8,
-                        Ty::I16,
-                        Ty::I32,
-                        Ty::I64,
-                        Ty::I128,
-                        Ty::USIZE,
-                        Ty::U8,
-                        Ty::U16,
-                        Ty::U32,
-                        Ty::U64,
-                        Ty::U128,
-                        Ty::F32,
-                        Ty::F64,
+                        TyCtxt::BOOL,
+                        TyCtxt::CHAR,
+                        TyCtxt::ISIZE,
+                        TyCtxt::I8,
+                        TyCtxt::I16,
+                        TyCtxt::I32,
+                        TyCtxt::I64,
+                        TyCtxt::I128,
+                        TyCtxt::USIZE,
+                        TyCtxt::U8,
+                        TyCtxt::U16,
+                        TyCtxt::U32,
+                        TyCtxt::U64,
+                        TyCtxt::U128,
+                        TyCtxt::F32,
+                        TyCtxt::F64,
                     ];
                     let l = self.choose_operand(&tys, lhs)?;
-                    let r = self.choose_operand(&[l.ty(self.current_decls())], lhs)?;
+                    let r = self.choose_operand(&[l.ty(self.current_decls(), &self.tcx)], lhs)?;
                     (l, r)
                 }
                 Offset => {
-                    let Ty::RawPtr(_, lhs_mutability) = lhs_ty else {
+                    let TyKind::RawPtr(_, lhs_mutability) = lhs_ty.kind(&self.tcx) else {
                         unreachable!("lhs is a ptr");
                     };
-                    let tys: Vec<Ty> = self
+                    let tys: Vec<TyId> = self
                         .tcx
-                        .iter()
-                        .filter(|ty| matches!(ty, Ty::RawPtr(_, mutability) if *mutability == lhs_mutability))
-                        .cloned()
+                        .iter_enumerated()
+                        .filter_map(|(ty, kind)| matches!(kind, TyKind::RawPtr(_, mutability) if *mutability == *lhs_mutability).then_some(ty))
                         .collect();
                     let l = self.choose_operand(&tys, lhs)?;
-                    let r = self.choose_operand(&[Ty::ISIZE], lhs)?;
+                    let r = self.choose_operand(&[TyCtxt::ISIZE], lhs)?;
                     (l, r)
                 }
             };
@@ -222,11 +223,11 @@ impl GenerationCtx {
 
     fn generate_checked_binary_op(&self, lhs: &Place) -> Result<Rvalue> {
         use BinOp::*;
-        use Ty::*;
-        let lhs_ty = lhs.ty(self.current_decls());
+        use TyKind::*;
+        let lhs_ty = lhs.ty(self.current_decls(), &self.tcx);
 
-        if let Some([ret, Ty::BOOL]) = lhs_ty.tuple_elems() {
-            let bin_ops = match ret {
+        if let Some([ret, TyCtxt::BOOL]) = lhs_ty.tuple_elems(&self.tcx) {
+            let bin_ops = match ret.kind(&self.tcx) {
                 Uint(_) | Int(_) => &[Add, Sub, Mul][..],
                 _ => &[][..],
             };
@@ -234,8 +235,8 @@ impl GenerationCtx {
                 let (l, r) = match *bin_op {
                     Add | Sub | Mul => {
                         // Both operand same type as lhs
-                        let l = self.choose_operand(&[ret.clone()], lhs)?;
-                        let r = self.choose_operand(&[ret.clone()], lhs)?;
+                        let l = self.choose_operand(&[*ret], lhs)?;
+                        let r = self.choose_operand(&[*ret], lhs)?;
                         // As the types are all integers or floats which are Copy, Move/Copy
                         // probably doesn't make much difference
                         (l, r)
@@ -251,42 +252,42 @@ impl GenerationCtx {
     }
 
     fn generate_cast(&self, lhs: &Place) -> Result<Rvalue> {
-        let target_ty = lhs.ty(self.current_decls());
-        let source_tys = match target_ty {
+        let target_ty = lhs.ty(self.current_decls(), &self.tcx);
+        let source_tys = match target_ty.kind(&self.tcx) {
             // TODO: no int to ptr cast for now
-            Ty::Int(..) | Ty::Uint(..) => &[
-                Ty::ISIZE,
-                Ty::I8,
-                Ty::I16,
-                Ty::I32,
-                Ty::I64,
-                Ty::I128,
-                Ty::USIZE,
-                Ty::U8,
-                Ty::U16,
-                Ty::U32,
-                Ty::U64,
-                Ty::U128,
-                Ty::F32,
-                Ty::F64,
-                Ty::Char,
-                Ty::Bool,
+            TyKind::Int(..) | TyKind::Uint(..) => &[
+                TyCtxt::ISIZE,
+                TyCtxt::I8,
+                TyCtxt::I16,
+                TyCtxt::I32,
+                TyCtxt::I64,
+                TyCtxt::I128,
+                TyCtxt::USIZE,
+                TyCtxt::U8,
+                TyCtxt::U16,
+                TyCtxt::U32,
+                TyCtxt::U64,
+                TyCtxt::U128,
+                TyCtxt::F32,
+                TyCtxt::F64,
+                TyCtxt::CHAR,
+                TyCtxt::BOOL,
             ][..],
-            Ty::Float(..) => &[
-                Ty::ISIZE,
-                Ty::I8,
-                Ty::I16,
-                Ty::I32,
-                Ty::I64,
-                Ty::I128,
-                Ty::USIZE,
-                Ty::U8,
-                Ty::U16,
-                Ty::U32,
-                Ty::U64,
-                Ty::U128,
-                Ty::F32,
-                Ty::F64,
+            TyKind::Float(..) => &[
+                TyCtxt::ISIZE,
+                TyCtxt::I8,
+                TyCtxt::I16,
+                TyCtxt::I32,
+                TyCtxt::I64,
+                TyCtxt::I128,
+                TyCtxt::USIZE,
+                TyCtxt::U8,
+                TyCtxt::U16,
+                TyCtxt::U32,
+                TyCtxt::U64,
+                TyCtxt::U128,
+                TyCtxt::F32,
+                TyCtxt::F64,
             ][..],
             _ => &[][..],
         };
@@ -294,26 +295,26 @@ impl GenerationCtx {
             // XXX: remove the filter once https://github.com/rust-lang/rust/pull/109160 is merged
             source_tys.iter().filter(|ty| **ty != target_ty),
             |source_ty| {
-                let source = self.choose_operand(&[source_ty.clone()], lhs)?;
-                Ok(Rvalue::Cast(source, target_ty.clone()))
+                let source = self.choose_operand(&[*source_ty], lhs)?;
+                Ok(Rvalue::Cast(source, target_ty))
             },
         )?;
         Ok(rvalue)
     }
 
     fn generate_address_of(&self, lhs: &Place) -> Result<Rvalue> {
-        let target_ty = lhs.ty(self.current_decls());
-        let (source_ty, mutability) = match target_ty {
-            Ty::RawPtr(box ty, mutability) => (ty, mutability),
+        let target_ty = lhs.ty(self.current_decls(), &self.tcx);
+        let (source_ty, mutability) = match target_ty.kind(&self.tcx) {
+            TyKind::RawPtr(ty, mutability) => (ty, mutability),
             _ => return Err(SelectionError::Exhausted),
         };
         let (candidates, weights) = PlaceSelector::for_pointee()
-            .of_ty(source_ty)
+            .of_ty(*source_ty)
             .except(lhs)
-            .into_weighted(&self.pt)
+            .into_weighted(&self.pt, &self.tcx)
             .ok_or(SelectionError::Exhausted)?;
         self.make_choice_weighted(candidates.into_iter(), weights, |ppath| {
-            Ok(Rvalue::AddressOf(mutability, ppath.to_place(&self.pt)))
+            Ok(Rvalue::AddressOf(*mutability, ppath.to_place(&self.pt)))
         })
     }
 
@@ -356,15 +357,15 @@ impl GenerationCtx {
 impl GenerationCtx {
     fn generate_assign(&self) -> Result<Statement> {
         let (lhs_choices, weights) = PlaceSelector::for_lhs()
-            .into_weighted(&self.pt)
+            .into_weighted(&self.pt, &self.tcx)
             .ok_or(SelectionError::Exhausted)?;
 
         self.make_choice_weighted(lhs_choices.into_iter(), weights, |ppath| {
             let lhs = ppath.to_place(&self.pt);
             debug!(
                 "generating an assignment statement with lhs {}: {}",
-                lhs.serialize(),
-                lhs.ty(self.current_decls()).serialize()
+                lhs.serialize(&self.tcx),
+                lhs.ty(self.current_decls(), &self.tcx).serialize(&self.tcx)
             );
 
             let statement = Statement::Assign(lhs.clone(), self.generate_rvalue(&lhs)?);
@@ -377,14 +378,12 @@ impl GenerationCtx {
         Ok(Statement::Nop)
     }
 
-    fn declare_new_var(&mut self, mutability: Mutability, ty: Ty) -> Local {
-        let local = self
-            .current_fn_mut()
-            .declare_new_var(mutability, ty.clone());
+    fn declare_new_var(&mut self, mutability: Mutability, ty: TyId) -> Local {
+        let local = self.current_fn_mut().declare_new_var(mutability, ty);
         trace!(
             "generated new var {}: {}",
             local.identifier(),
-            ty.serialize()
+            ty.serialize(&self.tcx)
         );
         self.pt.allocate_local(local, ty);
         local
@@ -451,7 +450,7 @@ impl GenerationCtx {
 
         self.post_generation(&statement);
         if !matches!(statement, Statement::Nop) {
-            trace!("generated {}", statement.serialize());
+            trace!("generated {}", statement.serialize(&self.tcx));
         }
         self.current_bb_mut().insert_statement(statement);
     }
@@ -526,22 +525,22 @@ impl GenerationCtx {
         debug!("generating a SwitchInt terminator");
         let (places, weights) = PlaceSelector::for_known_val()
             .of_tys(&[
-                Ty::ISIZE,
-                Ty::I8,
-                Ty::I16,
-                Ty::I32,
-                Ty::I64,
-                Ty::I128,
-                Ty::USIZE,
-                Ty::U8,
-                Ty::U16,
-                Ty::U32,
-                Ty::U64,
-                Ty::U128,
+                TyCtxt::ISIZE,
+                TyCtxt::I8,
+                TyCtxt::I16,
+                TyCtxt::I32,
+                TyCtxt::I64,
+                TyCtxt::I128,
+                TyCtxt::USIZE,
+                TyCtxt::U8,
+                TyCtxt::U16,
+                TyCtxt::U32,
+                TyCtxt::U64,
+                TyCtxt::U128,
                 // Ty::Char,
                 // Ty::Bool,
             ])
-            .into_weighted(&self.pt)
+            .into_weighted(&self.pt, &self.tcx)
             .ok_or(SelectionError::Exhausted)?;
 
         let (place, place_val) =
@@ -603,7 +602,7 @@ impl GenerationCtx {
             self.current_bb.identifier()
         );
         let (return_places, weights) = PlaceSelector::for_lhs()
-            .into_weighted(&self.pt)
+            .into_weighted(&self.pt, &self.tcx)
             .ok_or(SelectionError::Exhausted)?;
 
         let return_place =
@@ -616,11 +615,11 @@ impl GenerationCtx {
             .map(|_| {
                 let (places, weights) = PlaceSelector::for_argument()
                     .except(&return_place)
-                    .into_weighted(&self.pt)
+                    .into_weighted(&self.pt, &self.tcx)
                     .ok_or(SelectionError::Exhausted)?;
                 self.make_choice_weighted(places.into_iter(), weights, |ppath| {
                     let ty = &ppath.target_node(&self.pt).ty;
-                    if self.tcx.is_copy(&ty) {
+                    if ty.is_copy(&self.tcx) {
                         Ok(Operand::Copy(ppath.to_place(&self.pt)))
                     } else {
                         Ok(Operand::Move(ppath.to_place(&self.pt)))
@@ -653,7 +652,7 @@ impl GenerationCtx {
 
     fn generate_intrinsic_call(&mut self) -> Result<()> {
         let (return_places, weights) = PlaceSelector::for_lhs()
-            .into_weighted(&self.pt)
+            .into_weighted(&self.pt, &self.tcx)
             .ok_or(SelectionError::Exhausted)?;
 
         let return_place =
@@ -706,17 +705,19 @@ impl GenerationCtx {
         }
 
         // Dump vars
-        let unit = self.declare_new_var(Mutability::Not, Ty::Unit);
-        let unit2 = self.declare_new_var(Mutability::Not, Ty::Unit);
+        let unit = self.declare_new_var(Mutability::Not, TyCtxt::UNIT);
+        let unit2 = self.declare_new_var(Mutability::Not, TyCtxt::UNIT);
 
         let dumpable: Vec<Local> = self
             .current_fn()
             .args_decl_iter()
             .chain(self.current_fn().vars_decl_iter())
             .filter_map(|(local, decl)| {
-                (decl.ty.determ_printable()
-                    && !decl.ty.contains(|ty| ty == &Ty::F32 || ty == &Ty::F64)
-                    && decl.ty != Ty::Unit
+                (decl.ty.determ_printable(&self.tcx)
+                    && !decl
+                        .ty
+                        .contains(&self.tcx, |_, ty| ty == TyCtxt::F32 || ty == TyCtxt::F64)
+                    && decl.ty != TyCtxt::UNIT
                     && self.pt.is_place_init(local))
                 .then_some(local)
             })
@@ -809,12 +810,12 @@ impl GenerationCtx {
 impl GenerationCtx {
     // Move generation context to an executed function
     fn enter_new_fn(&mut self, args: &[Operand], return_dest: &Place, public: bool) -> Function {
-        let args_ty: Vec<Ty> = args
+        let args_ty: Vec<TyId> = args
             .iter()
-            .map(|arg| arg.ty(self.current_decls()))
+            .map(|arg| arg.ty(self.current_decls(), &self.tcx))
             .collect::<Vec<_>>();
-        let return_ty = return_dest.ty(self.current_decls());
-        let mut body = Body::new(&args_ty, return_ty.clone(), public);
+        let return_ty = return_dest.ty(self.current_decls(), &self.tcx);
+        let mut body = Body::new(&args_ty, return_ty, public);
 
         let starting_bb = body.new_basic_block(BasicBlockData::new());
         let new_fn = self.program.push_fn(body);
@@ -822,8 +823,8 @@ impl GenerationCtx {
         debug!(
             "entering {}({}) -> {}",
             new_fn.identifier(),
-            args_ty.as_slice().serialize(),
-            return_ty.serialize(),
+            args_ty.as_slice().serialize(&self.tcx),
+            return_ty.serialize(&self.tcx),
         );
 
         self.current_function = new_fn;
@@ -837,8 +838,8 @@ impl GenerationCtx {
         new_fn
     }
 
-    fn enter_fn0(&mut self, args_ty: &[Ty], return_ty: Ty, args: &[Literal]) {
-        self.program.set_entry_args(&args);
+    fn enter_fn0(&mut self, args_ty: &[TyId], return_ty: TyId, args: &[Literal]) {
+        self.program.set_entry_args(args);
         let mut body = Body::new(args_ty, return_ty, true);
 
         let starting_bb = body.new_basic_block(BasicBlockData::new());
@@ -976,15 +977,15 @@ impl GenerationCtx {
 
     pub fn new(seed: u64, debug_dump: bool) -> Self {
         let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(seed)));
-        let tcx = seed_tys(&mut *rng.borrow_mut());
+        let tcx = Rc::new(seed_tys(&mut *rng.borrow_mut()));
         let ty_weights = TySelect::new(&tcx);
         // TODO: don't zero-initialize current_function and current_bb
         Self {
             rng,
-            tcx,
+            tcx: tcx.clone(),
             ty_weights,
             program: Program::new(debug_dump),
-            pt: PlaceTable::new(),
+            pt: PlaceTable::new(tcx),
             return_stack: vec![],
             current_function: Function::new(0),
             current_bb: BasicBlock::new(0),
@@ -1021,20 +1022,19 @@ impl GenerationCtx {
         &self.current_fn().local_decls
     }
 
-    pub fn generate(mut self) -> Program {
+    pub fn generate(mut self) -> (Program, TyCtxt) {
         let args_count = self.rng.get_mut().gen_range(2..=16);
-        let arg_tys: Vec<Ty> = self
+        let arg_tys: Vec<TyId> = self
             .tcx
-            .iter()
-            .filter(|ty| <dyn RngCore>::is_literalble(*ty))
-            .cloned()
+            .indicies()
+            .filter(|ty| <dyn RngCore>::is_literalble(*ty, &self.tcx))
             .choose_multiple(&mut *self.rng.borrow_mut(), args_count);
         let arg_literals: Vec<Literal> = arg_tys
             .iter()
             .map(|ty| {
                 self.rng
                     .borrow_mut()
-                    .gen_literal(ty)
+                    .gen_literal(*ty, &self.tcx)
                     .expect("ty is literable")
             })
             .collect();
@@ -1042,7 +1042,7 @@ impl GenerationCtx {
         let return_ty = self.ty_weights.choose_ty_filtered(
             &mut *self.rng.borrow_mut(),
             &self.tcx,
-            Ty::determ_printable,
+            |tcx, ty| ty.determ_printable(tcx),
         );
         self.enter_fn0(&arg_tys, return_ty, &arg_literals);
 
@@ -1057,7 +1057,9 @@ impl GenerationCtx {
             }
         }
 
-        self.program
+        drop(self.pt);
+
+        (self.program, Rc::into_inner(self.tcx).unwrap())
     }
 
     fn post_generation(&mut self, stmt: &Statement) {
@@ -1082,7 +1084,7 @@ impl GenerationCtx {
             }
             Statement::StorageLive(local) => {
                 self.pt
-                    .allocate_local(*local, self.current_decls()[*local].ty.clone());
+                    .allocate_local(*local, self.current_decls()[*local].ty);
             }
             Statement::StorageDead(local) => self.pt.deallocate_local(*local),
             Statement::Deinit(place) => self.pt.mark_place_uninit(place),

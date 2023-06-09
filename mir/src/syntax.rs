@@ -3,7 +3,7 @@ use std::num::TryFromIntError;
 use index_vec::{define_index_type, IndexVec};
 use smallvec::SmallVec;
 
-use crate::serialize::Serialize;
+use crate::tyctxt::TyCtxt;
 
 pub struct Program {
     pub functions: IndexVec<Function, Body>,
@@ -60,7 +60,7 @@ pub struct LocalDecl {
 
     /// If this local is a temporary and `is_block_tail` is `Some`,
     /// The type of this local.
-    pub ty: Ty,
+    pub ty: TyId,
 }
 
 define_index_type! {pub struct FieldIdx = u32;}
@@ -100,8 +100,10 @@ impl Place {
         self
     }
 
-    pub fn ty(&self, local_decl: &LocalDecls) -> Ty {
-        local_decl[self.local()].ty.projected_ty(self.projection())
+    pub fn ty(&self, local_decl: &LocalDecls, tcx: &TyCtxt) -> TyId {
+        local_decl[self.local()]
+            .ty
+            .projected_ty(tcx, self.projection())
     }
 }
 
@@ -188,7 +190,7 @@ pub enum Rvalue {
     Use(Operand),
     UnaryOp(UnOp, Operand),
     BinaryOp(BinOp, Operand, Operand),
-    Cast(Operand, Ty),
+    Cast(Operand, TyId),
     // define!("mir_checked", fn Checked<T>(binop: T) -> (T, bool));
     CheckedBinaryOp(BinOp, Operand, Operand),
     // define!("mir_len", fn Len<T>(place: T) -> usize);
@@ -222,10 +224,10 @@ pub enum Operand {
 }
 
 impl Operand {
-    pub fn ty(&self, local_decls: &LocalDecls) -> Ty {
+    pub fn ty(&self, local_decls: &LocalDecls, tcx: &TyCtxt) -> TyId {
         match self {
-            Operand::Copy(place) | Operand::Move(place) => place.ty(local_decls),
-            Operand::Constant(lit) => lit.ty(),
+            Operand::Copy(place) | Operand::Move(place) => place.ty(local_decls, tcx),
+            Operand::Constant(lit) => lit.ty(tcx),
         }
     }
 }
@@ -280,8 +282,112 @@ pub enum FloatTy {
 }
 
 define_index_type! {pub struct TyId = u32;}
+impl TyId {
+    pub fn kind(self, tcx: &TyCtxt) -> &TyKind {
+        tcx.kind(self)
+    }
+    pub fn tuple_elems(self, tcx: &TyCtxt) -> Option<&[TyId]> {
+        match self.kind(tcx) {
+            TyKind::Tuple(tys) => Some(tys),
+            _ => None,
+        }
+    }
+
+    pub fn is_checked_binary_op_lhs(self, tcx: &TyCtxt) -> bool {
+        match self.kind(tcx) {
+            TyKind::Tuple(elems) => matches!(
+                (
+                    elems.get(0).map(|ty| ty.kind(tcx)),
+                    elems.get(1).map(|ty| ty.kind(tcx))
+                ),
+                (
+                    Some(TyKind::Int(..) | TyKind::Float(..) | TyKind::Uint(..)),
+                    Some(TyKind::Bool)
+                )
+            ),
+            _ => false,
+        }
+    }
+
+    // TODO: are pointers scalar?
+    pub fn is_scalar(self, tcx: &TyCtxt) -> bool {
+        self.kind(tcx).is_scalar()
+    }
+
+    pub fn projected_ty(self, tcx: &TyCtxt, projs: &[ProjectionElem]) -> Self {
+        match projs {
+            [] => self,
+            [head, tail @ ..] => {
+                let projected = match head {
+                    ProjectionElem::Deref => match self.kind(tcx) {
+                        TyKind::RawPtr(pointee, ..) => *pointee,
+                        _ => panic!("not a reference"),
+                    },
+                    ProjectionElem::TupleField(idx) => {
+                        self.tuple_elems(tcx).expect("is a tuple")[idx.index()]
+                    }
+                    ProjectionElem::Downcast(_) => self,
+                    ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } => {
+                        match self.kind(tcx) {
+                            TyKind::Array(ty, ..) => *ty,
+                            _ => panic!("not an array"),
+                        }
+                    }
+                    ProjectionElem::Field(_) => todo!(),
+                };
+                projected.projected_ty(tcx, tail)
+            }
+        }
+    }
+
+    pub fn contains<P>(self, tcx: &TyCtxt, predicate: P) -> bool
+    where
+        P: Fn(&TyCtxt, TyId) -> bool + Copy,
+    {
+        if predicate(tcx, self) {
+            return true;
+        }
+        match self.kind(tcx) {
+            TyKind::Tuple(elems) => elems.iter().any(|ty| ty.contains(tcx, predicate)),
+            TyKind::RawPtr(pointee, _) => pointee.contains(tcx, predicate),
+            TyKind::Array(ty, ..) => ty.contains(tcx, predicate),
+            TyKind::Adt(_) => todo!(),
+            _ => false,
+        }
+    }
+
+    // pub fn is_ref(self) -> bool {
+    //     matches!(self, Ty::Ref(..))
+    // }
+
+    pub fn is_unsafe_ptr(self, tcx: &TyCtxt) -> bool {
+        matches!(self.kind(tcx), TyKind::RawPtr(..))
+    }
+
+    pub fn is_any_ptr(self, tcx: &TyCtxt) -> bool {
+        self.is_unsafe_ptr(tcx)
+    }
+
+    pub fn pointee_ty(self, tcx: &TyCtxt) -> Option<Self> {
+        match self.kind(tcx) {
+            TyKind::RawPtr(ty, ..) => Some(*ty),
+            _ => None,
+        }
+    }
+
+    // If doesn't contain printer
+    pub fn determ_printable(self, tcx: &TyCtxt) -> bool {
+        !self.contains(tcx, |tcx, ty| ty.is_unsafe_ptr(tcx))
+    }
+
+    pub fn is_copy(&self, _tcx: &TyCtxt) -> bool {
+        // TODO: implement this
+        true
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
-pub enum Ty {
+pub enum TyKind {
     // Scalars
     Unit,
     Bool,
@@ -290,31 +396,31 @@ pub enum Ty {
     Uint(UintTy),
     Float(FloatTy),
     // Composite
-    RawPtr(Box<Ty>, Mutability),
-    Tuple(Vec<Ty>),
+    RawPtr(TyId, Mutability),
+    Tuple(Vec<TyId>),
     // User-defined
     Adt(Adt),
-    Array(Box<Ty>, usize),
+    Array(TyId, usize),
     // TODO: more types
 }
 
-impl Ty {
-    pub const BOOL: Self = Ty::Bool;
-    pub const CHAR: Self = Ty::Char;
-    pub const ISIZE: Self = Ty::Int(IntTy::Isize);
-    pub const I8: Self = Ty::Int(IntTy::I8);
-    pub const I16: Self = Ty::Int(IntTy::I16);
-    pub const I32: Self = Ty::Int(IntTy::I32);
-    pub const I64: Self = Ty::Int(IntTy::I64);
-    pub const I128: Self = Ty::Int(IntTy::I128);
-    pub const USIZE: Self = Ty::Uint(UintTy::Usize);
-    pub const U8: Self = Ty::Uint(UintTy::U8);
-    pub const U16: Self = Ty::Uint(UintTy::U16);
-    pub const U32: Self = Ty::Uint(UintTy::U32);
-    pub const U64: Self = Ty::Uint(UintTy::U64);
-    pub const U128: Self = Ty::Uint(UintTy::U128);
-    pub const F32: Self = Ty::Float(FloatTy::F32);
-    pub const F64: Self = Ty::Float(FloatTy::F64);
+impl TyKind {
+    pub const BOOL: Self = TyKind::Bool;
+    pub const CHAR: Self = TyKind::Char;
+    pub const ISIZE: Self = TyKind::Int(IntTy::Isize);
+    pub const I8: Self = TyKind::Int(IntTy::I8);
+    pub const I16: Self = TyKind::Int(IntTy::I16);
+    pub const I32: Self = TyKind::Int(IntTy::I32);
+    pub const I64: Self = TyKind::Int(IntTy::I64);
+    pub const I128: Self = TyKind::Int(IntTy::I128);
+    pub const USIZE: Self = TyKind::Uint(UintTy::Usize);
+    pub const U8: Self = TyKind::Uint(UintTy::U8);
+    pub const U16: Self = TyKind::Uint(UintTy::U16);
+    pub const U32: Self = TyKind::Uint(UintTy::U32);
+    pub const U64: Self = TyKind::Uint(UintTy::U64);
+    pub const U128: Self = TyKind::Uint(UintTy::U128);
+    pub const F32: Self = TyKind::Float(FloatTy::F32);
+    pub const F64: Self = TyKind::Float(FloatTy::F64);
 
     pub const INTS: [Self; 6] = [
         Self::ISIZE,
@@ -336,109 +442,34 @@ impl Ty {
 
     pub const FLOATS: [Self; 2] = [Self::F32, Self::F64];
 
-    pub fn tuple_elems(&self) -> Option<&[Ty]> {
-        match self {
-            Ty::Tuple(tys) => Some(tys),
-            _ => None,
-        }
-    }
-
-    pub fn is_checked_binary_op_lhs(&self) -> bool {
-        match self {
-            Ty::Tuple(elems) => matches!(
-                elems.as_slice(),
-                &[Ty::Int(..) | Ty::Float(..) | Ty::Uint(..), Ty::Bool]
-            ),
-            _ => false,
-        }
-    }
-
-    // TODO: are pointers scalar?
     pub fn is_scalar(&self) -> bool {
-        match *self {
-            Self::ISIZE
-            | Self::I8
-            | Self::I16
-            | Self::I32
-            | Self::I64
-            | Self::I128
-            | Self::USIZE
-            | Self::U8
-            | Self::U16
-            | Self::U32
-            | Self::U64
-            | Self::U128
-            | Self::F32
-            | Self::F64
-            | Self::Bool
-            | Self::Char
-            | Self::Unit => true,
+        match self {
+            &TyKind::ISIZE
+            | &TyKind::I8
+            | &TyKind::I16
+            | &TyKind::I32
+            | &TyKind::I64
+            | &TyKind::I128
+            | &TyKind::USIZE
+            | &TyKind::U8
+            | &TyKind::U16
+            | &TyKind::U32
+            | &TyKind::U64
+            | &TyKind::U128
+            | &TyKind::F32
+            | &TyKind::F64
+            | &TyKind::Bool
+            | &TyKind::Char
+            | &TyKind::Unit => true,
             _ => false,
         }
     }
 
-    pub fn projected_ty(&self, projs: &[ProjectionElem]) -> Self {
-        match projs {
-            [] => self.clone(),
-            [head, tail @ ..] => {
-                let projected = match head {
-                    ProjectionElem::Deref => match self {
-                        Ty::RawPtr(pointee, ..) => *pointee.clone(),
-                        _ => panic!("not a reference"),
-                    },
-                    ProjectionElem::TupleField(idx) => {
-                        self.tuple_elems().expect("is a tuple")[idx.index()].clone()
-                    }
-                    ProjectionElem::Downcast(_) => self.clone(),
-                    ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } => match self {
-                        Ty::Array(ty, ..) => *ty.clone(),
-                        _ => panic!("not an array"),
-                    },
-                    ProjectionElem::Field(_) => todo!(),
-                };
-                projected.projected_ty(tail)
-            }
-        }
-    }
-
-    pub fn contains<P>(&self, predicate: P) -> bool
-    where
-        P: Fn(&Ty) -> bool + Copy,
-    {
-        if predicate(self) {
-            return true;
-        }
+    pub fn is_structural(&self) -> bool {
         match self {
-            Ty::Tuple(elems) => elems.iter().any(|ty| ty.contains(predicate)),
-            Ty::RawPtr(pointee, _) => pointee.contains(predicate),
-            Ty::Array(ty, ..) => ty.contains(predicate),
-            Ty::Adt(_) => todo!(),
-            _ => false,
+            &TyKind::Adt(..) => false,
+            _ => true,
         }
-    }
-
-    // pub fn is_ref(self) -> bool {
-    //     matches!(self, Ty::Ref(..))
-    // }
-
-    pub fn is_unsafe_ptr(&self) -> bool {
-        matches!(self, Ty::RawPtr(..))
-    }
-
-    pub fn is_any_ptr(&self) -> bool {
-        self.is_unsafe_ptr()
-    }
-
-    pub fn pointee_ty(&self) -> Option<Self> {
-        match self {
-            Ty::RawPtr(box ty, ..) => Some(ty.clone()),
-            _ => None,
-        }
-    }
-
-    // If doesn't contain printer
-    pub fn determ_printable(&self) -> bool {
-        !self.contains(|ty| matches!(ty, Ty::RawPtr(..)))
     }
 }
 
@@ -481,16 +512,17 @@ pub enum UnOp {
 }
 
 impl Literal {
-    pub fn ty(&self) -> Ty {
-        match self {
-            Literal::Int(_, ty) => Ty::Int(*ty),
-            Literal::Uint(_, ty) => Ty::Uint(*ty),
-            Literal::Bool(_) => Ty::Bool,
-            Literal::Char(_) => Ty::Char,
-            Literal::Tuple(elems) => Ty::Tuple(elems.iter().map(|lit| lit.ty()).collect()),
-            Literal::Float(_, ty) => Ty::Float(*ty),
-            Literal::Array(lit, len) => Ty::Array(Box::new(lit.ty()), *len),
-        }
+    pub fn ty(&self, tcx: &TyCtxt) -> TyId {
+        let kind = match self {
+            Literal::Int(_, ty) => TyKind::Int(*ty),
+            Literal::Uint(_, ty) => TyKind::Uint(*ty),
+            Literal::Bool(_) => TyKind::Bool,
+            Literal::Char(_) => TyKind::Char,
+            Literal::Tuple(elems) => TyKind::Tuple(elems.iter().map(|lit| lit.ty(tcx)).collect()),
+            Literal::Float(_, ty) => TyKind::Float(*ty),
+            Literal::Array(lit, len) => TyKind::Array(lit.ty(tcx), *len),
+        };
+        tcx.ty(&kind)
     }
 }
 
@@ -668,7 +700,7 @@ impl SwitchTargets {
 }
 
 impl LocalDecl {
-    pub fn new_mut(ty: Ty) -> Self {
+    pub fn new_mut(ty: TyId) -> Self {
         Self {
             mutability: Mutability::Mut,
             ty,
@@ -688,12 +720,12 @@ impl Local {
 }
 
 impl Body {
-    pub fn new(args: &[Ty], return_ty: Ty, public: bool) -> Self {
+    pub fn new(args: &[TyId], return_ty: TyId, public: bool) -> Self {
         let mut locals = IndexVec::new();
         locals.push(LocalDecl::new_mut(return_ty));
         // TODO: args shouldn't always be mut
         args.iter().for_each(|ty| {
-            locals.push(LocalDecl::new_mut(ty.clone()));
+            locals.push(LocalDecl::new_mut(*ty));
         });
         Self {
             basic_blocks: IndexVec::new(),
@@ -701,21 +733,6 @@ impl Body {
             public,
             arg_count: args.len(),
         }
-    }
-
-    pub fn args_list(&self) -> String {
-        self.args_iter()
-            .map(|arg| {
-                let decl = &self.local_decls[arg];
-                format!(
-                    "{}{}: {}",
-                    decl.mutability.prefix_str(),
-                    arg.identifier(),
-                    decl.ty.serialize()
-                )
-            })
-            .intersperse(",".to_string())
-            .collect()
     }
 
     pub fn is_arg(&self, local: Local) -> bool {
@@ -742,11 +759,11 @@ impl Body {
             .map(|local| (local, &self.local_decls[local]))
     }
 
-    pub fn return_ty(&self) -> Ty {
-        self.local_decls[Local::RET].ty.clone()
+    pub fn return_ty(&self) -> TyId {
+        self.local_decls[Local::RET].ty
     }
 
-    pub fn declare_new_var(&mut self, mutability: Mutability, ty: Ty) -> Local {
+    pub fn declare_new_var(&mut self, mutability: Mutability, ty: TyId) -> Local {
         self.local_decls.push(LocalDecl { mutability, ty })
     }
 

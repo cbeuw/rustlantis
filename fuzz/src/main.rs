@@ -28,6 +28,6 @@ fn main() {
     info!("Generating a program with seed {seed}");
     let debug_dump = env::var("RUSTLANTIS_DEBUG").is_ok_and(|v| v == "true" || v == "1");
     let genctxt = GenerationCtx::new(seed, debug_dump);
-    let program = genctxt.generate();
-    println!("{}", program.serialize());
+    let (program, tcx) = genctxt.generate();
+    println!("{}", program.serialize(&tcx));
 }

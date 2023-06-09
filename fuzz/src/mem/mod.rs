@@ -2,8 +2,10 @@ use std::{fmt, ops::Range};
 
 use abi::size::Size;
 use index_vec::{define_index_type, IndexVec};
-use mir::syntax::Ty;
-use rangemap::RangeMap;
+use mir::{
+    syntax::{TyId, TyKind},
+    tyctxt::TyCtxt,
+};
 
 #[derive(Clone, Copy)]
 pub enum AbstractByte<Provenance> {
@@ -190,23 +192,27 @@ impl BasicMemory {
     /// Returns Size for types with guaranteed size.
     /// Composite types under the default layout has no guaranteed size,
     /// as the AM is free to insert arbitarily large paddings.
-    pub fn ty_size(ty: &Ty) -> Option<Size> {
-        Some(match *ty {
-            Ty::Unit => Size::ZERO,
-            Ty::Bool => Size::from_bytes(1),
-            Ty::Char => Size::from_bytes(1),
-            Ty::I8 | Ty::U8 => Size::from_bits(8),
-            Ty::I16 | Ty::U16 => Size::from_bits(16),
-            Ty::I32 | Ty::U32 => Size::from_bits(32),
-            Ty::I64 | Ty::U64 => Size::from_bits(64),
-            Ty::I128 | Ty::U128 => Size::from_bits(128),
-            Ty::F32 => Size::from_bits(32),
-            Ty::F64 => Size::from_bits(64),
-            Ty::RawPtr(..) | Ty::ISIZE | Ty::USIZE => Self::PTR_SIZE,
-            Ty::Array(ref ty, len) => {
-                return Self::ty_size(ty).map(|elem| Size::from_bytes(elem.bytes_usize() * len))
-            }
-            _ => return None,
+    pub fn ty_size(ty: TyId, tcx: &TyCtxt) -> Option<Size> {
+        Some(match ty {
+            TyCtxt::UNIT => Size::ZERO,
+            TyCtxt::BOOL => Size::from_bytes(1),
+            TyCtxt::CHAR => Size::from_bytes(1),
+            TyCtxt::I8 | TyCtxt::U8 => Size::from_bits(8),
+            TyCtxt::I16 | TyCtxt::U16 => Size::from_bits(16),
+            TyCtxt::I32 | TyCtxt::U32 => Size::from_bits(32),
+            TyCtxt::I64 | TyCtxt::U64 => Size::from_bits(64),
+            TyCtxt::I128 | TyCtxt::U128 => Size::from_bits(128),
+            TyCtxt::F32 => Size::from_bits(32),
+            TyCtxt::F64 => Size::from_bits(64),
+            TyCtxt::ISIZE | TyCtxt::USIZE => Self::PTR_SIZE,
+            _ => match ty.kind(tcx) {
+                TyKind::RawPtr(..) => Self::PTR_SIZE,
+                TyKind::Array(ty, len) => {
+                    return Self::ty_size(*ty, tcx)
+                        .map(|elem| Size::from_bytes(elem.bytes_usize() * len))
+                }
+                _ => return None,
+            },
         })
     }
 }

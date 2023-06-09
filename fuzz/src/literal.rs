@@ -1,4 +1,7 @@
-use mir::syntax::{Literal, Ty};
+use mir::{
+    syntax::{Literal, TyId, TyKind},
+    tyctxt::TyCtxt,
+};
 use rand::{seq::SliceRandom, Rng, RngCore};
 use rand_distr::Distribution;
 
@@ -28,17 +31,17 @@ impl Distribution<isize> for Sombrero {
 }
 
 pub trait GenLiteral: Rng {
-    fn is_literalble(ty: &Ty) -> bool {
-        match *ty {
-            Ty::Tuple(ref elems) => elems.iter().all(Ty::is_scalar),
-            Ty::Array(ref ty, ..) => ty.is_scalar(),
-            _ => ty.is_scalar(),
+    fn is_literalble(ty: TyId, tcx: &TyCtxt) -> bool {
+        match ty.kind(tcx) {
+            TyKind::Tuple(ref elems) => elems.iter().all(|ty| ty.is_scalar(tcx)),
+            TyKind::Array(ty, ..) => ty.is_scalar(tcx),
+            _ => ty.is_scalar(tcx),
         }
     }
-    fn gen_literal(&mut self, ty: &Ty) -> Option<Literal> {
-        let lit: Literal = match *ty {
-            Ty::Bool => self.gen_bool(0.5).into(),
-            Ty::Char => {
+    fn gen_literal(&mut self, ty: TyId, tcx: &TyCtxt) -> Option<Literal> {
+        let lit: Literal = match ty.kind(tcx) {
+            TyKind::Bool => self.gen_bool(0.5).into(),
+            TyKind::Char => {
                 // There are 0xD7FF + 1 Unicode Scalar Values in the lower range, and 0x10FFFF - 0xE000 + 1
                 // values in the upper range.
                 let ordinal = self.gen_range(0..((0xD7FF + 1) + (0x10FFFF - 0xE000 + 1)));
@@ -48,43 +51,43 @@ pub trait GenLiteral: Rng {
                     char::from_u32(ordinal - 0xD800 + 0xE000).unwrap().into()
                 }
             }
-            Ty::USIZE => {
+            &TyKind::USIZE => {
                 let i: usize = Sombrero.sample(self);
                 i.try_into().expect("usize isn't greater than 128 bits")
             }
-            Ty::U8 => self.gen_range(u8::MIN..=u8::MAX).into(),
-            Ty::U16 => self.gen_range(u16::MIN..=u16::MAX).into(),
-            Ty::U32 => self.gen_range(u32::MIN..=u32::MAX).into(),
-            Ty::U64 => self.gen_range(u64::MIN..=u64::MAX).into(),
-            Ty::U128 => self.gen_range(u128::MIN..=u128::MAX).into(),
-            Ty::ISIZE => {
+            &TyKind::U8 => self.gen_range(u8::MIN..=u8::MAX).into(),
+            &TyKind::U16 => self.gen_range(u16::MIN..=u16::MAX).into(),
+            &TyKind::U32 => self.gen_range(u32::MIN..=u32::MAX).into(),
+            &TyKind::U64 => self.gen_range(u64::MIN..=u64::MAX).into(),
+            &TyKind::U128 => self.gen_range(u128::MIN..=u128::MAX).into(),
+            &TyKind::ISIZE => {
                 let i: isize = Sombrero.sample(self);
                 i.try_into().expect("isize isn't greater than 128 bits")
             }
-            Ty::I8 => self.gen_range(i8::MIN..=i8::MAX).into(),
-            Ty::I16 => self.gen_range(i16::MIN..=i16::MAX).into(),
-            Ty::I32 => self.gen_range(i32::MIN..=i32::MAX).into(),
-            Ty::I64 => self.gen_range(i64::MIN..=i64::MAX).into(),
-            Ty::I128 => self.gen_range(i128::MIN..=i128::MAX).into(),
-            Ty::F32 => generate_f32(self).into(),
-            Ty::F64 => generate_f64(self).into(),
-            Ty::Unit => Literal::Tuple(vec![]),
-            Ty::Tuple(ref elems) if elems.iter().all(Ty::is_scalar) => {
+            &TyKind::I8 => self.gen_range(i8::MIN..=i8::MAX).into(),
+            &TyKind::I16 => self.gen_range(i16::MIN..=i16::MAX).into(),
+            &TyKind::I32 => self.gen_range(i32::MIN..=i32::MAX).into(),
+            &TyKind::I64 => self.gen_range(i64::MIN..=i64::MAX).into(),
+            &TyKind::I128 => self.gen_range(i128::MIN..=i128::MAX).into(),
+            &TyKind::F32 => generate_f32(self).into(),
+            &TyKind::F64 => generate_f64(self).into(),
+            TyKind::Unit => Literal::Tuple(vec![]),
+            TyKind::Tuple(ref elems) if elems.iter().all(|ty| ty.is_scalar(tcx)) => {
                 let lits: Option<Vec<Literal>> =
-                    elems.iter().map(|ty| self.gen_literal(ty)).collect();
-                return lits.map(|lits| Literal::Tuple(lits));
+                    elems.iter().map(|ty| self.gen_literal(*ty, tcx)).collect();
+                return lits.map(Literal::Tuple);
             }
-            Ty::Array(ref ty, len) if ty.is_scalar() => {
+            TyKind::Array(ty, len) if ty.is_scalar(tcx) => {
                 return self
-                    .gen_literal(&ty)
-                    .map(|lit| Literal::Array(Box::new(lit), len))
+                    .gen_literal(*ty, tcx)
+                    .map(|lit| Literal::Array(Box::new(lit), *len))
             }
             _ => return None,
         };
         Some(lit)
     }
-    fn gen_literal_non_zero(&mut self, ty: &Ty) -> Option<Literal> {
-        self.gen_literal(ty).map(|lit| match lit {
+    fn gen_literal_non_zero(&mut self, ty: TyId, tcx: &TyCtxt) -> Option<Literal> {
+        self.gen_literal(ty, tcx).map(|lit| match lit {
             Literal::Uint(n, t) => {
                 if n == 0 {
                     Literal::Uint(n + 1, t)

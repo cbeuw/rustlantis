@@ -1,6 +1,9 @@
 use std::borrow::BorrowMut;
 
-use mir::syntax::{Callee, Mutability, Operand, Place, Ty};
+use mir::{
+    syntax::{Callee, Mutability, Operand, Place, TyKind},
+    tyctxt::TyCtxt,
+};
 use rand::{seq::IteratorRandom, Rng};
 
 use crate::{literal::GenLiteral, place_select::PlaceSelector};
@@ -10,7 +13,7 @@ use super::{GenerationCtx, Result, SelectionError};
 pub trait CoreIntrinsic {
     fn name(&self) -> &'static str;
 
-    fn dest_type(&self, ty: Ty) -> bool;
+    fn dest_type(&self, ty: &TyKind) -> bool;
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>>;
 
@@ -19,11 +22,11 @@ pub trait CoreIntrinsic {
         ctx: &GenerationCtx,
         dest: &Place,
     ) -> Result<(Callee, Vec<Operand>)> {
-        if !self.dest_type(dest.ty(ctx.current_decls())) {
+        if !self.dest_type(dest.ty(ctx.current_decls(), &ctx.tcx).kind(&ctx.tcx)) {
             return Err(SelectionError::Exhausted);
         }
         let args = self
-            .choose_operands(ctx, &dest)
+            .choose_operands(ctx, dest)
             .ok_or(SelectionError::Exhausted)?;
         Ok((Callee::Intrinsic(self.name()), args))
     }
@@ -35,14 +38,14 @@ impl CoreIntrinsic for Fmaf64 {
         "fmaf64"
     }
 
-    fn dest_type(&self, ty: Ty) -> bool {
-        ty == Ty::F64
+    fn dest_type(&self, ty: &TyKind) -> bool {
+        ty == &TyKind::F64
     }
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>> {
-        let a = ctx.choose_operand(&[Ty::F64], dest).ok()?;
-        let b = ctx.choose_operand(&[Ty::F64], dest).ok()?;
-        let c = ctx.choose_operand(&[Ty::F64], dest).ok()?;
+        let a = ctx.choose_operand(&[TyCtxt::F64], dest).ok()?;
+        let b = ctx.choose_operand(&[TyCtxt::F64], dest).ok()?;
+        let c = ctx.choose_operand(&[TyCtxt::F64], dest).ok()?;
         Some(vec![a, b, c])
     }
 }
@@ -53,15 +56,15 @@ impl CoreIntrinsic for ArithOffset {
         "arith_offset"
     }
 
-    fn dest_type(&self, ty: Ty) -> bool {
-        matches!(ty, Ty::RawPtr(.., Mutability::Not))
+    fn dest_type(&self, ty: &TyKind) -> bool {
+        matches!(ty, TyKind::RawPtr(.., Mutability::Not))
     }
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>> {
         let (ptrs, weights) = PlaceSelector::for_offsetee()
-            .of_ty(dest.ty(ctx.current_decls()))
+            .of_ty(dest.ty(ctx.current_decls(), &ctx.tcx))
             .except(dest)
-            .into_weighted(&ctx.pt)?;
+            .into_weighted(&ctx.pt, &ctx.tcx)?;
         let ptr = ctx
             .make_choice_weighted(ptrs.into_iter(), weights, |ppath| {
                 Ok(ppath.to_place(&ctx.pt))
@@ -80,14 +83,14 @@ impl CoreIntrinsic for ArithOffset {
                 Operand::Constant((-existing).try_into().unwrap())
             }
             _ => PlaceSelector::for_known_val()
-                .of_ty(Ty::ISIZE)
+                .of_ty(TyCtxt::ISIZE)
                 .into_iter_place(&ctx.pt)
                 .choose(&mut *rng)
-                .map(|p| Operand::Copy(p))
+                .map(Operand::Copy)
                 .unwrap_or_else(|| {
                     Operand::Constant(
                         rng.borrow_mut()
-                            .gen_literal(&Ty::ISIZE)
+                            .gen_literal(TyCtxt::ISIZE, &ctx.tcx)
                             .expect("can generate a literal"),
                     )
                 }),
@@ -103,13 +106,13 @@ impl CoreIntrinsic for Bswap {
         "bswap"
     }
 
-    fn dest_type(&self, ty: Ty) -> bool {
-        matches!(ty, Ty::Int(..) | Ty::Uint(..))
+    fn dest_type(&self, ty: &TyKind) -> bool {
+        matches!(ty, TyKind::Int(..) | TyKind::Uint(..))
     }
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>> {
         let arg = ctx
-            .choose_operand(&[dest.ty(ctx.current_decls())], dest)
+            .choose_operand(&[dest.ty(ctx.current_decls(), &ctx.tcx)], dest)
             .ok()?;
         Some(vec![arg])
     }
