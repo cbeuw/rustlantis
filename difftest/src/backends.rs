@@ -173,7 +173,7 @@ impl Miri {
             .arg("miri")
             .arg("setup")
             .arg("--print-sysroot")
-            .clear_env(&["PATH"])
+            .clear_env(&["PATH", "DEVELOPER_DIR"])
             .current_dir(miri_dir)
             .output()
             .expect("can run cargo-miri setup --print-sysroot");
@@ -230,7 +230,7 @@ impl Miri {
             let output = Command::new(miri_dir.join("miri"))
                 .arg("build")
                 .arg("--release")
-                .clear_env(&["PATH"])
+                .clear_env(&["PATH", "DEVELOPER_DIR"])
                 .current_dir(miri_dir)
                 .output()
                 .expect("can run miri build and get output");
@@ -306,7 +306,7 @@ impl Cranelift {
             debug!("Setting up cranelift under {}", clif_dir.to_string_lossy());
             let output = Command::new(clif_dir.join("y.rs"))
                 .arg("prepare")
-                .clear_env(&["PATH"])
+                .clear_env(&["PATH", "DEVELOPER_DIR"])
                 .current_dir(clif_dir)
                 .output()
                 .expect("can run y.rs prepare and get output");
@@ -318,7 +318,7 @@ impl Cranelift {
 
             let output = Command::new(clif_dir.join("y.rs"))
                 .arg("build")
-                .clear_env(&["PATH"])
+                .clear_env(&["PATH", "DEVELOPER_DIR"])
                 .current_dir(clif_dir)
                 .output()
                 .expect("can run y.rs build and get output");
@@ -412,7 +412,7 @@ impl GCC {
 impl Backend for GCC {
     fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
         let compile_out = Command::new("rustc")
-            .clear_env(&["PATH", "LD_LIBRARY_PATH"])
+            .clear_env(&["PATH", "DEVELOPER_DIR", "LD_LIBRARY_PATH"])
             .current_dir(&self.repo)
             .arg(source)
             .args([
