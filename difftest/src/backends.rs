@@ -72,8 +72,6 @@ pub type ExecResult = Result<ProcessOutput, CompExecError>;
 #[derive(Debug)]
 pub struct BackendInitError(pub String);
 
-const PATCH_FLAGS: &'static str = "-Zmir-enable-passes=-RenameReturnPlace";
-
 pub trait Backend: Send + Sync {
     fn compile(&self, _: &Path, _: &Path) -> ProcessOutput {
         panic!("not implemented")
@@ -149,11 +147,11 @@ impl Backend for LLVM {
                 "-C",
                 &format!("opt-level={}", self.codegen_opt.codegen_opt_level()),
             ])
+            .args(["-C", "llvm-args=-protect-from-escaped-allocas=true"]) // https://github.com/rust-lang/rust/issues/112213
             .args([
                 "-Z",
                 &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
             ])
-            .arg(PATCH_FLAGS)
             .output()
             .expect("can execute rustc and get output");
 
@@ -364,7 +362,6 @@ impl Backend for Cranelift {
                 "-Z",
                 &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
             ])
-            .arg(PATCH_FLAGS)
             .output()
             .expect("can run rustc-clif and get output");
         compile_out.into()
@@ -430,7 +427,6 @@ impl Backend for GCC {
                 "-Z",
                 &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
             ])
-            .arg(PATCH_FLAGS)
             .output()
             .expect("can run rustc-clif and get output");
         compile_out.into()
