@@ -106,37 +106,37 @@ impl PlaceSelector {
         pt.reachable_nodes().filter(move |ppath| {
             let index = ppath.target_index(pt);
 
-            let live = pt.is_place_live(index);
+            // Liveness
+            if !pt.is_place_live(index) {
+                return false;
+            }
 
-            let ty_allowed = if self.tys.is_empty() {
-                true
-            } else {
-                self.tys.contains(&pt.ty(index))
+            // Initness
+            if !self.allow_uninit && !pt.is_place_init(index) {
+                return false;
             };
 
-            let not_excluded = !exclusion_indicies
-                .iter()
-                .any(|excl| pt.overlap(index, excl));
-            let initness_allowed = if self.allow_uninit {
-                true
-            } else {
-                pt.is_place_init(index)
-            };
+            // Well-typedness
+            if !self.tys.is_empty() && !self.tys.contains(&pt.ty(index)) {
+                return false;
+            }
 
-            let literalness = if self.usage == PlaceUsage::KnownVal {
-                pt.known_val(index).is_some()
-            } else {
-                true
-            };
+            // Known val
+            if self.usage == PlaceUsage::KnownVal && pt.known_val(index).is_none() {
+                return false;
+            }
 
-            // Don't produce a pointer that overlaps with the return slot
-            let not_ret_ptr = if self.usage == PlaceUsage::Pointee {
-                !pt.overlap(index, Place::RETURN_SLOT)
-            } else {
-                true
-            };
+            // Not excluded
+            if exclusion_indicies.iter().any(|excl| pt.overlap(index, excl)) {
+                return false;
+            }
 
-            live && ty_allowed && not_excluded && initness_allowed && literalness && not_ret_ptr
+            // No pointer to return slot
+            if self.usage == PlaceUsage::Pointee && pt.overlap(index, Place::RETURN_SLOT) {
+                return false;
+            }
+
+            true
         })
     }
 
