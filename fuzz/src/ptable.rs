@@ -650,8 +650,18 @@ impl PlaceTable {
             }
         }
 
-        let node = &mut self.places[p];
-        node.val = val;
+        if let Some(val) = val {
+            self.places[p].val = Some(val);
+        } else {
+            self.update_transitive_subfields(p, |this, node| {
+                this.places[node].val = None;
+                true
+            });
+            self.update_transitive_superfields(p, |this, node| {
+                this.places[node].val = None;
+                true
+            });
+        }
     }
 
     pub fn return_dest_stack(&self) -> impl Iterator<Item = PlaceIndex> + '_ {
