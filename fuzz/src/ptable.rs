@@ -355,7 +355,11 @@ impl PlaceTable {
         }
     }
 
-    pub fn project_from_node(&self, pidx: PlaceIndex, mut proj: ProjectionElem) -> Option<PlaceIndex> {
+    pub fn project_from_node(
+        &self,
+        pidx: PlaceIndex,
+        mut proj: ProjectionElem,
+    ) -> Option<PlaceIndex> {
         if let ProjectionElem::Index(local) = proj {
             let Some(Literal::Uint(i, UintTy::Usize)) = self.known_val(local) else {
                 panic!("projection has a usize knownval");
@@ -956,25 +960,25 @@ mod tests {
 
     #[test]
     fn nested_tuple() {
-        let (pt, local, ..) = prepare_t();
+        let (pt, local, _, b, ..) = prepare_t();
 
         let visited: Vec<TyId> = pt
             .reachable_from_node(local.to_place_index(&pt).unwrap())
             .map(|ppath| ppath.target_node(&pt).ty)
             .collect();
+        let root = pt.get_node(&Place::from_local(local)).unwrap();
+        let root_ty = pt.places[root].ty;
+        let b = pt.get_node(&b).unwrap();
+        let b_ty = pt.places[b].ty;
         assert_eq!(
             &visited,
             &[
-                pt.tcx.ty(&TyKind::Tuple(vec![
-                    TyCtxt::I8,
-                    pt.tcx.ty(&TyKind::Tuple(vec![TyCtxt::I16, TyCtxt::I32])),
-                    TyCtxt::I64
-                ])), // (i8, (i16, i32), i64)
-                TyCtxt::I8,                                                // i8
-                pt.tcx.ty(&TyKind::Tuple(vec![TyCtxt::I16, TyCtxt::I32])), // (i16, 132)
-                TyCtxt::I16,                                               // i16
-                TyCtxt::I32,                                               // i32
-                TyCtxt::I64,                                               // i64
+                root_ty,     // (i8, (i16, i32), i64)
+                TyCtxt::I8,  // i8
+                b_ty,        // (i16, 132)
+                TyCtxt::I16, // i16
+                TyCtxt::I32, // i32
+                TyCtxt::I64, // i64
             ]
         );
     }

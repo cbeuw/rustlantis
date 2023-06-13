@@ -7,23 +7,25 @@ pub trait Serialize {
 impl Serialize for TyId {
     fn serialize(&self, tcx: &TyCtxt) -> String {
         match self.kind(tcx) {
-            &TyKind::Unit => "()".to_owned(),
-            &TyKind::Bool => "bool".to_owned(),
-            &TyKind::Char => "char".to_owned(),
-            &TyKind::ISIZE => "isize".to_owned(),
-            &TyKind::I8 => "i8".to_owned(),
-            &TyKind::I16 => "i16".to_owned(),
-            &TyKind::I32 => "i32".to_owned(),
-            &TyKind::I64 => "i64".to_owned(),
-            &TyKind::I128 => "i128".to_owned(),
-            &TyKind::USIZE => "usize".to_owned(),
-            &TyKind::U8 => "u8".to_owned(),
-            &TyKind::U16 => "u16".to_owned(),
-            &TyKind::U32 => "u32".to_owned(),
-            &TyKind::U64 => "u64".to_owned(),
-            &TyKind::U128 => "u128".to_owned(),
-            &TyKind::F32 => "f32".to_owned(),
-            &TyKind::F64 => "f64".to_owned(),
+            TyKind::Unit => "()".to_owned(),
+            TyKind::Bool => "bool".to_owned(),
+            TyKind::Char => "char".to_owned(),
+            TyKind::Int(IntTy::Isize) => "isize".to_owned(),
+            TyKind::Int(IntTy::I8) => "i8".to_owned(),
+            TyKind::Int(IntTy::I16) => "i16".to_owned(),
+            TyKind::Int(IntTy::I32) => "i32".to_owned(),
+            TyKind::Int(IntTy::I64) => "i64".to_owned(),
+            TyKind::Int(IntTy::I128) => "i128".to_owned(),
+
+            TyKind::Uint(UintTy::Usize) => "usize".to_owned(),
+            TyKind::Uint(UintTy::U8) => "u8".to_owned(),
+            TyKind::Uint(UintTy::U16) => "u16".to_owned(),
+            TyKind::Uint(UintTy::U32) => "u32".to_owned(),
+            TyKind::Uint(UintTy::U64) => "u64".to_owned(),
+            TyKind::Uint(UintTy::U128) => "u128".to_owned(),
+
+            TyKind::Float(FloatTy::F32) => "f32".to_owned(),
+            TyKind::Float(FloatTy::F64) => "f64".to_owned(),
             // Pointer types
             TyKind::RawPtr(ty, mutability) => {
                 format!("{}{}", mutability.ptr_prefix_str(), ty.serialize(tcx))
@@ -71,22 +73,22 @@ impl Serialize for Place {
 impl Serialize for Literal {
     fn serialize(&self, tcx: &TyCtxt) -> String {
         match self {
-            Literal::Uint(i, _) => format!("{i}_{}", self.ty(tcx).serialize(tcx)),
-            Literal::Int(i, _) if *i < 0 => format!("({i}_{})", self.ty(tcx).serialize(tcx)),
-            Literal::Int(i, _) => format!("{i}_{}", self.ty(tcx).serialize(tcx)),
+            Literal::Uint(i, _) => format!("{i}_{}", self.ty().serialize(tcx)),
+            Literal::Int(i, _) if *i < 0 => format!("({i}_{})", self.ty().serialize(tcx)),
+            Literal::Int(i, _) => format!("{i}_{}", self.ty().serialize(tcx)),
             Literal::Float(f, _) => {
                 if f.is_nan() {
-                    format!("{}::NAN", self.ty(tcx).serialize(tcx))
+                    format!("{}::NAN", self.ty().serialize(tcx))
                 } else if f.is_infinite() {
                     if f.is_sign_positive() {
-                        format!("{}::INFINITY", self.ty(tcx).serialize(tcx))
+                        format!("{}::INFINITY", self.ty().serialize(tcx))
                     } else {
-                        format!("{}::NEG_INFINITY", self.ty(tcx).serialize(tcx))
+                        format!("{}::NEG_INFINITY", self.ty().serialize(tcx))
                     }
                 } else if *f < 0. {
-                    format!("({f}_{})", self.ty(tcx).serialize(tcx))
+                    format!("({f}_{})", self.ty().serialize(tcx))
                 } else {
-                    format!("{f}_{}", self.ty(tcx).serialize(tcx))
+                    format!("{f}_{}", self.ty().serialize(tcx))
                 }
             }
             Literal::Bool(b) => b.to_string(),

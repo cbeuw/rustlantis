@@ -1,5 +1,5 @@
 use mir::{
-    syntax::{Literal, TyId, TyKind},
+    syntax::{FloatTy, IntTy, Literal, TyId, TyKind, UintTy},
     tyctxt::TyCtxt,
 };
 use rand::{seq::SliceRandom, Rng, RngCore};
@@ -50,26 +50,26 @@ pub trait GenLiteral: Rng {
                     char::from_u32(ordinal - 0xD800 + 0xE000).unwrap().into()
                 }
             }
-            &TyKind::USIZE => {
+            TyKind::Uint(UintTy::Usize) => {
                 let i: usize = Sombrero.sample(self);
                 i.try_into().expect("usize isn't greater than 128 bits")
             }
-            &TyKind::U8 => self.gen_range(u8::MIN..=u8::MAX).into(),
-            &TyKind::U16 => self.gen_range(u16::MIN..=u16::MAX).into(),
-            &TyKind::U32 => self.gen_range(u32::MIN..=u32::MAX).into(),
-            &TyKind::U64 => self.gen_range(u64::MIN..=u64::MAX).into(),
-            &TyKind::U128 => self.gen_range(u128::MIN..=u128::MAX).into(),
-            &TyKind::ISIZE => {
+            TyKind::Uint(UintTy::U8) => self.gen_range(u8::MIN..=u8::MAX).into(),
+            TyKind::Uint(UintTy::U16) => self.gen_range(u16::MIN..=u16::MAX).into(),
+            TyKind::Uint(UintTy::U32) => self.gen_range(u32::MIN..=u32::MAX).into(),
+            TyKind::Uint(UintTy::U64) => self.gen_range(u64::MIN..=u64::MAX).into(),
+            TyKind::Uint(UintTy::U128) => self.gen_range(u128::MIN..=u128::MAX).into(),
+            TyKind::Int(IntTy::Isize) => {
                 let i: isize = Sombrero.sample(self);
                 i.try_into().expect("isize isn't greater than 128 bits")
             }
-            &TyKind::I8 => self.gen_range(i8::MIN..=i8::MAX).into(),
-            &TyKind::I16 => self.gen_range(i16::MIN..=i16::MAX).into(),
-            &TyKind::I32 => self.gen_range(i32::MIN..=i32::MAX).into(),
-            &TyKind::I64 => self.gen_range(i64::MIN..=i64::MAX).into(),
-            &TyKind::I128 => self.gen_range(i128::MIN..=i128::MAX).into(),
-            &TyKind::F32 => generate_f32(self).into(),
-            &TyKind::F64 => generate_f64(self).into(),
+            TyKind::Int(IntTy::I8) => self.gen_range(i8::MIN..=i8::MAX).into(),
+            TyKind::Int(IntTy::I16) => self.gen_range(i16::MIN..=i16::MAX).into(),
+            TyKind::Int(IntTy::I32) => self.gen_range(i32::MIN..=i32::MAX).into(),
+            TyKind::Int(IntTy::I64) => self.gen_range(i64::MIN..=i64::MAX).into(),
+            TyKind::Int(IntTy::I128) => self.gen_range(i128::MIN..=i128::MAX).into(),
+            TyKind::Float(FloatTy::F32) => generate_f32(self).into(),
+            TyKind::Float(FloatTy::F64) => generate_f64(self).into(),
             _ => return None,
         };
         Some(lit)

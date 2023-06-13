@@ -4,7 +4,7 @@ use index_vec::IndexVec;
 use log::{debug, log_enabled};
 use mir::{
     serialize::Serialize,
-    syntax::{Adt, Mutability, TyId, TyKind, VariantDef},
+    syntax::{Adt, IntTy, Mutability, TyId, TyKind, VariantDef},
     tyctxt::{AdtMeta, TyCtxt},
 };
 use rand::{seq::IteratorRandom, Rng};
@@ -48,7 +48,7 @@ impl TySelect {
                 TyKind::Unit => Some(0.),
                 TyKind::Bool => Some(p_bool),
                 TyKind::Char => Some(p_char),
-                &TyKind::ISIZE => Some(p_isize),
+                TyKind::Int(IntTy::Isize) => Some(p_isize),
                 TyKind::Int(..) => Some(p_ints / TyKind::INTS.len() as f32),
                 TyKind::Uint(..) => Some(p_ints / TyKind::INTS.len() as f32),
                 TyKind::Float(..) => Some(p_floats / TyKind::FLOATS.len() as f32),

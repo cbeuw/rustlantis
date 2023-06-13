@@ -99,14 +99,6 @@ impl TyCtxt {
         &self.tys[ty]
     }
 
-    pub fn ty(&self, kind: &TyKind) -> TyId {
-        assert!(kind.is_structural());
-        self.tys
-            .iter_enumerated()
-            .find_map(|(ty, elem)| (elem == kind).then_some(ty))
-            .expect("kind exists")
-    }
-
     pub fn indices(&self) -> impl Iterator<Item = TyId> {
         self.tys.indices()
     }

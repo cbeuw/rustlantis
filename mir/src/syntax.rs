@@ -241,7 +241,7 @@ impl Operand {
     pub fn ty(&self, local_decls: &LocalDecls, tcx: &TyCtxt) -> TyId {
         match self {
             Operand::Copy(place) | Operand::Move(place) => place.ty(local_decls, tcx),
-            Operand::Constant(lit) => lit.ty(tcx),
+            Operand::Constant(lit) => lit.ty(),
         }
     }
 }
@@ -427,7 +427,7 @@ impl TyId {
 }
 
 // FIXME: probably shouldn't derive Eq
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub enum TyKind {
     // Scalars
     Unit,
@@ -507,13 +507,28 @@ impl TyKind {
     }
 }
 
+impl PartialEq for TyKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int(l0), Self::Int(r0)) => l0 == r0,
+            (Self::Uint(l0), Self::Uint(r0)) => l0 == r0,
+            (Self::Float(l0), Self::Float(r0)) => l0 == r0,
+            (Self::RawPtr(l0, l1), Self::RawPtr(r0, r1)) => l0 == r0 && l1 == r1,
+            (Self::Tuple(l0), Self::Tuple(r0)) => l0 == r0,
+            (Self::Array(l0, l1), Self::Array(r0, r1)) => l0 == r0 && l1 == r1,
+            (Self::Adt(..), Self::Adt(..)) => false,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub struct VariantDef {
     /// Fields of this variant.
     pub fields: IndexVec<FieldIdx, TyId>,
 }
 
-#[derive(PartialEq, Eq, Clone, Hash, Debug)]
+#[derive(Clone, Hash, Debug)]
 pub struct Adt {
     pub variants: IndexVec<VariantIdx, VariantDef>,
 }
@@ -559,7 +574,7 @@ pub enum UnOp {
 
 impl Literal {
     // TODO: this doesn't need tcx
-    pub fn ty(&self, tcx: &TyCtxt) -> TyId {
+    pub fn ty(&self) -> TyId {
         match self {
             Literal::Int(_, IntTy::I8) => TyCtxt::I8,
             Literal::Int(_, IntTy::I16) => TyCtxt::I16,
