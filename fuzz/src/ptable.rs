@@ -158,7 +158,7 @@ impl PlaceTable {
                 Operand::Move(place) => {
                     ArgOperand::Move(place.to_place_index(self).expect("arg exists"))
                 }
-                Operand::Constant(lit) => ArgOperand::Constant(lit.clone()),
+                Operand::Constant(lit) => ArgOperand::Constant(*lit),
             })
             .collect();
 
@@ -185,7 +185,7 @@ impl PlaceTable {
                         );
                         self.copy_place(pidx, source_pidx);
                     }
-                    ArgOperand::Constant(lit) => self.assign_literal(pidx, Some(lit.clone())),
+                    ArgOperand::Constant(lit) => self.assign_literal(pidx, Some(*lit)),
                 }
                 if let ArgOperand::Move(source_pidx) = arg {
                     self.mark_place_uninit(source_pidx);
@@ -322,7 +322,7 @@ impl PlaceTable {
             return;
         }
         self.update_dataflow(dst, self.places[src].dataflow);
-        self.assign_literal(dst, self.places[src].val.clone());
+        self.assign_literal(dst, self.places[src].val);
 
         let (dst_node, src_node) = self.places.index_twice_mut(dst, src);
         assert_eq!(dst_node.ty, src_node.ty);
@@ -355,7 +355,7 @@ impl PlaceTable {
         }
     }
 
-    fn project_from_node(&self, pidx: PlaceIndex, mut proj: ProjectionElem) -> Option<PlaceIndex> {
+    pub fn project_from_node(&self, pidx: PlaceIndex, mut proj: ProjectionElem) -> Option<PlaceIndex> {
         if let ProjectionElem::Index(local) = proj {
             let Some(Literal::Uint(i, UintTy::Usize)) = self.known_val(local) else {
                 panic!("projection has a usize knownval");
@@ -461,7 +461,6 @@ impl PlaceTable {
             node.dataflow
         }
     }
-
 
     pub fn mark_place_uninit(&mut self, p: impl ToPlaceIndex) {
         let pidx = p.to_place_index(self).unwrap();
@@ -648,49 +647,7 @@ impl PlaceTable {
         }
 
         let node = &mut self.places[p];
-        node.val = val.clone();
-
-        match &node.ty.kind(&self.tcx) {
-            TyKind::Tuple(tys) => {
-                for i in 0..tys.len() {
-                    let child = self
-                        .project_from_node(p, ProjectionElem::TupleField(i.into()))
-                        .expect("elem exists");
-                    let elem = val.as_ref().map(|tup| {
-                        let Literal::Tuple(elems) = tup else {
-                            panic!("literal is also a tuple");
-                        };
-                        &elems[i]
-                    });
-                    // This doesn't have to be recursive
-                    self.assign_literal(child, elem.cloned());
-                }
-            }
-            TyKind::Array(_, len) => {
-                for i in 0..*len {
-                    let child = self
-                        .project_from_node(p, ProjectionElem::ConstantIndex { offset: i as u64 })
-                        .expect("child exists");
-                    let init = val.as_ref().map(|arr| {
-                        let Literal::Array(init, ..) = arr else {
-                            panic!("literal is also an array");
-                        };
-                        *init.clone()
-                    });
-                    self.places[child].val = init;
-                }
-            }
-            TyKind::Adt(adt) if !adt.is_enum() => {
-                let fields = &adt.variants.first().expect("is struct").fields;
-                for fid in fields.indices() {
-                    let child = self
-                        .project_from_node(p, ProjectionElem::Field(fid))
-                        .expect("child exists");
-                    self.assign_literal(child, val.clone())
-                }
-            }
-            _ => {}
-        }
+        node.val = val;
     }
 
     pub fn return_dest_stack(&self) -> impl Iterator<Item = PlaceIndex> + '_ {
@@ -928,6 +885,7 @@ impl HasDataflow for Rvalue {
             Rvalue::BinaryOp(_, l, r) | Rvalue::CheckedBinaryOp(_, l, r) => {
                 l.dataflow(pt) + r.dataflow(pt)
             }
+            Rvalue::Aggregate(_, elems) => elems.iter().map(|op| op.dataflow(pt)).sum(),
             Rvalue::Len(_) => 1,
             Rvalue::Discriminant(place) => place.dataflow(pt),
             Rvalue::AddressOf(_, place) => place.dataflow(pt),
@@ -1150,7 +1108,8 @@ mod tests {
                 BinOp::Add,
                 Operand::Copy(a.clone()),
                 Operand::Copy(c.clone()),
-            ).dataflow(&pt),
+            )
+            .dataflow(&pt),
         );
         assert_eq!(d.dataflow(&pt), 2);
 

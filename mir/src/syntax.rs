@@ -203,18 +203,26 @@ pub enum Rvalue {
     // define!("mir_discriminant",fn Discriminant<T>(place: T) -> <T as ::core::marker::DiscriminantKind>::Discriminant);
     Discriminant(Place),
     AddressOf(Mutability, Place),
+    Aggregate(AggregateKind, IndexVec<FieldIdx, Operand>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Copy)]
+pub enum AggregateKind {
+    /// The type is of the element
+    Array(TyId),
+    Tuple,
+
+    Adt(TyId, VariantIdx),
+}
+
+#[derive(Debug, Clone, Copy)]
 pub enum Literal {
     Uint(u128, UintTy),
     Int(i128, IntTy),
     Bool(bool),
     Char(char),
-    Tuple(Vec<Literal>),
     // Every f32 can be expressed exactly as f64
     Float(f64, FloatTy),
-    Array(Box<Literal>, usize),
     // TODO: Adt literal?
 }
 
@@ -550,17 +558,26 @@ pub enum UnOp {
 }
 
 impl Literal {
+    // TODO: this doesn't need tcx
     pub fn ty(&self, tcx: &TyCtxt) -> TyId {
-        let kind = match self {
-            Literal::Int(_, ty) => TyKind::Int(*ty),
-            Literal::Uint(_, ty) => TyKind::Uint(*ty),
-            Literal::Bool(_) => TyKind::Bool,
-            Literal::Char(_) => TyKind::Char,
-            Literal::Tuple(elems) => TyKind::Tuple(elems.iter().map(|lit| lit.ty(tcx)).collect()),
-            Literal::Float(_, ty) => TyKind::Float(*ty),
-            Literal::Array(lit, len) => TyKind::Array(lit.ty(tcx), *len),
-        };
-        tcx.ty(&kind)
+        match self {
+            Literal::Int(_, IntTy::I8) => TyCtxt::I8,
+            Literal::Int(_, IntTy::I16) => TyCtxt::I16,
+            Literal::Int(_, IntTy::I32) => TyCtxt::I32,
+            Literal::Int(_, IntTy::I64) => TyCtxt::I64,
+            Literal::Int(_, IntTy::I128) => TyCtxt::I128,
+            Literal::Int(_, IntTy::Isize) => TyCtxt::ISIZE,
+            Literal::Uint(_, UintTy::U8) => TyCtxt::U8,
+            Literal::Uint(_, UintTy::U16) => TyCtxt::U16,
+            Literal::Uint(_, UintTy::U32) => TyCtxt::U32,
+            Literal::Uint(_, UintTy::U64) => TyCtxt::U64,
+            Literal::Uint(_, UintTy::U128) => TyCtxt::U128,
+            Literal::Uint(_, UintTy::Usize) => TyCtxt::USIZE,
+            Literal::Bool(_) => TyCtxt::BOOL,
+            Literal::Char(_) => TyCtxt::CHAR,
+            Literal::Float(_, FloatTy::F32) => TyCtxt::F32,
+            Literal::Float(_, FloatTy::F64) => TyCtxt::F64,
+        }
     }
 }
 

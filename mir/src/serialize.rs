@@ -40,9 +40,7 @@ impl Serialize for TyId {
                 format!("[{}; {len}]", ty.serialize(tcx))
             }
             // User-defined type
-            TyKind::Adt(_) => {
-                self.type_name()
-            },
+            TyKind::Adt(_) => self.type_name(),
         }
     }
 }
@@ -93,19 +91,6 @@ impl Serialize for Literal {
             }
             Literal::Bool(b) => b.to_string(),
             Literal::Char(c) => format!("'\\u{{{:x}}}'", u32::from(*c)),
-            Literal::Tuple(elems) => match elems.len() {
-                0 => "()".to_owned(),
-                1 => format!("({},)", elems[0].serialize(tcx)),
-                _ => format!(
-                    "({})",
-                    elems
-                        .iter()
-                        .map(|l| l.serialize(tcx))
-                        .intersperse(", ".to_owned())
-                        .collect::<String>()
-                ),
-            },
-            Literal::Array(lit, len) => format!("[{}; {len}]", lit.serialize(tcx)),
         }
     }
 }
@@ -147,6 +132,43 @@ impl Serialize for Rvalue {
             Rvalue::AddressOf(Mutability::Mut, place) => {
                 format!("core::ptr::addr_of_mut!({})", place.serialize(tcx))
             }
+            Rvalue::Aggregate(kind, operands) => match kind {
+                AggregateKind::Array(_) => {
+                    let list: String = operands
+                        .iter()
+                        .map(|op| op.serialize(tcx))
+                        .intersperse(",".to_owned())
+                        .collect();
+                    format!("[{list}]")
+                }
+                AggregateKind::Tuple => match operands.len() {
+                    0 => "()".to_owned(),
+                    1 => format!("({},)", operands.first().unwrap().serialize(tcx)),
+                    _ => format!(
+                        "({})",
+                        operands
+                            .iter()
+                            .map(|l| l.serialize(tcx))
+                            .intersperse(", ".to_owned())
+                            .collect::<String>()
+                    ),
+                },
+                AggregateKind::Adt(ty, variant) => {
+                    let TyKind::Adt(adt) = ty.kind(tcx) else {
+                        panic!("not an adt");
+                    };
+                    let list: String = operands
+                        .iter_enumerated()
+                        .map(|(fid, op)| format!("{}: {}", fid.identifier(), op.serialize(tcx)))
+                        .intersperse(",".to_owned())
+                        .collect();
+                    if adt.is_enum() {
+                        todo!()
+                    } else {
+                        format!("{} {{ {list} }}", ty.type_name())
+                    }
+                }
+            },
         }
     }
 }

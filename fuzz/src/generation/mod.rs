@@ -4,12 +4,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::{cmp, vec};
 
+use index_vec::IndexVec;
 use log::{debug, trace};
 use mir::serialize::Serialize;
 use mir::syntax::{
-    BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal, Local, LocalDecls,
-    Mutability, Operand, Place, Program, Rvalue, Statement, SwitchTargets, Terminator, TyId,
-    TyKind, UnOp,
+    AggregateKind, BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal,
+    Local, LocalDecls, Mutability, Operand, Place, Program, ProjectionElem, Rvalue, Statement,
+    SwitchTargets, Terminator, TyId, TyKind, UnOp, VariantIdx,
 };
 use mir::tyctxt::TyCtxt;
 use rand::seq::SliceRandom;
@@ -18,7 +19,7 @@ use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
 use crate::literal::GenLiteral;
 use crate::place_select::{PlaceSelector, Weight};
-use crate::ptable::{HasDataflow, PlaceTable, ToPlaceIndex};
+use crate::ptable::{HasDataflow, PlaceIndex, PlaceTable, ToPlaceIndex};
 use crate::ty::{seed_tys, TySelect};
 
 use self::intrinsics::ArithOffset;
@@ -317,6 +318,42 @@ impl GenerationCtx {
         })
     }
 
+    fn generate_aggregate(&self, lhs: &Place) -> Result<Rvalue> {
+        let target_ty = lhs.ty(self.current_decls(), &self.tcx);
+        let agg = match target_ty.kind(&self.tcx) {
+            TyKind::Tuple(tys) => {
+                let ops: Vec<Operand> = tys
+                    .iter()
+                    .map(|ty| self.choose_operand(&[*ty], lhs))
+                    .collect::<Result<Vec<Operand>>>()?;
+                Rvalue::Aggregate(AggregateKind::Tuple, IndexVec::from_vec(ops))
+            }
+            TyKind::Array(ty, len) => {
+                let ops: Vec<Operand> = (0..*len)
+                    .map(|_| self.choose_operand(&[*ty], lhs))
+                    .collect::<Result<Vec<Operand>>>()?;
+                Rvalue::Aggregate(AggregateKind::Array(*ty), IndexVec::from_vec(ops))
+            }
+            TyKind::Adt(adt) => {
+                if adt.is_enum() {
+                    todo!()
+                } else {
+                    let fields = &adt.variants.first().unwrap().fields;
+                    let mut agg = IndexVec::new();
+                    for (fid, ty) in fields.iter_enumerated() {
+                        let op = self.choose_operand(&[*ty], lhs)?;
+                        let new_fid = agg.push(op);
+                        assert_eq!(fid, new_fid);
+                    }
+                    Rvalue::Aggregate(AggregateKind::Adt(target_ty, VariantIdx::new(0)), agg)
+                }
+            }
+            TyKind::Unit => Rvalue::Aggregate(AggregateKind::Tuple, IndexVec::new()),
+            _ => return Err(SelectionError::Exhausted),
+        };
+        Ok(agg)
+    }
+
     // fn generate_len(&self, cur_stmt: &mut Statement) -> Result<()> {
     //     todo!()
     // }
@@ -337,6 +374,7 @@ impl GenerationCtx {
             (Self::generate_checked_binary_op, 1),
             (Self::generate_cast, 1),
             (Self::generate_address_of, 2),
+            (Self::generate_aggregate, 2),
         ];
 
         let (choices, weights): (
@@ -548,7 +586,7 @@ impl GenerationCtx {
                     .pt
                     .known_val(ppath.target_index(&self.pt))
                     .expect("has_value");
-                Ok((ppath.to_place(&self.pt), val.clone()))
+                Ok((ppath.to_place(&self.pt), *val))
             })?;
 
         let decoy_count = self.rng.get_mut().gen_range(1..=MAX_SWITCH_TARGETS);
@@ -1070,43 +1108,6 @@ impl GenerationCtx {
         // as the updates may affect projections
         let mut actions: Vec<Box<dyn FnOnce(&mut PlaceTable)>> = vec![];
         {
-            // Moves
-            match stmt {
-                Statement::Assign(_, rvalue) => match rvalue {
-                    Rvalue::Use(Operand::Move(o))
-                    | Rvalue::UnaryOp(_, Operand::Move(o))
-                    | Rvalue::BinaryOp(_, Operand::Move(o), _)
-                    | Rvalue::BinaryOp(_, _, Operand::Move(o))
-                    | Rvalue::Cast(Operand::Move(o), _)
-                    | Rvalue::CheckedBinaryOp(_, Operand::Move(o), _)
-                    | Rvalue::CheckedBinaryOp(_, _, Operand::Move(o)) => {
-                        let pidx = o.to_place_index(&self.pt).unwrap();
-                        actions.push(Box::new(move |pt| {
-                            pt.mark_place_uninit(pidx);
-                        }));
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-            // Literals
-            match stmt {
-                Statement::Assign(lhs, rvalue) => {
-                    let lhs: petgraph::stable_graph::NodeIndex =
-                        lhs.to_place_index(&self.pt).unwrap();
-                    match rvalue {
-                        Rvalue::Use(Operand::Constant(lit)) => {
-                            actions.push(Box::new(move |pt| {
-                                pt.assign_literal(lhs, Some(lit.clone()));
-                            }));
-                        }
-                        _ => actions.push(Box::new(move |pt| {
-                            pt.assign_literal(lhs, None);
-                        })),
-                    }
-                }
-                _ => {}
-            }
             match stmt {
                 Statement::Assign(lhs, rvalue) => {
                     let lhs = lhs.to_place_index(&self.pt).unwrap();
@@ -1114,13 +1115,6 @@ impl GenerationCtx {
                         pt.mark_place_init(lhs);
                     }));
                     match rvalue {
-                        Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs)) => {
-                            let rhs = rhs.to_place_index(&self.pt).unwrap();
-                            actions.push(Box::new(move |pt| {
-                                pt.copy_place(lhs, rhs);
-                            }));
-                        }
-                        Rvalue::BinaryOp(BinOp::Offset, _, _) => todo!(),
                         Rvalue::AddressOf(_, referent) => {
                             let referent = referent.to_place_index(&self.pt).unwrap();
                             actions.push(Box::new(move |pt| {
@@ -1155,8 +1149,112 @@ impl GenerationCtx {
                 Statement::Retag(_) => todo!(),
             }
         }
+        // Copies & literals
+        // One of copy, literal assignment or literal deletion must happen
+        if let Statement::Assign(lhs, rvalue) = stmt {
+            let lhs = lhs.to_place_index(&self.pt).unwrap();
+            match rvalue {
+                Rvalue::Use(op) => match op {
+                    Operand::Copy(rhs) | Operand::Move(rhs) => {
+                        let rhs = rhs.to_place_index(&self.pt).unwrap();
+                        actions.push(Box::new(move |pt| {
+                            pt.copy_place(lhs, rhs);
+                        }));
+                    }
+                    Operand::Constant(lit) => {
+                        actions.push(Box::new(move |pt| {
+                            pt.assign_literal(lhs, Some(*lit));
+                        }));
+                    }
+                },
+                agg @ Rvalue::Aggregate(..) => {
+                    for (target, op) in self.aggregate_places(lhs, agg) {
+                        match op {
+                            Operand::Copy(rhs) | Operand::Move(rhs) => {
+                                let rhs = rhs.to_place_index(&self.pt).unwrap();
+                                actions.push(Box::new(move |pt| {
+                                    pt.copy_place(target, rhs);
+                                }));
+                            }
+                            Operand::Constant(lit) => {
+                                actions.push(Box::new(move |pt| {
+                                    pt.assign_literal(target, Some(*lit));
+                                }));
+                            }
+                        }
+                    }
+                }
+                _ => actions.push(Box::new(move |pt| {
+                    pt.assign_literal(lhs, None);
+                })),
+            }
+        }
+        // Moves
+        if let Statement::Assign(lhs, rvalue) = stmt {
+            match rvalue {
+                Rvalue::Use(Operand::Move(o))
+                | Rvalue::UnaryOp(_, Operand::Move(o))
+                | Rvalue::BinaryOp(_, Operand::Move(o), _)
+                | Rvalue::BinaryOp(_, _, Operand::Move(o))
+                | Rvalue::Cast(Operand::Move(o), _)
+                | Rvalue::CheckedBinaryOp(_, Operand::Move(o), _)
+                | Rvalue::CheckedBinaryOp(_, _, Operand::Move(o)) => {
+                    let pidx = o.to_place_index(&self.pt).unwrap();
+                    actions.push(Box::new(move |pt| {
+                        pt.mark_place_uninit(pidx);
+                    }));
+                }
+                agg @ Rvalue::Aggregate(..) => {
+                    // FIXME: we don't actually need projections from lhs here
+                    let lhs = lhs.to_place_index(&self.pt).unwrap();
+                    for (_, op) in self.aggregate_places(lhs, agg) {
+                        if let Operand::Move(o) = op {
+                            let pidx = o.to_place_index(&self.pt).unwrap();
+                            actions.push(Box::new(move |pt| {
+                                pt.mark_place_uninit(pidx);
+                            }));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         for action in actions {
             action(&mut self.pt);
         }
+    }
+
+    fn aggregate_places<'a>(
+        &self,
+        root: PlaceIndex,
+        agg: &'a Rvalue,
+    ) -> Vec<(PlaceIndex, &'a Operand)> {
+        let Rvalue::Aggregate(kind, vals) = agg else {
+            panic!("not an aggregate")
+        };
+
+        vals.iter_enumerated()
+            .map(|(fid, operand)| {
+                let proj_elem = match kind {
+                    AggregateKind::Array(..) => ProjectionElem::ConstantIndex {
+                        offset: fid.index() as u64,
+                    },
+                    AggregateKind::Tuple => ProjectionElem::TupleField(fid),
+                    AggregateKind::Adt(ty, _) => {
+                        let TyKind::Adt(adt) = ty.kind(&self.tcx) else {
+                        panic!("not an adt")
+                    };
+                        if adt.is_enum() {
+                            todo!()
+                        } else {
+                            ProjectionElem::Field(fid)
+                        }
+                    }
+                };
+                let projected = self.pt.project_from_node(root, proj_elem).unwrap();
+
+                (projected, operand)
+            })
+            .collect()
     }
 }

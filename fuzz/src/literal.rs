@@ -33,8 +33,7 @@ impl Distribution<isize> for Sombrero {
 pub trait GenLiteral: Rng {
     fn is_literalble(ty: TyId, tcx: &TyCtxt) -> bool {
         match ty.kind(tcx) {
-            TyKind::Tuple(ref elems) => elems.iter().all(|ty| ty.is_scalar(tcx)),
-            TyKind::Array(ty, ..) => ty.is_scalar(tcx),
+            TyKind::Unit => false,
             _ => ty.is_scalar(tcx),
         }
     }
@@ -71,17 +70,6 @@ pub trait GenLiteral: Rng {
             &TyKind::I128 => self.gen_range(i128::MIN..=i128::MAX).into(),
             &TyKind::F32 => generate_f32(self).into(),
             &TyKind::F64 => generate_f64(self).into(),
-            TyKind::Unit => Literal::Tuple(vec![]),
-            TyKind::Tuple(ref elems) if elems.iter().all(|ty| ty.is_scalar(tcx)) => {
-                let lits: Option<Vec<Literal>> =
-                    elems.iter().map(|ty| self.gen_literal(*ty, tcx)).collect();
-                return lits.map(Literal::Tuple);
-            }
-            TyKind::Array(ty, len) if ty.is_scalar(tcx) => {
-                return self
-                    .gen_literal(*ty, tcx)
-                    .map(|lit| Literal::Array(Box::new(lit), *len))
-            }
             _ => return None,
         };
         Some(lit)
