@@ -2,11 +2,36 @@ use std::{collections::HashMap, slice};
 
 use index_vec::IndexVec;
 
-use crate::syntax::{TyId, TyKind};
+use crate::{
+    serialize::Serialize,
+    syntax::{Adt, TyId, TyKind},
+};
+
+#[derive(Debug, Clone, Copy)]
+pub struct AdtMeta {
+    pub copy: bool,
+}
+
+impl AdtMeta {
+    fn derive_attrs(&self) -> String {
+        let mut attrs = vec!["Debug"];
+        if self.copy {
+            attrs.push("Copy");
+            attrs.push("Clone");
+        }
+
+        let list: String = attrs.iter().intersperse(&",").copied().collect();
+        if list.is_empty() {
+            "".to_owned()
+        } else {
+            format!("#[derive({list})]\n")
+        }
+    }
+}
 
 pub struct TyCtxt {
     tys: IndexVec<TyId, TyKind>,
-    structural_kinds: HashMap<TyKind, TyId>,
+    adt_meta: HashMap<TyId, AdtMeta>,
 }
 
 impl TyCtxt {
@@ -49,24 +74,25 @@ impl TyCtxt {
             TyKind::F64,
         ];
         let tys = IndexVec::from_iter(primitives);
-        let kinds = HashMap::from_iter(tys.iter_enumerated().map(|(ty, kind)| (kind.clone(), ty)));
         Self {
             tys,
-            structural_kinds: kinds,
+            adt_meta: HashMap::new(),
         }
     }
 
-    // FIXME: validate field types
     pub fn push(&mut self, kind: TyKind) -> TyId {
-        // Structrual types are unique
-        if kind.is_structural() {
-            *self
-                .structural_kinds
-                .entry(kind.clone())
-                .or_insert_with(|| self.tys.push(kind))
-        } else {
-            self.tys.push(kind)
-        }
+        assert!(kind.is_structural());
+        self.tys.push(kind)
+    }
+
+    pub fn push_adt(&mut self, adt: Adt, meta: AdtMeta) -> TyId {
+        let id = self.tys.push(TyKind::Adt(adt));
+        self.adt_meta.insert(id, meta);
+        id
+    }
+
+    pub fn meta(&self, ty: TyId) -> AdtMeta {
+        self.adt_meta[&ty]
     }
 
     pub fn kind(&self, ty: TyId) -> &TyKind {
@@ -75,10 +101,13 @@ impl TyCtxt {
 
     pub fn ty(&self, kind: &TyKind) -> TyId {
         assert!(kind.is_structural());
-        self.structural_kinds[kind]
+        self.tys
+            .iter_enumerated()
+            .find_map(|(ty, elem)| (elem == kind).then_some(ty))
+            .expect("kind exists")
     }
 
-    pub fn indicies(&self) -> impl Iterator<Item = TyId> {
+    pub fn indices(&self) -> impl Iterator<Item = TyId> {
         self.tys.indices()
     }
 
@@ -92,5 +121,26 @@ impl TyCtxt {
 
     pub fn len(&self) -> usize {
         self.tys.len()
+    }
+
+    pub fn serialize(&self) -> String {
+        let mut str = String::new();
+        for (id, adt) in self.tys.iter_enumerated().filter(|(_, kind)| kind.is_adt()) {
+            let TyKind::Adt(adt) = adt else {
+                panic!("not an adt");
+            };
+            str += &self.adt_meta[&id].derive_attrs();
+            if adt.is_enum() {
+                todo!()
+            } else {
+                let def = adt.variants.first().expect("has only one variant");
+                str += &format!(
+                    "pub struct {} {{\n{}}}\n",
+                    id.type_name(),
+                    def.serialize(self)
+                )
+            }
+        }
+        str
     }
 }

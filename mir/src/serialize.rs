@@ -8,8 +8,8 @@ impl Serialize for TyId {
     fn serialize(&self, tcx: &TyCtxt) -> String {
         match self.kind(tcx) {
             &TyKind::Unit => "()".to_owned(),
-            &TyKind::BOOL => "bool".to_owned(),
-            &TyKind::CHAR => "char".to_owned(),
+            &TyKind::Bool => "bool".to_owned(),
+            &TyKind::Char => "char".to_owned(),
             &TyKind::ISIZE => "isize".to_owned(),
             &TyKind::I8 => "i8".to_owned(),
             &TyKind::I16 => "i16".to_owned(),
@@ -24,8 +24,6 @@ impl Serialize for TyId {
             &TyKind::U128 => "u128".to_owned(),
             &TyKind::F32 => "f32".to_owned(),
             &TyKind::F64 => "f64".to_owned(),
-            // User-defined type
-            TyKind::Adt(_) => todo!(),
             // Pointer types
             TyKind::RawPtr(ty, mutability) => {
                 format!("{}{}", mutability.ptr_prefix_str(), ty.serialize(tcx))
@@ -41,6 +39,10 @@ impl Serialize for TyId {
             TyKind::Array(ty, len) => {
                 format!("[{}; {len}]", ty.serialize(tcx))
             }
+            // User-defined type
+            TyKind::Adt(_) => {
+                self.type_name()
+            },
         }
     }
 }
@@ -60,9 +62,9 @@ impl Serialize for Place {
         self.projection().iter().fold(str, |acc, proj| match proj {
             ProjectionElem::Deref => format!("(*{acc})"),
             ProjectionElem::TupleField(id) => format!("{acc}.{}", id.index()),
-            ProjectionElem::Field(_) => todo!(),
+            ProjectionElem::Field(id) => format!("{acc}.{}", id.identifier()),
             ProjectionElem::Index(local) => format!("{acc}[{}]", local.identifier()),
-            ProjectionElem::Downcast(_) => todo!(),
+            ProjectionElem::Downcast(..) => todo!(),
             ProjectionElem::ConstantIndex { offset } => format!("{acc}[{offset}]"),
         })
     }
@@ -217,6 +219,15 @@ impl Serialize for BasicBlockData {
             .collect();
         stmts.push_str(&self.terminator.serialize(tcx));
         stmts
+    }
+}
+
+impl Serialize for VariantDef {
+    fn serialize(&self, tcx: &TyCtxt) -> String {
+        self.fields
+            .iter_enumerated()
+            .map(|(id, ty)| format!("{}: {},\n", id.identifier(), ty.serialize(tcx)))
+            .collect()
     }
 }
 

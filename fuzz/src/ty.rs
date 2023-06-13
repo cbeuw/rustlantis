@@ -1,16 +1,18 @@
 use std::{collections::HashMap, fmt::Write};
 
+use index_vec::IndexVec;
 use log::{debug, log_enabled};
 use mir::{
     serialize::Serialize,
-    syntax::{Mutability, TyId, TyKind},
-    tyctxt::TyCtxt,
+    syntax::{Adt, Mutability, TyId, TyKind, VariantDef},
+    tyctxt::{AdtMeta, TyCtxt},
 };
 use rand::{seq::IteratorRandom, Rng};
 use rand_distr::{Distribution, Poisson, WeightedIndex};
 
 const TUPLE_MAX_LEN: usize = 12;
 pub const ARRAY_MAX_LEN: usize = 8;
+const STRUCT_MAX_FIELDS: usize = 8;
 
 pub struct TySelect {
     weights: WeightedIndex<f32>,
@@ -81,6 +83,7 @@ impl TySelect {
                 .unwrap();
             }
             debug!("Typing context with weights:\n{s}");
+            debug!("{}", tcx.serialize());
         }
 
         WeightedIndex::new(tcx.iter_enumerated().map(|(tyid, _)| weights[&tyid]))
@@ -88,7 +91,7 @@ impl TySelect {
     }
 
     pub fn choose_ty(&self, rng: &mut impl Rng, tcx: &TyCtxt) -> TyId {
-        tcx.indicies()
+        tcx.indices()
             .nth(self.weights.sample(rng))
             .expect("tyctxt isn't empty")
     }
@@ -98,7 +101,7 @@ impl TySelect {
         P: Fn(&TyCtxt, TyId) -> bool + Copy,
     {
         let mut weights = self.weights.clone();
-        tcx.indicies().for_each(|ty| {
+        tcx.indices().for_each(|ty| {
             if !predicate(tcx, ty) {
                 weights
                     .update_weights(&[(ty.index(), &0.)])
@@ -106,7 +109,7 @@ impl TySelect {
             }
         });
 
-        tcx.indicies()
+        tcx.indices()
             .nth(weights.sample(rng))
             .expect("tyctxt isn't empty")
     }
@@ -115,7 +118,7 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
     // Seed with primitives
     let mut tcx: TyCtxt = TyCtxt::from_primitives();
 
-    // Generate composite types
+    // Generate composite structural types
     for _ in 0..=32 {
         let new_ty = match rng.gen_range(0..=2) {
             0 => TyKind::Tuple({
@@ -123,7 +126,7 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
                 let length = dist.sample(rng).clamp(1., TUPLE_MAX_LEN as f32) as usize;
                 (0..length)
                     .map(|_| {
-                        tcx.indicies()
+                        tcx.indices()
                             .filter(|ty| *ty != TyCtxt::UNIT)
                             .choose(rng)
                             .unwrap()
@@ -131,7 +134,7 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
                     .collect()
             }),
             1 => TyKind::RawPtr(
-                tcx.indicies()
+                tcx.indices()
                     .filter(|ty| *ty != TyCtxt::UNIT)
                     .choose(rng)
                     .unwrap(),
@@ -148,12 +151,36 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
                     .unwrap(),
                 rng.gen_range(1..=ARRAY_MAX_LEN),
             ),
-            // 2 => Ty::Adt(todo!()),
             _ => unreachable!(),
         };
         if !tcx.iter().any(|ty| *ty == new_ty) {
             tcx.push(new_ty);
         }
+    }
+
+    // TODO: recursive types
+    for _ in 0..=16 {
+        let field_count = rng.gen_range(1..=STRUCT_MAX_FIELDS);
+        let field_tys = tcx
+            .indices()
+            .filter(|ty| *ty != TyCtxt::UNIT)
+            .choose_multiple(rng, field_count);
+        let def = VariantDef {
+            fields: IndexVec::from_iter(field_tys.into_iter()),
+        };
+        let adt = Adt {
+            variants: IndexVec::from(vec![def]),
+        };
+
+        let copy = if adt.copy_derivable(&tcx) {
+            rng.gen_bool(0.5)
+        } else {
+            false
+        };
+
+        let meta = AdtMeta { copy };
+
+        tcx.push_adt(adt, meta);
     }
     tcx
 }
@@ -162,7 +189,7 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
 mod tests {
     use std::collections::HashSet;
 
-    use mir::syntax::TyKind;
+    use mir::syntax::TyId;
     use rand::SeedableRng;
 
     use crate::ty::seed_tys;
@@ -171,7 +198,7 @@ mod tests {
     fn tys_unique() {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
         let tcx = seed_tys(&mut rng);
-        let set: HashSet<TyKind> = tcx.iter().cloned().collect();
+        let set: HashSet<TyId> = tcx.indices().collect();
         assert!(set.len() == tcx.len())
     }
 }

@@ -65,6 +65,11 @@ pub struct LocalDecl {
 
 define_index_type! {pub struct FieldIdx = u32;}
 define_index_type! {pub struct VariantIdx = u32;}
+impl FieldIdx {
+    pub fn identifier(&self) -> String {
+        format!("fld{}", self.index())
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Place {
@@ -157,7 +162,7 @@ pub enum Terminator {
         place: Place,
         target: BasicBlock,
     },
-    // TODO: define!("mir_call", fn Call<T>(place: T, goto: BasicBlock, call: T));
+    // define!("mir_call", fn Call<T>(place: T, goto: BasicBlock, call: T));
     Call {
         callee: Callee,
         destination: Place,
@@ -210,6 +215,7 @@ pub enum Literal {
     // Every f32 can be expressed exactly as f64
     Float(f64, FloatTy),
     Array(Box<Literal>, usize),
+    // TODO: Adt literal?
 }
 
 #[derive(Clone)]
@@ -283,6 +289,11 @@ pub enum FloatTy {
 
 define_index_type! {pub struct TyId = u32;}
 impl TyId {
+    pub fn type_name(&self) -> String {
+        format!("Adt{}", self.index())
+    }
+}
+impl TyId {
     pub fn kind(self, tcx: &TyCtxt) -> &TyKind {
         tcx.kind(self)
     }
@@ -317,6 +328,7 @@ impl TyId {
     pub fn projected_ty(self, tcx: &TyCtxt, projs: &[ProjectionElem]) -> Self {
         match projs {
             [] => self,
+            [ProjectionElem::Downcast(vid), proj, tail @ ..] => todo!(),
             [head, tail @ ..] => {
                 let projected = match head {
                     ProjectionElem::Deref => match self.kind(tcx) {
@@ -326,14 +338,20 @@ impl TyId {
                     ProjectionElem::TupleField(idx) => {
                         self.tuple_elems(tcx).expect("is a tuple")[idx.index()]
                     }
-                    ProjectionElem::Downcast(_) => self,
                     ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } => {
                         match self.kind(tcx) {
                             TyKind::Array(ty, ..) => *ty,
                             _ => panic!("not an array"),
                         }
                     }
-                    ProjectionElem::Field(_) => todo!(),
+                    ProjectionElem::Field(fid) => match self.kind(tcx) {
+                        TyKind::Adt(adt) => {
+                            let fields = &adt.variants.first().expect("adt is a struct").fields;
+                            fields[*fid]
+                        }
+                        _ => panic!("not an adt"),
+                    },
+                    ProjectionElem::Downcast(_) => unreachable!("Downcast is handled separately"),
                 };
                 projected.projected_ty(tcx, tail)
             }
@@ -351,7 +369,10 @@ impl TyId {
             TyKind::Tuple(elems) => elems.iter().any(|ty| ty.contains(tcx, predicate)),
             TyKind::RawPtr(pointee, _) => pointee.contains(tcx, predicate),
             TyKind::Array(ty, ..) => ty.contains(tcx, predicate),
-            TyKind::Adt(_) => todo!(),
+            TyKind::Adt(adt) => adt
+                .variants
+                .iter()
+                .any(|variant| variant.fields.iter().any(|ty| ty.contains(tcx, predicate))),
             _ => false,
         }
     }
@@ -380,13 +401,25 @@ impl TyId {
         !self.contains(tcx, |tcx, ty| ty.is_unsafe_ptr(tcx))
     }
 
-    pub fn is_copy(&self, _tcx: &TyCtxt) -> bool {
-        // TODO: implement this
-        true
+    pub fn hashable(self, tcx: &TyCtxt) -> bool {
+        // TODO: hash Adts maybe
+        self.kind(tcx).is_structural()
+            && self.determ_printable(tcx)
+            && !self.contains(tcx, |_, ty| ty == TyCtxt::F32 || ty == TyCtxt::F64)
+            && self != TyCtxt::UNIT
+    }
+
+    pub fn is_copy(self, tcx: &TyCtxt) -> bool {
+        if self.kind(tcx).is_structural() {
+            true
+        } else {
+            tcx.meta(self).copy
+        }
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Hash, Debug)]
+// FIXME: probably shouldn't derive Eq
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum TyKind {
     // Scalars
     Unit,
@@ -405,8 +438,6 @@ pub enum TyKind {
 }
 
 impl TyKind {
-    pub const BOOL: Self = TyKind::Bool;
-    pub const CHAR: Self = TyKind::Char;
     pub const ISIZE: Self = TyKind::Int(IntTy::Isize);
     pub const I8: Self = TyKind::Int(IntTy::I8);
     pub const I16: Self = TyKind::Int(IntTy::I16);
@@ -444,20 +475,8 @@ impl TyKind {
 
     pub fn is_scalar(&self) -> bool {
         match self {
-            &TyKind::ISIZE
-            | &TyKind::I8
-            | &TyKind::I16
-            | &TyKind::I32
-            | &TyKind::I64
-            | &TyKind::I128
-            | &TyKind::USIZE
-            | &TyKind::U8
-            | &TyKind::U16
-            | &TyKind::U32
-            | &TyKind::U64
-            | &TyKind::U128
-            | &TyKind::F32
-            | &TyKind::F64
+            &TyKind::Int(..)
+            | &TyKind::Uint(..)
             | &TyKind::Bool
             | &TyKind::Char
             | &TyKind::Unit => true,
@@ -471,16 +490,35 @@ impl TyKind {
             _ => true,
         }
     }
+
+    pub fn is_adt(&self) -> bool {
+        match self {
+            &TyKind::Adt(..) => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub struct VariantDef {
-    // TODO: finish this
+    /// Fields of this variant.
+    pub fields: IndexVec<FieldIdx, TyId>,
 }
 
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub struct Adt {
-    variants: IndexVec<VariantIdx, VariantDef>,
+    pub variants: IndexVec<VariantIdx, VariantDef>,
+}
+impl Adt {
+    pub fn copy_derivable(&self, tcx: &TyCtxt) -> bool {
+        self.variants
+            .iter()
+            .all(|variant| variant.fields.iter().all(|ty| ty.is_copy(tcx)))
+    }
+
+    pub fn is_enum(&self) -> bool {
+        self.variants.len() > 1
+    }
 }
 
 #[derive(Clone, Copy)]

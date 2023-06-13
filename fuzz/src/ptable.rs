@@ -137,7 +137,7 @@ impl PlaceTable {
         body.args_decl_iter().for_each(|(local, decl)| {
             let pidx = self.allocate_local(local, decl.ty);
             // encourage use of args
-            self.places[pidx].dataflow = 5;
+            self.update_dataflow(pidx, 5);
         });
     }
 
@@ -188,7 +188,7 @@ impl PlaceTable {
                     ArgOperand::Constant(lit) => self.assign_literal(pidx, Some(lit.clone())),
                 }
                 if let ArgOperand::Move(source_pidx) = arg {
-                    self.mark_place_moved(source_pidx);
+                    self.mark_place_uninit(source_pidx);
                 }
             });
     }
@@ -214,7 +214,7 @@ impl PlaceTable {
     pub fn allocate_local(&mut self, local: Local, ty: TyId) -> PlaceIndex {
         let mut pidx = Default::default();
         self.memory.allocate_with_builder(|builder| {
-            pidx = Self::add_place(&mut self.places, ty, &self.tcx, builder, 0, None);
+            pidx = Self::add_place(&mut self.places, ty, &self.tcx, builder, None);
         });
         self.current_frame_mut().add_local(local, pidx);
         pidx
@@ -231,15 +231,15 @@ impl PlaceTable {
         ty: TyId,
         tcx: &TyCtxt,
         alloc_builder: &mut AllocationBuilder,
-        dataflow: usize,
         run_ptr: Option<RunPointer>,
     ) -> PlaceIndex {
         let alloc_id = alloc_builder.alloc_id();
         let pidx = if run_ptr.is_some() {
+            // If this is called recursively, and our parent (array) already allocated a run
             places.add_node(PlaceNode {
                 ty,
                 alloc_id,
-                dataflow,
+                dataflow: 0,
                 run_ptr,
                 val: None,
                 offset: None,
@@ -249,7 +249,7 @@ impl PlaceTable {
             places.add_node(PlaceNode {
                 ty,
                 alloc_id,
-                dataflow,
+                dataflow: 0,
                 run_ptr: Some(RunPointer {
                     alloc_id,
                     run_and_offset,
@@ -262,7 +262,7 @@ impl PlaceTable {
             places.add_node(PlaceNode {
                 ty,
                 alloc_id,
-                dataflow,
+                dataflow: 0,
                 run_ptr: None,
                 val: None,
                 offset: None,
@@ -270,8 +270,7 @@ impl PlaceTable {
         };
         match ty.kind(tcx) {
             TyKind::Tuple(elems) => elems.iter().enumerate().for_each(|(idx, elem)| {
-                let sub_pidx =
-                    Self::add_place(places, *elem, tcx, alloc_builder, dataflow, None);
+                let sub_pidx = Self::add_place(places, *elem, tcx, alloc_builder, None);
                 places.add_edge(
                     pidx,
                     sub_pidx,
@@ -293,14 +292,8 @@ impl PlaceTable {
                     } else {
                         None
                     };
-                    let elem_pidx = Self::add_place(
-                        places,
-                        *elem_ty,
-                        tcx,
-                        alloc_builder,
-                        dataflow,
-                        child_run_ptr,
-                    );
+                    let elem_pidx =
+                        Self::add_place(places, *elem_ty, tcx, alloc_builder, child_run_ptr);
                     places.add_edge(
                         pidx,
                         elem_pidx,
@@ -308,7 +301,14 @@ impl PlaceTable {
                     );
                 }
             }
-            TyKind::Adt(_) => todo!(),
+            TyKind::Adt(adt) if adt.is_enum() => todo!(),
+            TyKind::Adt(adt) => {
+                let fields = &adt.variants.first().expect("adt is a struct").fields;
+                for (fid, ty) in fields.iter_enumerated() {
+                    let field_pidx = Self::add_place(places, *ty, tcx, alloc_builder, None);
+                    places.add_edge(pidx, field_pidx, ProjectionElem::Field(fid));
+                }
+            }
             TyKind::RawPtr(..) => { /* pointer has no subfields  */ }
             _ => { /* primitives, no projection */ }
         }
@@ -424,7 +424,8 @@ impl PlaceTable {
         }
     }
 
-    fn update_dataflow(&mut self, target: PlaceIndex, new_flow: usize) {
+    pub fn update_dataflow(&mut self, target: impl ToPlaceIndex, new_flow: usize) {
+        let target = target.to_place_index(self).expect("place exists");
         let new_flow = new_flow.min(100);
 
         // Subplaces' complexity is overwritten as target's new complexity
@@ -446,12 +447,6 @@ impl PlaceTable {
         })
     }
 
-    pub fn combine_dataflow(&mut self, target: impl ToPlaceIndex, source: impl HasDataflow) {
-        let new_flow = source.dataflow(self);
-        let target = target.to_place_index(self).expect("place exists");
-        self.update_dataflow(target, new_flow)
-    }
-
     pub fn get_dataflow(&self, p: impl ToPlaceIndex) -> usize {
         let pidx = p.to_place_index(self).unwrap();
         let node = &self.places[pidx];
@@ -467,9 +462,6 @@ impl PlaceTable {
         }
     }
 
-    pub fn mark_place_moved(&mut self, p: impl ToPlaceIndex) {
-        todo!();
-    }
 
     pub fn mark_place_uninit(&mut self, p: impl ToPlaceIndex) {
         let pidx = p.to_place_index(self).unwrap();
@@ -688,7 +680,15 @@ impl PlaceTable {
                     self.places[child].val = init;
                 }
             }
-            TyKind::Adt(..) => todo!(),
+            TyKind::Adt(adt) if !adt.is_enum() => {
+                let fields = &adt.variants.first().expect("is struct").fields;
+                for fid in fields.indices() {
+                    let child = self
+                        .project_from_node(p, ProjectionElem::Field(fid))
+                        .expect("child exists");
+                    self.assign_literal(child, val.clone())
+                }
+            }
             _ => {}
         }
     }
@@ -844,6 +844,8 @@ impl<'pt> ProjectionIter<'pt> {
                 .places
                 .edges_directed(root, Direction::Outgoing)
                 .filter_map(|e| {
+                    // Only do indexing if we can find a local as index 
+                    // TODO: move this to a function
                     if let ProjectionElem::ConstantIndex { offset } = e.weight() && pt.locals_with_val(*offset as usize).is_empty() {
                         return None;
                     }
@@ -1135,24 +1137,24 @@ mod tests {
     fn dataflow() {
         let (mut pt, local, a, b, c, d, e) = prepare_t();
 
-        pt.combine_dataflow(&a, Rvalue::Use(Operand::Constant(1.into())));
+        pt.update_dataflow(&a, Rvalue::Use(Operand::Constant(1.into())).dataflow(&pt));
         assert_eq!(a.dataflow(&pt), 1);
         assert_eq!(Place::from(local).dataflow(&pt), 1);
-        pt.combine_dataflow(&c, Rvalue::Use(Operand::Constant(1.into())));
+        pt.update_dataflow(&c, Rvalue::Use(Operand::Constant(1.into())).dataflow(&pt));
         assert_eq!(c.dataflow(&pt), 1);
         assert_eq!(Place::from(local).dataflow(&pt), 1);
 
-        pt.combine_dataflow(
+        pt.update_dataflow(
             &d,
             Rvalue::BinaryOp(
                 BinOp::Add,
                 Operand::Copy(a.clone()),
                 Operand::Copy(c.clone()),
-            ),
+            ).dataflow(&pt),
         );
         assert_eq!(d.dataflow(&pt), 2);
 
-        pt.combine_dataflow(&e, Rvalue::Use(Operand::Constant(1.into())));
+        pt.update_dataflow(&e, Rvalue::Use(Operand::Constant(1.into())).dataflow(&pt));
         assert_eq!(b.dataflow(&pt), 2);
 
         assert_eq!(Place::from(local).dataflow(&pt), 2);

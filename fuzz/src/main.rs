@@ -30,4 +30,5 @@ fn main() {
     let genctxt = GenerationCtx::new(seed, debug_dump);
     let (program, tcx) = genctxt.generate();
     println!("{}", program.serialize(&tcx));
+    println!("{}", tcx.serialize());
 }

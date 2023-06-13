@@ -18,7 +18,7 @@ use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
 use crate::literal::GenLiteral;
 use crate::place_select::{PlaceSelector, Weight};
-use crate::ptable::{HasDataflow, PlaceTable};
+use crate::ptable::{HasDataflow, PlaceTable, ToPlaceIndex};
 use crate::ty::{seed_tys, TySelect};
 
 use self::intrinsics::ArithOffset;
@@ -68,7 +68,6 @@ impl GenerationCtx {
             })?
         };
         operand.or_else(|_| {
-            // TODO: allow array and tuple literals
             let literalble: Vec<TyId> = tys
                 .iter()
                 .filter(|ty| <dyn RngCore>::is_literalble(**ty, &self.tcx))
@@ -611,22 +610,25 @@ impl GenerationCtx {
             })?;
 
         let args_count: i32 = self.rng.get_mut().gen_range(2..=16);
-        let args: Vec<Operand> = (0..args_count)
-            .map(|_| {
-                let (places, weights) = PlaceSelector::for_argument()
-                    .except(&return_place)
-                    .into_weighted(&self.pt, &self.tcx)
-                    .ok_or(SelectionError::Exhausted)?;
-                self.make_choice_weighted(places.into_iter(), weights, |ppath| {
-                    let ty = &ppath.target_node(&self.pt).ty;
-                    if ty.is_copy(&self.tcx) {
-                        Ok(Operand::Copy(ppath.to_place(&self.pt)))
-                    } else {
-                        Ok(Operand::Move(ppath.to_place(&self.pt)))
-                    }
-                })
-            })
-            .collect::<Result<Vec<Operand>>>()?;
+        let mut selector = PlaceSelector::for_argument().except(&return_place);
+        let mut args = vec![];
+        for _ in 0..args_count {
+            let (places, weights) = selector
+                .clone()
+                .into_weighted(&self.pt, &self.tcx)
+                .ok_or(SelectionError::Exhausted)?;
+            let arg = self.make_choice_weighted(places.into_iter(), weights, |ppath| {
+                let ty = &ppath.target_node(&self.pt).ty;
+                let place = ppath.to_place(&self.pt);
+                if ty.is_copy(&self.tcx) {
+                    Ok(Operand::Copy(place))
+                } else {
+                    selector = selector.clone().except(&place);
+                    Ok(Operand::Move(place))
+                }
+            })?;
+            args.push(arg);
+        }
 
         let target_bb = self.add_new_bb();
         self.return_stack.push((self.current_function, target_bb));
@@ -635,7 +637,6 @@ impl GenerationCtx {
 
         // We don't know the name of the new function here, so we save the current cursor and write the terminator after frame switch
         let (caller_fn, caller_bb) = (self.current_function, self.current_bb);
-        // TODO: randomise privacy
         let new_fn = self.enter_new_fn(&args, &return_place, public);
         self.program.functions[caller_fn].basic_blocks[caller_bb].set_terminator(
             Terminator::Call {
@@ -713,13 +714,7 @@ impl GenerationCtx {
             .args_decl_iter()
             .chain(self.current_fn().vars_decl_iter())
             .filter_map(|(local, decl)| {
-                (decl.ty.determ_printable(&self.tcx)
-                    && !decl
-                        .ty
-                        .contains(&self.tcx, |_, ty| ty == TyCtxt::F32 || ty == TyCtxt::F64)
-                    && decl.ty != TyCtxt::UNIT
-                    && self.pt.is_place_init(local))
-                .then_some(local)
+                (decl.ty.hashable(&self.tcx) && self.pt.is_place_init(local)).then_some(local)
             })
             .collect();
         let dump_count = (dumpable.len() as f32 * VAR_DUMP_CHANCE) as usize;
@@ -844,6 +839,14 @@ impl GenerationCtx {
 
         let starting_bb = body.new_basic_block(BasicBlockData::new());
         let new_fn = self.program.push_fn(body);
+
+        debug!(
+            "entering {}({}) -> {}",
+            new_fn.identifier(),
+            args_ty.serialize(&self.tcx),
+            return_ty.serialize(&self.tcx),
+        );
+
         self.current_function = new_fn;
         self.current_bb = starting_bb;
 
@@ -1026,7 +1029,7 @@ impl GenerationCtx {
         let args_count = self.rng.get_mut().gen_range(2..=16);
         let arg_tys: Vec<TyId> = self
             .tcx
-            .indicies()
+            .indices()
             .filter(|ty| <dyn RngCore>::is_literalble(*ty, &self.tcx))
             .choose_multiple(&mut *self.rng.borrow_mut(), args_count);
         let arg_literals: Vec<Literal> = arg_tys
@@ -1063,34 +1066,97 @@ impl GenerationCtx {
     }
 
     fn post_generation(&mut self, stmt: &Statement) {
-        match stmt {
-            Statement::Assign(lhs, rvalue) => {
-                self.pt.mark_place_init(lhs);
-                match rvalue {
-                    Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs)) => {
-                        self.pt.copy_place(lhs, rhs)
+        // We must evaluate the places first before updating any PlaceTable state,
+        // as the updates may affect projections
+        let mut actions: Vec<Box<dyn FnOnce(&mut PlaceTable)>> = vec![];
+        {
+            // Moves
+            match stmt {
+                Statement::Assign(_, rvalue) => match rvalue {
+                    Rvalue::Use(Operand::Move(o))
+                    | Rvalue::UnaryOp(_, Operand::Move(o))
+                    | Rvalue::BinaryOp(_, Operand::Move(o), _)
+                    | Rvalue::BinaryOp(_, _, Operand::Move(o))
+                    | Rvalue::Cast(Operand::Move(o), _)
+                    | Rvalue::CheckedBinaryOp(_, Operand::Move(o), _)
+                    | Rvalue::CheckedBinaryOp(_, _, Operand::Move(o)) => {
+                        let pidx = o.to_place_index(&self.pt).unwrap();
+                        actions.push(Box::new(move |pt| {
+                            pt.mark_place_uninit(pidx);
+                        }));
                     }
-                    Rvalue::Use(Operand::Constant(lit)) => {
-                        self.pt.assign_literal(lhs, Some(lit.clone()))
-                    }
-                    Rvalue::BinaryOp(BinOp::Offset, _, _) => todo!(),
-                    Rvalue::AddressOf(_, referent) => self.pt.set_ref(lhs, referent),
-                    _ => {
-                        self.pt.combine_dataflow(lhs, rvalue);
-                        self.pt.assign_literal(lhs, None)
+                    _ => {}
+                },
+                _ => {}
+            }
+            // Literals
+            match stmt {
+                Statement::Assign(lhs, rvalue) => {
+                    let lhs: petgraph::stable_graph::NodeIndex =
+                        lhs.to_place_index(&self.pt).unwrap();
+                    match rvalue {
+                        Rvalue::Use(Operand::Constant(lit)) => {
+                            actions.push(Box::new(move |pt| {
+                                pt.assign_literal(lhs, Some(lit.clone()));
+                            }));
+                        }
+                        _ => actions.push(Box::new(move |pt| {
+                            pt.assign_literal(lhs, None);
+                        })),
                     }
                 }
-                // FIXME: move logic
+                _ => {}
             }
-            Statement::StorageLive(local) => {
-                self.pt
-                    .allocate_local(*local, self.current_decls()[*local].ty);
+            match stmt {
+                Statement::Assign(lhs, rvalue) => {
+                    let lhs = lhs.to_place_index(&self.pt).unwrap();
+                    actions.push(Box::new(move |pt| {
+                        pt.mark_place_init(lhs);
+                    }));
+                    match rvalue {
+                        Rvalue::Use(Operand::Copy(rhs) | Operand::Move(rhs)) => {
+                            let rhs = rhs.to_place_index(&self.pt).unwrap();
+                            actions.push(Box::new(move |pt| {
+                                pt.copy_place(lhs, rhs);
+                            }));
+                        }
+                        Rvalue::BinaryOp(BinOp::Offset, _, _) => todo!(),
+                        Rvalue::AddressOf(_, referent) => {
+                            let referent = referent.to_place_index(&self.pt).unwrap();
+                            actions.push(Box::new(move |pt| {
+                                pt.set_ref(lhs, referent);
+                            }));
+                        }
+                        _ => {
+                            let new_df = rvalue.dataflow(&self.pt);
+                            actions.push(Box::new(move |pt| {
+                                pt.update_dataflow(lhs, new_df);
+                            }));
+                        }
+                    }
+                }
+                Statement::StorageLive(local) => {
+                    let local = *local;
+                    let ty = self.current_decls()[local].ty;
+                    actions.push(Box::new(move |pt| {
+                        pt.allocate_local(local, ty);
+                    }));
+                }
+                Statement::StorageDead(local) => {
+                    let local = *local;
+                    actions.push(Box::new(move |pt| pt.deallocate_local(local)));
+                }
+                Statement::Deinit(place) => {
+                    let place = place.to_place_index(&self.pt).unwrap();
+                    actions.push(Box::new(move |pt| pt.mark_place_uninit(place)));
+                }
+                Statement::SetDiscriminant(_, _) => todo!(),
+                Statement::Nop => {}
+                Statement::Retag(_) => todo!(),
             }
-            Statement::StorageDead(local) => self.pt.deallocate_local(*local),
-            Statement::Deinit(place) => self.pt.mark_place_uninit(place),
-            Statement::SetDiscriminant(_, _) => todo!(),
-            Statement::Nop => {}
-            Statement::Retag(_) => todo!(),
+        }
+        for action in actions {
+            action(&mut self.pt);
         }
     }
 }

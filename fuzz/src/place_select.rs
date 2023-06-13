@@ -101,7 +101,7 @@ impl PlaceSelector {
             .exclusions
             .iter()
             .map(|place| place.to_place_index(pt).expect("excluded place exists"))
-            .chain(pt.return_dest_stack())
+            .chain(pt.return_dest_stack()) // Don't touch anything that overlaps with any RET in the stack
             .collect();
         pt.reachable_nodes().filter(move |ppath| {
             let index = ppath.target_index(pt);
@@ -129,13 +129,13 @@ impl PlaceSelector {
                 true
             };
 
+            // Don't produce a pointer that overlaps with the return slot
             let not_ret_ptr = if self.usage == PlaceUsage::Pointee {
                 !pt.overlap(index, Place::RETURN_SLOT)
             } else {
                 true
             };
 
-            // FIXME: are we allowed to use moved-from places?
             live && ty_allowed && not_excluded && initness_allowed && literalness && not_ret_ptr
         })
     }
