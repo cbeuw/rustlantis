@@ -55,10 +55,10 @@ pub struct GenerationCtx {
 impl GenerationCtx {
     fn choose_operand(&self, tys: &[TyId], excluded: &Place) -> Result<Operand> {
         let operand: Result<Operand> = try {
-            let (ppath, weights) = PlaceSelector::for_operand()
+            let (ppath, weights) = PlaceSelector::for_operand(self.tcx.clone())
                 .except(excluded)
                 .of_tys(tys)
-                .into_weighted(&self.pt, &self.tcx)
+                .into_weighted(&self.pt)
                 .ok_or(SelectionError::Exhausted)?;
             self.make_choice_weighted(ppath.into_iter(), weights, |ppath| {
                 if ppath.target_node(&self.pt).ty.is_copy(&self.tcx) {
@@ -308,10 +308,10 @@ impl GenerationCtx {
             TyKind::RawPtr(ty, mutability) => (ty, mutability),
             _ => return Err(SelectionError::Exhausted),
         };
-        let (candidates, weights) = PlaceSelector::for_pointee()
+        let (candidates, weights) = PlaceSelector::for_pointee(self.tcx.clone())
             .of_ty(*source_ty)
             .except(lhs)
-            .into_weighted(&self.pt, &self.tcx)
+            .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
         self.make_choice_weighted(candidates.into_iter(), weights, |ppath| {
             Ok(Rvalue::AddressOf(*mutability, ppath.to_place(&self.pt)))
@@ -393,8 +393,8 @@ impl GenerationCtx {
 // Statement
 impl GenerationCtx {
     fn generate_assign(&self) -> Result<Statement> {
-        let (lhs_choices, weights) = PlaceSelector::for_lhs()
-            .into_weighted(&self.pt, &self.tcx)
+        let (lhs_choices, weights) = PlaceSelector::for_lhs(self.tcx.clone())
+            .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
         self.make_choice_weighted(lhs_choices.into_iter(), weights, |ppath| {
@@ -447,7 +447,7 @@ impl GenerationCtx {
     }
 
     fn generate_deinit(&self) -> Result<Statement> {
-        let place = PlaceSelector::for_operand()
+        let place = PlaceSelector::for_operand(self.tcx.clone())
             .into_iter_place(&self.pt)
             .choose(&mut *self.rng.borrow_mut())
             .ok_or(SelectionError::Exhausted)?;
@@ -560,7 +560,7 @@ impl GenerationCtx {
 
     fn generate_switch_int(&mut self) -> Result<()> {
         debug!("generating a SwitchInt terminator");
-        let (places, weights) = PlaceSelector::for_known_val()
+        let (places, weights) = PlaceSelector::for_known_val(self.tcx.clone())
             .of_tys(&[
                 TyCtxt::ISIZE,
                 TyCtxt::I8,
@@ -577,7 +577,7 @@ impl GenerationCtx {
                 // Ty::Char,
                 // Ty::Bool,
             ])
-            .into_weighted(&self.pt, &self.tcx)
+            .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
         let (place, place_val) =
@@ -638,8 +638,8 @@ impl GenerationCtx {
             self.current_function.identifier(),
             self.current_bb.identifier()
         );
-        let (return_places, weights) = PlaceSelector::for_lhs()
-            .into_weighted(&self.pt, &self.tcx)
+        let (return_places, weights) = PlaceSelector::for_lhs(self.tcx.clone())
+            .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
         let return_place =
@@ -648,12 +648,12 @@ impl GenerationCtx {
             })?;
 
         let args_count: i32 = self.rng.get_mut().gen_range(2..=16);
-        let mut selector = PlaceSelector::for_argument().except(&return_place);
+        let mut selector = PlaceSelector::for_argument(self.tcx.clone()).except(&return_place);
         let mut args = vec![];
         for _ in 0..args_count {
             let (places, weights) = selector
                 .clone()
-                .into_weighted(&self.pt, &self.tcx)
+                .into_weighted(&self.pt)
                 .ok_or(SelectionError::Exhausted)?;
             let arg = self.make_choice_weighted(places.into_iter(), weights, |ppath| {
                 let ty = &ppath.target_node(&self.pt).ty;
@@ -690,8 +690,8 @@ impl GenerationCtx {
     }
 
     fn generate_intrinsic_call(&mut self) -> Result<()> {
-        let (return_places, weights) = PlaceSelector::for_lhs()
-            .into_weighted(&self.pt, &self.tcx)
+        let (return_places, weights) = PlaceSelector::for_lhs(self.tcx.clone())
+            .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
         let return_place =
@@ -1201,7 +1201,7 @@ impl GenerationCtx {
                 | Rvalue::CheckedBinaryOp(_, _, Operand::Move(o)) => {
                     let pidx = o.to_place_index(&self.pt).unwrap();
                     actions.push(Box::new(move |pt| {
-                        pt.mark_place_uninit(pidx);
+                        pt.mark_place_moved(pidx);
                     }));
                 }
                 agg @ Rvalue::Aggregate(..) => {
@@ -1211,7 +1211,7 @@ impl GenerationCtx {
                         if let Operand::Move(o) = op {
                             let pidx = o.to_place_index(&self.pt).unwrap();
                             actions.push(Box::new(move |pt| {
-                                pt.mark_place_uninit(pidx);
+                                pt.mark_place_moved(pidx);
                             }));
                         }
                     }

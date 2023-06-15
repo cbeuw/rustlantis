@@ -61,10 +61,10 @@ impl CoreIntrinsic for ArithOffset {
     }
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>> {
-        let (ptrs, weights) = PlaceSelector::for_offsetee()
+        let (ptrs, weights) = PlaceSelector::for_offsetee(ctx.tcx.clone())
             .of_ty(dest.ty(ctx.current_decls(), &ctx.tcx))
             .except(dest)
-            .into_weighted(&ctx.pt, &ctx.tcx)?;
+            .into_weighted(&ctx.pt)?;
         let ptr = ctx
             .make_choice_weighted(ptrs.into_iter(), weights, |ppath| {
                 Ok(ppath.to_place(&ctx.pt))
@@ -82,7 +82,7 @@ impl CoreIntrinsic for ArithOffset {
             Some(existing) if existing.checked_neg().is_some() && rng.gen_bool(0.5) => {
                 Operand::Constant((-existing).try_into().unwrap())
             }
-            _ => PlaceSelector::for_known_val()
+            _ => PlaceSelector::for_known_val(ctx.tcx.clone())
                 .of_ty(TyCtxt::ISIZE)
                 .into_iter_place(&ctx.pt)
                 .choose(&mut *rng)

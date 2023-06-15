@@ -69,6 +69,7 @@ pub struct PlaceNode {
     pub ty: TyId,
     alloc_id: AllocId,
     dataflow: usize,
+    moved: bool,
 
     // Only Tys fitting into a single Run have these
     run_ptr: Option<RunPointer>,
@@ -156,7 +157,10 @@ impl PlaceTable {
                     ArgOperand::Copy(place.to_place_index(self).expect("arg exists"))
                 }
                 Operand::Move(place) => {
-                    ArgOperand::Move(place.to_place_index(self).expect("arg exists"))
+                    let index = place.to_place_index(self).expect("arg exists");
+                    // Only whole local can be moved
+                    assert!(self.current_frame().get_by_index(index).is_some());
+                    ArgOperand::Move(index)
                 }
                 Operand::Constant(lit) => ArgOperand::Constant(*lit),
             })
@@ -188,7 +192,8 @@ impl PlaceTable {
                     ArgOperand::Constant(lit) => self.assign_literal(pidx, Some(*lit)),
                 }
                 if let ArgOperand::Move(source_pidx) = arg {
-                    self.mark_place_uninit(source_pidx);
+                    self.memory.deallocate(self.places[source_pidx].alloc_id);
+                    self.mark_place_moved(source_pidx);
                 }
             });
     }
@@ -240,6 +245,7 @@ impl PlaceTable {
                 ty,
                 alloc_id,
                 dataflow: 0,
+                moved: false,
                 run_ptr,
                 val: None,
                 offset: None,
@@ -250,6 +256,7 @@ impl PlaceTable {
                 ty,
                 alloc_id,
                 dataflow: 0,
+                moved: false,
                 run_ptr: Some(RunPointer {
                     alloc_id,
                     run_and_offset,
@@ -263,6 +270,7 @@ impl PlaceTable {
                 ty,
                 alloc_id,
                 dataflow: 0,
+                moved: false,
                 run_ptr: None,
                 val: None,
                 offset: None,
@@ -464,6 +472,28 @@ impl PlaceTable {
         } else {
             node.dataflow
         }
+    }
+
+    pub fn is_place_moved(&self, p: impl ToPlaceIndex) -> bool {
+        let pidx = p.to_place_index(self).expect("place exists");
+        self.places[pidx].moved
+    }
+
+    pub fn mark_place_moved(&mut self, p: impl ToPlaceIndex) {
+        let pidx = p.to_place_index(self).expect("place exists");
+
+        self.update_transitive_subfields(pidx, |this, place| {
+            this.places[place].moved = true;
+            true
+        });
+
+        self.update_transitive_superfields(pidx, |this, place| {
+            let all_moved = this
+                .immediate_subfields(place)
+                .all(|p| this.places[p].moved);
+            this.places[place].moved = all_moved;
+            true
+        });
     }
 
     pub fn mark_place_uninit(&mut self, p: impl ToPlaceIndex) {
@@ -714,11 +744,17 @@ impl PlaceTable {
         self.places[p].offset == Some(0)
     }
 
-    fn locals_with_val(&self, val: usize) -> &[Local] {
+    fn locals_with_val(&self, val: usize) -> Vec<Local> {
         if let Some(locals) = self.index_candidates.get(&val) {
-            locals.as_slice()
+            locals.iter().copied().filter(|local|
+                if self.is_place_init(local) && !self.is_place_moved(local) && let Some(Literal::Uint(v, UintTy::Usize)) = self.known_val(local) && *v as usize == val {
+                    true
+                } else {
+                    false
+                }
+            ).collect()
         } else {
-            &[]
+            vec![]
         }
     }
 
@@ -789,6 +825,10 @@ impl PlacePath {
     pub fn target_node<'pt>(&self, pt: &'pt PlaceTable) -> &'pt PlaceNode {
         let target_idx = self.target_index(pt);
         &pt.places[target_idx]
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.path.is_empty()
     }
 }
 

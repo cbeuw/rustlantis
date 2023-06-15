@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use mir::{
     syntax::{Place, TyId},
     tyctxt::TyCtxt,
@@ -6,9 +8,8 @@ use rand_distr::WeightedIndex;
 
 use crate::ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex};
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum PlaceUsage {
-    #[default]
     Operand,
     LHS,
     Pointee,
@@ -17,12 +18,13 @@ enum PlaceUsage {
     Offsetee,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct PlaceSelector {
     tys: Vec<TyId>,
     exclusions: Vec<Place>,
     allow_uninit: bool,
     usage: PlaceUsage,
+    tcx: Rc<TyCtxt>,
 }
 
 pub type Weight = usize;
@@ -36,44 +38,50 @@ const OFFSETTED_PTR_WEIGHT_FACTOR: Weight = 10;
 const ROUNDTRIPPED_PTR_WEIGHT_FACTOR: Weight = 100;
 
 impl PlaceSelector {
-    pub fn for_pointee() -> Self {
+    pub fn for_pointee(tcx: Rc<TyCtxt>) -> Self {
         Self {
             usage: PlaceUsage::Pointee,
             allow_uninit: true,
-            ..Default::default()
+            ..Self::for_operand(tcx)
         }
     }
 
-    pub fn for_operand() -> Self {
-        Self::default()
+    pub fn for_operand(tcx: Rc<TyCtxt>) -> Self {
+        Self {
+            tys: vec![],
+            usage: PlaceUsage::Operand,
+            exclusions: vec![],
+            allow_uninit: false,
+            tcx,
+        }
     }
 
-    pub fn for_argument() -> Self {
+    pub fn for_argument(tcx: Rc<TyCtxt>) -> Self {
         Self {
             usage: PlaceUsage::Argument,
-            ..Default::default()
+            ..Self::for_operand(tcx)
         }
     }
 
-    pub fn for_lhs() -> Self {
+    pub fn for_lhs(tcx: Rc<TyCtxt>) -> Self {
         Self {
             usage: PlaceUsage::LHS,
             allow_uninit: true,
-            ..Self::default()
+            ..Self::for_operand(tcx)
         }
     }
 
-    pub fn for_known_val() -> Self {
+    pub fn for_known_val(tcx: Rc<TyCtxt>) -> Self {
         Self {
             usage: PlaceUsage::KnownVal,
-            ..Self::default()
+            ..Self::for_operand(tcx)
         }
     }
 
-    pub fn for_offsetee() -> Self {
+    pub fn for_offsetee(tcx: Rc<TyCtxt>) -> Self {
         Self {
             usage: PlaceUsage::Offsetee,
-            ..Self::default()
+            ..Self::for_operand(tcx)
         }
     }
 
@@ -111,6 +119,19 @@ impl PlaceSelector {
                 return false;
             }
 
+            // Not moved
+            if pt.is_place_moved(index) {
+                return false;
+            }
+
+            // Only local can be moved in Call terminator, not projections
+            if self.usage == PlaceUsage::Argument
+                && !ppath.is_local()
+                && !pt.ty(index).is_copy(&self.tcx)
+            {
+                return false;
+            }
+
             // Initness
             if !self.allow_uninit && !pt.is_place_init(index) {
                 return false;
@@ -127,12 +148,15 @@ impl PlaceSelector {
             }
 
             // Not excluded
-            if exclusion_indicies.iter().any(|excl| pt.overlap(index, excl)) {
+            if exclusion_indicies
+                .iter()
+                .any(|excl| pt.overlap(index, excl))
+            {
                 return false;
             }
 
-            // No pointer to return slot
-            if self.usage == PlaceUsage::Pointee && pt.overlap(index, Place::RETURN_SLOT) {
+            // No RET on rhs
+            if self.usage != PlaceUsage::LHS && pt.overlap(index, Place::RETURN_SLOT) {
                 return false;
             }
 
@@ -140,12 +164,9 @@ impl PlaceSelector {
         })
     }
 
-    pub fn into_weighted(
-        self,
-        pt: &PlaceTable,
-        tcx: &TyCtxt,
-    ) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
+    pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
         let usage = self.usage;
+        let tcx = self.tcx.clone();
         let (places, weights): (Vec<PlacePath>, Vec<Weight>) =
             self.into_iter_path(pt)
                 .map(|ppath| {
@@ -156,17 +177,17 @@ impl PlaceSelector {
                             let node = ppath.target_node(pt);
                             let index = ppath.target_index(pt);
                             let mut weight = 1;
-                            if node.ty.contains(tcx, |tcx, ty| ty.is_any_ptr(tcx)) {
+                            if node.ty.contains(&tcx, |tcx, ty| ty.is_any_ptr(tcx)) {
                                 weight *= PTR_ARG_WEIGHT_FACTOR;
                             }
                             if pt.known_val(index).is_some() {
                                 weight *= LIT_ARG_WEIGHT_FACTOR;
                             }
                             // Encourage isize for pointer offset
-                            if node.ty.contains(tcx, |_, ty| ty == TyCtxt::ISIZE) {
+                            if node.ty.contains(&tcx, |_, ty| ty == TyCtxt::ISIZE) {
                                 weight *= LIT_ARG_WEIGHT_FACTOR;
                             }
-                            if node.ty.is_any_ptr(tcx) && pt.offseted(index) {
+                            if node.ty.is_any_ptr(&tcx) && pt.offseted(index) {
                                 weight *= OFFSETTED_PTR_WEIGHT_FACTOR;
                             }
                             weight
@@ -181,7 +202,7 @@ impl PlaceSelector {
                                 weight *= RET_LHS_WEIGH_FACTOR;
                             }
                             let target = ppath.target_index(pt);
-                            if pt.ty(target).is_any_ptr(tcx) && pt.get_offset(target).is_some() {
+                            if pt.ty(target).is_any_ptr(&tcx) && pt.get_offset(target).is_some() {
                                 weight = 0;
                             }
                             weight
@@ -197,7 +218,7 @@ impl PlaceSelector {
                     }
 
                     if ppath.nodes(pt).any(|place| {
-                        pt.ty(place).is_any_ptr(tcx) && pt.has_offset_roundtripped(place)
+                        pt.ty(place).is_any_ptr(&tcx) && pt.has_offset_roundtripped(place)
                     }) {
                         weight *= ROUNDTRIPPED_PTR_WEIGHT_FACTOR;
                     }
@@ -222,7 +243,10 @@ mod tests {
     extern crate test;
     use std::rc::Rc;
 
-    use mir::syntax::{Local, Place};
+    use mir::{
+        syntax::{Local, Place},
+        tyctxt::TyCtxt,
+    };
     use rand::{
         rngs::SmallRng,
         seq::{IteratorRandom, SliceRandom},
@@ -237,7 +261,7 @@ mod tests {
 
     use super::PlaceSelector;
 
-    fn build_pt(rng: &mut impl Rng) -> PlaceTable {
+    fn build_pt(rng: &mut impl Rng) -> (PlaceTable, Rc<TyCtxt>) {
         let tcx = Rc::new(seed_tys(rng));
         let mut pt = PlaceTable::new(tcx.clone());
         let ty_weights = TySelect::new(&tcx);
@@ -247,16 +271,16 @@ mod tests {
                 pt.mark_place_init(pidx);
             }
         }
-        pt
+        (pt, tcx)
     }
 
     #[bench]
     fn bench_select(b: &mut Bencher) {
         let mut rng = SmallRng::seed_from_u64(0);
-        let pt = build_pt(&mut rng);
+        let (pt, tcx) = build_pt(&mut rng);
 
         b.iter(|| {
-            PlaceSelector::for_lhs()
+            PlaceSelector::for_lhs(tcx.clone())
                 .except(&Place::RETURN_SLOT)
                 .into_iter_place(&pt)
                 .choose(&mut rng)
@@ -267,10 +291,10 @@ mod tests {
     #[bench]
     fn bench_materialise_into_vec(b: &mut Bencher) {
         let mut rng = SmallRng::seed_from_u64(0);
-        let pt = build_pt(&mut rng);
+        let (pt, tcx) = build_pt(&mut rng);
 
         b.iter(|| {
-            let places: Vec<Place> = PlaceSelector::for_lhs()
+            let places: Vec<Place> = PlaceSelector::for_lhs(tcx.clone())
                 .except(&Place::RETURN_SLOT)
                 .into_iter_place(&pt)
                 .collect();
