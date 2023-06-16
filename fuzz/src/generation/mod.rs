@@ -22,7 +22,7 @@ use crate::place_select::{PlaceSelector, Weight};
 use crate::ptable::{HasDataflow, PlaceIndex, PlaceTable, ToPlaceIndex};
 use crate::ty::{seed_tys, TySelect};
 
-use self::intrinsics::ArithOffset;
+use self::intrinsics::{ArithOffset, Transmute};
 use crate::generation::intrinsics::CoreIntrinsic;
 
 /// Max. number of statements & declarations in a bb
@@ -701,15 +701,23 @@ impl GenerationCtx {
 
         let (callee, args) = self.choose_intrinsic(&return_place)?;
 
-        self.pt.assign_literal(&return_place, None);
+        // Post generation value manipulation
+        let ret = return_place.to_place_index(&self.pt).expect("place exists");
+        self.pt.mark_place_init(ret);
+        self.pt.assign_literal(ret, None);
+        let Callee::Intrinsic(intrinsic_name) = callee else {
+            panic!("callee is intrinsic");
+        };
 
-        if let Callee::Intrinsic(n) = callee && n == ArithOffset.name() {
+        if intrinsic_name == ArithOffset.name() {
             let Operand::Copy(ptr) = &args[0] else {
                 unreachable!("first operand is pointer");
             };
 
             let lit = match &args[1] {
-                Operand::Copy(p) | Operand::Move(p) =>  self.pt.known_val(p).expect("has known value"),
+                Operand::Copy(p) | Operand::Move(p) => {
+                    self.pt.known_val(p).expect("has known value")
+                }
                 Operand::Constant(lit) => lit,
             };
 
@@ -718,9 +726,21 @@ impl GenerationCtx {
             };
             let offset = *offset as isize;
 
-            self.pt.copy_place(&return_place, ptr);
-            self.pt.offset_ptr(&return_place, offset);
+            self.pt.copy_place(ret, ptr);
+            self.pt.offset_ptr(ret, offset);
+        } else if intrinsic_name == Transmute.name() {
+            if let Operand::Copy(src) | Operand::Move(src) = &args[0] {
+                self.pt.transmute_place(ret, src)
+            }
         }
+
+        for op in &args {
+            if let Operand::Move(p) = op {
+                self.pt.mark_place_moved(p);
+            }
+        }
+
+        // Finish post generation manipulation
 
         let bb = self.add_new_bb();
         self.current_bb_mut().set_terminator(Terminator::Call {
@@ -839,38 +859,6 @@ impl GenerationCtx {
             });
             self.enter_bb(new_bb);
         }
-
-        self.current_bb_mut().set_terminator(Terminator::Return);
-        Ok(self.exit_fn())
-    }
-
-    /// Terminates the current BB, and moves the generation context to the new BB
-    fn choose_terminator(&mut self) -> bool {
-        assert!(matches!(self.current_bb().terminator(), Terminator::Hole));
-        if self.pt.is_place_init(Place::RETURN_SLOT) {
-            if Place::RETURN_SLOT.dataflow(&self.pt) > 10
-                || self.current_fn().basic_blocks.len() >= MAX_BB_COUNT
-            {
-                return self.generate_return().unwrap();
-            }
-        }
-
-        let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> = vec![
-            (Self::generate_goto, 20),
-            (Self::generate_switch_int, 20),
-            (Self::generate_intrinsic_call, 20),
-            (
-                Self::generate_call,
-                MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
-            ),
-        ];
-        let (choices, weights): (Vec<fn(&mut GenerationCtx) -> Result<()>>, Vec<usize>) =
-            choices_and_weights.into_iter().unzip();
-
-        let weights = WeightedIndex::new(weights).expect("weights are valid");
-        self.make_choice_weighted_mut(choices.into_iter(), weights, |ctx, f| f(ctx))
-            .expect("deadend");
-        true
     }
 }
 

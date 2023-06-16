@@ -1,19 +1,19 @@
 use std::borrow::BorrowMut;
 
 use mir::{
-    syntax::{Callee, Mutability, Operand, Place, TyKind},
+    syntax::{Callee, Mutability, Operand, Place, TyId, TyKind},
     tyctxt::TyCtxt,
 };
 use rand::{seq::IteratorRandom, Rng};
 
-use crate::{literal::GenLiteral, place_select::PlaceSelector};
+use crate::{literal::GenLiteral, mem::BasicMemory, place_select::PlaceSelector};
 
 use super::{GenerationCtx, Result, SelectionError};
 
 pub trait CoreIntrinsic {
     fn name(&self) -> &'static str;
 
-    fn dest_type(&self, ty: &TyKind) -> bool;
+    fn dest_type(&self, ty: TyId, tcx: &TyCtxt) -> bool;
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>>;
 
@@ -22,7 +22,7 @@ pub trait CoreIntrinsic {
         ctx: &GenerationCtx,
         dest: &Place,
     ) -> Result<(Callee, Vec<Operand>)> {
-        if !self.dest_type(dest.ty(ctx.current_decls(), &ctx.tcx).kind(&ctx.tcx)) {
+        if !self.dest_type(dest.ty(ctx.current_decls(), &ctx.tcx), &ctx.tcx) {
             return Err(SelectionError::Exhausted);
         }
         let args = self
@@ -38,8 +38,8 @@ impl CoreIntrinsic for Fmaf64 {
         "fmaf64"
     }
 
-    fn dest_type(&self, ty: &TyKind) -> bool {
-        ty == &TyKind::F64
+    fn dest_type(&self, ty: TyId, _: &TyCtxt) -> bool {
+        ty == TyCtxt::F64
     }
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>> {
@@ -56,8 +56,8 @@ impl CoreIntrinsic for ArithOffset {
         "arith_offset"
     }
 
-    fn dest_type(&self, ty: &TyKind) -> bool {
-        matches!(ty, TyKind::RawPtr(.., Mutability::Not))
+    fn dest_type(&self, ty: TyId, tcx: &TyCtxt) -> bool {
+        matches!(ty.kind(tcx), TyKind::RawPtr(.., Mutability::Not))
     }
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>> {
@@ -106,8 +106,8 @@ impl CoreIntrinsic for Bswap {
         "bswap"
     }
 
-    fn dest_type(&self, ty: &TyKind) -> bool {
-        matches!(ty, TyKind::Int(..) | TyKind::Uint(..))
+    fn dest_type(&self, ty: TyId, tcx: &TyCtxt) -> bool {
+        matches!(ty.kind(tcx), TyKind::Int(..) | TyKind::Uint(..))
     }
 
     fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>> {
@@ -118,10 +118,65 @@ impl CoreIntrinsic for Bswap {
     }
 }
 
+pub(super) struct Transmute;
+impl CoreIntrinsic for Transmute {
+    fn name(&self) -> &'static str {
+        "transmute"
+    }
+
+    fn dest_type(&self, ty: TyId, tcx: &TyCtxt) -> bool {
+        if ty.contains(tcx, |tcx, ty| match ty.kind(tcx) {
+            // Tys with value validity contstraints
+            TyKind::Unit |
+            TyKind::Bool |
+            TyKind::Char |
+            TyKind::RawPtr(_, _) => true, // TODO: pointer transmute
+            _ => false,
+        }) {
+            return false;
+        }
+        if BasicMemory::ty_size(ty, tcx).is_none() {
+            return false;
+        }
+        true
+    }
+
+    fn choose_operands(&self, ctx: &GenerationCtx, dest: &Place) -> Option<Vec<Operand>> {
+        let dest_size = BasicMemory::ty_size(dest.ty(ctx.current_decls(), &ctx.tcx), &ctx.tcx)
+            .expect("dest must have known size");
+        // Avoid pointer to int casts
+        let allowed_tys: Vec<TyId> = ctx
+            .tcx
+            .indices()
+            .filter(|ty| !ty.contains(&ctx.tcx, |tcx, ty| ty.is_any_ptr(tcx)))
+            .collect();
+
+        let (srcs, weights) = PlaceSelector::for_argument(ctx.tcx.clone())
+            .of_tys(&allowed_tys)
+            .of_size(dest_size)
+            .except(dest)
+            .into_weighted(&ctx.pt)?;
+        let src = ctx
+            .make_choice_weighted(srcs.into_iter(), weights, |ppath| {
+                Ok(ppath.to_place(&ctx.pt))
+            })
+            .ok()?;
+        if src.ty(ctx.current_decls(), &ctx.tcx).is_copy(&ctx.tcx) {
+            Some(vec![Operand::Copy(src)])
+        } else {
+            Some(vec![Operand::Move(src)])
+        }
+    }
+}
+
 impl GenerationCtx {
     pub fn choose_intrinsic(&self, dest: &Place) -> Result<(Callee, Vec<Operand>)> {
-        let choices: [Box<dyn CoreIntrinsic>; 3] =
-            [Box::new(Fmaf64), Box::new(ArithOffset), Box::new(Bswap)];
+        let choices: [Box<dyn CoreIntrinsic>; 4] = [
+            Box::new(Fmaf64),
+            Box::new(ArithOffset),
+            Box::new(Bswap),
+            Box::new(Transmute),
+        ];
 
         let intrinsic = self.make_choice(choices.iter(), Result::Ok)?;
         intrinsic.generate_terminator(self, dest)

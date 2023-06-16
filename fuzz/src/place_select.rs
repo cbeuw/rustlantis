@@ -1,12 +1,13 @@
 use std::rc::Rc;
 
+use abi::size::Size;
 use mir::{
     syntax::{Place, TyId},
     tyctxt::TyCtxt,
 };
 use rand_distr::WeightedIndex;
 
-use crate::ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex};
+use crate::{ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex}, mem::BasicMemory};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PlaceUsage {
@@ -22,6 +23,7 @@ enum PlaceUsage {
 pub struct PlaceSelector {
     tys: Vec<TyId>,
     exclusions: Vec<Place>,
+    size: Option<Size>,
     allow_uninit: bool,
     usage: PlaceUsage,
     tcx: Rc<TyCtxt>,
@@ -49,6 +51,7 @@ impl PlaceSelector {
     pub fn for_operand(tcx: Rc<TyCtxt>) -> Self {
         Self {
             tys: vec![],
+            size: None,
             usage: PlaceUsage::Operand,
             exclusions: vec![],
             allow_uninit: false,
@@ -95,6 +98,13 @@ impl PlaceSelector {
         let mut tys = self.tys;
         tys.extend(types.iter().cloned());
         Self { tys, ..self }
+    }
+
+    pub fn of_size(self, size: Size) -> Self {
+        Self {
+            size: Some(size),
+            ..self
+        }
     }
 
     pub fn except(self, exclude: &Place) -> Self {
@@ -157,6 +167,11 @@ impl PlaceSelector {
 
             // No RET on rhs
             if self.usage != PlaceUsage::LHS && pt.overlap(index, Place::RETURN_SLOT) {
+                return false;
+            }
+
+            // Has the right size
+            if self.size.is_some() && BasicMemory::ty_size(pt.ty(index), &self.tcx) != self.size {
                 return false;
             }
 
