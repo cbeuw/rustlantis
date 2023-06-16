@@ -1,4 +1,4 @@
-use std::{fmt, ops::Range};
+use std::{fmt, mem, ops::Range};
 
 use abi::size::Size;
 use index_vec::{define_index_type, IndexVec};
@@ -136,7 +136,7 @@ pub struct BasicMemory {
 }
 
 impl BasicMemory {
-    const PTR_SIZE: Size = Size::from_bytes_const(64);
+    const PTR_SIZE: Size = Size::from_bytes_const(mem::size_of::<*const ()>() as u64);
 
     pub fn new() -> Self {
         Self {
@@ -196,7 +196,7 @@ impl BasicMemory {
         Some(match ty {
             TyCtxt::UNIT => Size::ZERO,
             TyCtxt::BOOL => Size::from_bytes(1),
-            TyCtxt::CHAR => Size::from_bytes(1),
+            TyCtxt::CHAR => Size::from_bytes(4),
             TyCtxt::I8 | TyCtxt::U8 => Size::from_bits(8),
             TyCtxt::I16 | TyCtxt::U16 => Size::from_bits(16),
             TyCtxt::I32 | TyCtxt::U32 => Size::from_bits(32),
