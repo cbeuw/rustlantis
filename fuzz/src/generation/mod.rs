@@ -743,7 +743,42 @@ impl GenerationCtx {
             return Err(SelectionError::Exhausted);
         }
 
-        // Dump vars
+        self.insert_dump_var_gadget();
+
+        self.current_bb_mut().set_terminator(Terminator::Return);
+        Ok(self.exit_fn())
+    }
+
+    /// Terminates the current BB, and moves the generation context to the new BB
+    fn choose_terminator(&mut self) -> bool {
+        assert!(matches!(self.current_bb().terminator(), Terminator::Hole));
+        if self.pt.is_place_init(Place::RETURN_SLOT) {
+            if Place::RETURN_SLOT.dataflow(&self.pt) > 10
+                || self.current_fn().basic_blocks.len() >= MAX_BB_COUNT
+            {
+                return self.generate_return().unwrap();
+            }
+        }
+
+        let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> = vec![
+            (Self::generate_goto, 20),
+            (Self::generate_switch_int, 20),
+            (Self::generate_intrinsic_call, 20),
+            (
+                Self::generate_call,
+                MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
+            ),
+        ];
+        let (choices, weights): (Vec<fn(&mut GenerationCtx) -> Result<()>>, Vec<usize>) =
+            choices_and_weights.into_iter().unzip();
+
+        let weights = WeightedIndex::new(weights).expect("weights are valid");
+        self.make_choice_weighted_mut(choices.into_iter(), weights, |ctx, f| f(ctx))
+            .expect("deadend");
+        true
+    }
+
+    fn insert_dump_var_gadget(&mut self) {
         let unit = self.declare_new_var(Mutability::Not, TyCtxt::UNIT);
         let unit2 = self.declare_new_var(Mutability::Not, TyCtxt::UNIT);
 
