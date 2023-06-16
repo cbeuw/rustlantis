@@ -53,6 +53,28 @@ impl Frame {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum PlaceOperand {
+    Copy(PlaceIndex),
+    Move(PlaceIndex),
+    Constant(Literal),
+}
+
+impl PlaceOperand {
+    pub fn from_operand(op: &Operand, pt: &PlaceTable) -> Self {
+        match op {
+            Operand::Copy(place) => PlaceOperand::Copy(place.to_place_index(pt).expect("arg exists")),
+            Operand::Move(place) => {
+                let index = place.to_place_index(pt).expect("arg exists");
+                // Only whole local can be moved
+                assert!(pt.current_frame().get_by_index(index).is_some());
+                PlaceOperand::Move(index)
+            }
+            Operand::Constant(lit) => PlaceOperand::Constant(*lit),
+        }
+    }
+}
+
 pub struct PlaceTable {
     /// The callstack
     frames: Vec<Frame>,
@@ -144,26 +166,10 @@ impl PlaceTable {
 
     pub fn enter_fn(&mut self, body: &Body, args: &[Operand], return_dest: &Place) {
         // Get the PlaceIndices before frame switch
-        enum ArgOperand {
-            Copy(PlaceIndex),
-            Move(PlaceIndex),
-            Constant(Literal),
-        }
 
-        let args: Vec<ArgOperand> = args
+        let args: Vec<PlaceOperand> = args
             .iter()
-            .map(|p| match p {
-                Operand::Copy(place) => {
-                    ArgOperand::Copy(place.to_place_index(self).expect("arg exists"))
-                }
-                Operand::Move(place) => {
-                    let index = place.to_place_index(self).expect("arg exists");
-                    // Only whole local can be moved
-                    assert!(self.current_frame().get_by_index(index).is_some());
-                    ArgOperand::Move(index)
-                }
-                Operand::Constant(lit) => ArgOperand::Constant(*lit),
-            })
+            .map(|p| PlaceOperand::from_operand(p, self))
             .collect();
 
         let return_dest = return_dest
@@ -182,16 +188,16 @@ impl PlaceTable {
                 let pidx = self.allocate_local(local, decl.ty);
 
                 match &arg {
-                    ArgOperand::Copy(source_pidx) | ArgOperand::Move(source_pidx) => {
+                    PlaceOperand::Copy(source_pidx) | PlaceOperand::Move(source_pidx) => {
                         debug_assert!(
                             self.is_place_init(source_pidx),
                             "function arguments must be init"
                         );
                         self.copy_place(pidx, source_pidx);
                     }
-                    ArgOperand::Constant(lit) => self.assign_literal(pidx, Some(*lit)),
+                    PlaceOperand::Constant(lit) => self.assign_literal(pidx, Some(*lit)),
                 }
-                if let ArgOperand::Move(source_pidx) = arg {
+                if let PlaceOperand::Move(source_pidx) = arg {
                     self.memory.deallocate(self.places[source_pidx].alloc_id);
                     self.mark_place_moved(source_pidx);
                 }

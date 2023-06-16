@@ -19,7 +19,7 @@ use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
 use crate::literal::GenLiteral;
 use crate::place_select::{PlaceSelector, Weight};
-use crate::ptable::{HasDataflow, PlaceIndex, PlaceTable, ToPlaceIndex};
+use crate::ptable::{PlaceOperand, HasDataflow, PlaceIndex, PlaceTable, ToPlaceIndex};
 use crate::ty::{seed_tys, TySelect};
 
 use self::intrinsics::{ArithOffset, Transmute};
@@ -703,43 +703,48 @@ impl GenerationCtx {
 
         // Post generation value manipulation
         let ret = return_place.to_place_index(&self.pt).expect("place exists");
+        let arg_places: Vec<PlaceOperand> = args
+            .iter()
+            .map(|op| PlaceOperand::from_operand(op, &self.pt))
+            .collect();
+
         self.pt.mark_place_init(ret);
-        self.pt.assign_literal(ret, None);
         let Callee::Intrinsic(intrinsic_name) = callee else {
             panic!("callee is intrinsic");
         };
 
         if intrinsic_name == ArithOffset.name() {
-            let Operand::Copy(ptr) = &args[0] else {
+            let PlaceOperand::Copy(ptr) = arg_places[0] else {
                 unreachable!("first operand is pointer");
             };
 
-            let lit = match &args[1] {
-                Operand::Copy(p) | Operand::Move(p) => {
-                    self.pt.known_val(p).expect("has known value")
+            let lit = match arg_places[1] {
+                PlaceOperand::Copy(p) | PlaceOperand::Move(p) => {
+                    *self.pt.known_val(p).expect("has known value")
                 }
-                Operand::Constant(lit) => lit,
+                PlaceOperand::Constant(lit) => lit,
             };
 
             let Literal::Int(offset, IntTy::Isize) = lit else {
                 panic!("incorrect offset type");
             };
-            let offset = *offset as isize;
+            let offset = offset as isize;
 
             self.pt.copy_place(ret, ptr);
             self.pt.offset_ptr(ret, offset);
         } else if intrinsic_name == Transmute.name() {
-            if let Operand::Copy(src) | Operand::Move(src) = &args[0] {
+            if let PlaceOperand::Copy(src) | PlaceOperand::Move(src) = arg_places[0] {
                 self.pt.transmute_place(ret, src)
             }
         }
 
-        for op in &args {
-            if let Operand::Move(p) = op {
+        for op in arg_places {
+            if let PlaceOperand::Move(p) = op {
                 self.pt.mark_place_moved(p);
             }
         }
 
+        self.pt.assign_literal(ret, None);
         // Finish post generation manipulation
 
         let bb = self.add_new_bb();
