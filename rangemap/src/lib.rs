@@ -1,3 +1,6 @@
+// From https://github.com/rust-lang/miri/blob/c00b33f37635de24fbfe24ac786c3967ea45c679/src/range_map.rs
+// Modified by Andy Wang
+
 //! Implements a map from integer indices to data.
 //! Rather than storing data for every index, internally, this maps entire ranges to the data.
 //! To this end, the APIs all work on ranges, not on individual integers. Ranges are split as
