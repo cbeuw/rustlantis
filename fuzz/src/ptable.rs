@@ -63,7 +63,9 @@ pub enum PlaceOperand {
 impl PlaceOperand {
     pub fn from_operand(op: &Operand, pt: &PlaceTable) -> Self {
         match op {
-            Operand::Copy(place) => PlaceOperand::Copy(place.to_place_index(pt).expect("arg exists")),
+            Operand::Copy(place) => {
+                PlaceOperand::Copy(place.to_place_index(pt).expect("arg exists"))
+            }
             Operand::Move(place) => {
                 let index = place.to_place_index(pt).expect("arg exists");
                 // Only whole local can be moved
@@ -551,7 +553,7 @@ impl PlaceTable {
                 this.memory
                     .bytes_mut(run_ptr)
                     .iter_mut()
-                    .for_each(|b| *b = AbstractByte::Init(None));
+                    .for_each(|b| *b = AbstractByte::Init);
                 false
             } else {
                 true

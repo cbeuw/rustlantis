@@ -7,43 +7,36 @@ use mir::{
     tyctxt::TyCtxt,
 };
 
-#[derive(Clone, Copy)]
-pub enum AbstractByte<Provenance> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AbstractByte {
     /// An uninitialized byte.
     Uninit,
     /// An initialized byte, optionally with some provenance (if it is encoding a pointer).
-    Init(Option<Provenance>),
+    Init,
 }
 
-impl<Provenance> fmt::Debug for AbstractByte<Provenance> {
+impl fmt::Debug for AbstractByte {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Uninit => write!(f, "UU"),
-            Self::Init(..) => write!(f, "II"),
+            Self::Init => write!(f, "II"),
         }
     }
 }
 
-impl<Provenance> AbstractByte<Provenance> {
+impl AbstractByte {
     pub fn is_init(&self) -> bool {
-        matches!(self, AbstractByte::Init(..))
-    }
-
-    pub fn provenance(&self) -> Option<&Provenance> {
-        match self {
-            AbstractByte::Uninit => None,
-            AbstractByte::Init(provenance) => provenance.as_ref(),
-        }
+        self == &AbstractByte::Init
     }
 }
 
 /// A Run represents a contiguous region of memory free of padding
 #[derive(Debug, Clone)]
-pub struct Run<Provenance> {
-    bytes: Box<[AbstractByte<Provenance>]>,
+pub struct Run {
+    bytes: Box<[AbstractByte]>,
 }
 
-impl<Provenance: Copy + Clone> Run<Provenance> {
+impl Run {
     pub fn new_uninit(size: Size) -> Self {
         let bytes = vec![AbstractByte::Uninit; size.bytes() as usize].into_boxed_slice();
         Self { bytes }
@@ -69,10 +62,9 @@ impl RunAndOffset {
     }
 }
 
-type Provenance = AllocId;
 struct Allocation {
     /// The data stored in this allocation.
-    runs: IndexVec<RunId, Run<Provenance>>,
+    runs: IndexVec<RunId, Run>,
     /// The alignment that was requested for this allocation.
     // align: Align,
     /// Whether this allocation is still live.
@@ -86,14 +78,14 @@ impl Allocation {
             .map(|(run_id, run)| (run_id, run.size()))
     }
 
-    fn run(&self, run_and_offset: RunAndOffset) -> &Run<Provenance> {
+    fn run(&self, run_and_offset: RunAndOffset) -> &Run {
         &self.runs[run_and_offset.0]
     }
 }
 
 pub struct AllocationBuilder {
     alloc_id: AllocId,
-    runs: IndexVec<RunId, Run<Provenance>>,
+    runs: IndexVec<RunId, Run>,
 }
 
 impl AllocationBuilder {
@@ -165,7 +157,7 @@ impl BasicMemory {
         self.allocations[alloc_id].live
     }
 
-    pub fn bytes(&self, run_ptr: RunPointer) -> &[AbstractByte<Provenance>] {
+    pub fn bytes(&self, run_ptr: RunPointer) -> &[AbstractByte] {
         assert!(
             self.allocations[run_ptr.alloc_id].live,
             "can't access dead bytes"
@@ -174,7 +166,7 @@ impl BasicMemory {
             [run_ptr.bytes_range()]
     }
 
-    pub fn bytes_mut(&mut self, run_ptr: RunPointer) -> &mut [AbstractByte<Provenance>] {
+    pub fn bytes_mut(&mut self, run_ptr: RunPointer) -> &mut [AbstractByte] {
         assert!(
             self.allocations[run_ptr.alloc_id].live,
             "can't access dead bytes"
