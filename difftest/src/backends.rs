@@ -77,18 +77,16 @@ pub trait Backend: Send + Sync {
         panic!("not implemented")
     }
 
-    fn execute(&self, source: &Path) -> ExecResult {
-        let target_dir = tempfile::tempdir().unwrap();
-        let target_path = target_dir.path().join("target");
+    fn execute(&self, source: &Path, target: &Path) -> ExecResult {
         debug!("Compiling {}", source.to_string_lossy());
         let source = source.canonicalize().expect("source path valid");
-        let compile_out = self.compile(&source, &target_path);
+        let compile_out = self.compile(&source, target);
         if !compile_out.status.success() {
             return Err(CompExecError(compile_out));
         }
 
         debug!("Executing compiled {}", source.to_string_lossy());
-        let exec_out = Command::new(target_path)
+        let exec_out = Command::new(target)
             .output()
             .expect("can execute target program and get output");
         Ok(exec_out.into())
@@ -260,7 +258,7 @@ impl Miri {
 }
 
 impl Backend for Miri {
-    fn execute(&self, source: &Path) -> ExecResult {
+    fn execute(&self, source: &Path, _: &Path) -> ExecResult {
         debug!("Executing {} with Miri", source.to_string_lossy());
         let mut command = Command::new(&self.binary);
         if self.check_ub {

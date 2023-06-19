@@ -135,10 +135,12 @@ pub fn run_diff_test<'a>(
     source_file: &Path,
     backends: HashMap<BackendName, Box<dyn Backend + 'a>>,
 ) -> ExecResults {
+    let target_dir = tempfile::tempdir().unwrap();
     let exec_results: HashMap<BackendName, ExecResult> = backends
         .par_iter()
         .map(|(&name, b)| {
-            let result = b.execute(source_file);
+            let target_path = target_dir.path().join(name);
+            let result = b.execute(source_file, &target_path);
             (name, result)
         })
         .collect();
