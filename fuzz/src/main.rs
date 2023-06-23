@@ -14,8 +14,7 @@ mod place_select;
 mod ptable;
 mod ty;
 
-use std::env::{self, args};
-
+use clap::{arg, command, value_parser};
 use log::info;
 use mir::serialize::Serialize;
 
@@ -23,10 +22,18 @@ use crate::generation::GenerationCtx;
 
 fn main() {
     env_logger::init();
+    let matches = command!()
+        .args(&[
+            arg!(-d --debug "debug print dumpped variables"),
+            arg!(<seed> "generation seed").value_parser(value_parser!(u64)),
+        ])
+        .get_matches();
 
-    let seed: u64 = args().nth(1).unwrap().parse().unwrap();
+    let seed: u64 = *matches
+        .get_one::<u64>("seed")
+        .expect("need an integer as seed");
+    let debug_dump = matches.get_one::<bool>("debug").copied().unwrap_or(false);
     info!("Generating a program with seed {seed}");
-    let debug_dump = env::var("RUSTLANTIS_DEBUG").is_ok_and(|v| v == "true" || v == "1");
     let genctxt = GenerationCtx::new(seed, debug_dump);
     let (program, tcx) = genctxt.generate();
     println!("{}", program.serialize(&tcx));
