@@ -2,7 +2,7 @@ mod intrinsics;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::{cmp, vec};
+use std::{cmp, fmt, vec};
 
 use index_vec::IndexVec;
 use log::{debug, trace};
@@ -19,7 +19,7 @@ use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
 use crate::literal::GenLiteral;
 use crate::place_select::{PlaceSelector, Weight};
-use crate::ptable::{PlaceOperand, HasDataflow, PlaceIndex, PlaceTable, ToPlaceIndex};
+use crate::ptable::{HasDataflow, PlaceIndex, PlaceOperand, PlaceTable, ToPlaceIndex};
 use crate::ty::{seed_tys, TySelect};
 
 use self::intrinsics::{ArithOffset, Transmute};
@@ -40,15 +40,30 @@ pub enum SelectionError {
 
 type Result<Node> = std::result::Result<Node, SelectionError>;
 
+#[derive(Clone, Copy)]
+struct Cursor {
+    function: Function,
+    basic_block: BasicBlock,
+}
+
+impl fmt::Debug for Cursor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!(
+            "{}:{}",
+            self.function.identifier(),
+            self.basic_block.identifier(),
+        ))
+    }
+}
+
 pub struct GenerationCtx {
     rng: RefCell<Box<dyn RngCore>>,
     program: Program,
     tcx: Rc<TyCtxt>,
     ty_weights: TySelect,
     pt: PlaceTable,
-    return_stack: Vec<(Function, BasicBlock)>,
-    current_function: Function,
-    current_bb: BasicBlock,
+    return_stack: Vec<Cursor>,
+    cursor: Cursor,
 }
 
 // Operand
@@ -496,7 +511,7 @@ impl GenerationCtx {
 // Terminator
 impl GenerationCtx {
     fn enter_bb(&mut self, bb: BasicBlock) {
-        self.current_bb = bb;
+        self.cursor.basic_block = bb;
     }
 
     fn generate_goto(&mut self) -> Result<()> {
@@ -527,7 +542,7 @@ impl GenerationCtx {
             .basic_blocks
             .indices()
             .skip(1) // avoid the unnamable first bb
-            .filter(|&bb| bb != self.current_bb)
+            .filter(|&bb| bb != self.cursor.basic_block)
             .choose_multiple(self.rng.get_mut(), pick_from_existing);
         assert_eq!(picked.len(), pick_from_existing);
 
@@ -633,11 +648,7 @@ impl GenerationCtx {
     }
 
     fn generate_call(&mut self) -> Result<()> {
-        debug!(
-            "generating a Call terminator to {} {}",
-            self.current_function.identifier(),
-            self.current_bb.identifier()
-        );
+        debug!("generating a Call terminator to {:?}", self.cursor);
         let (return_places, weights) = PlaceSelector::for_lhs(self.tcx.clone())
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
@@ -669,21 +680,23 @@ impl GenerationCtx {
         }
 
         let target_bb = self.add_new_bb();
-        self.return_stack.push((self.current_function, target_bb));
+        self.return_stack.push(Cursor {
+            function: self.cursor.function,
+            basic_block: target_bb,
+        });
 
         let public = self.rng.get_mut().gen_bool(0.5);
 
         // We don't know the name of the new function here, so we save the current cursor and write the terminator after frame switch
-        let (caller_fn, caller_bb) = (self.current_function, self.current_bb);
+        let caller_cursor = self.cursor;
         let new_fn = self.enter_new_fn(&args, &return_place, public);
-        self.program.functions[caller_fn].basic_blocks[caller_bb].set_terminator(
-            Terminator::Call {
+        self.program.functions[caller_cursor.function].basic_blocks[caller_cursor.basic_block]
+            .set_terminator(Terminator::Call {
                 callee: Callee::Generated(new_fn),
                 destination: return_place,
                 target: target_bb,
                 args,
-            },
-        );
+            });
 
         debug!("generated a Call terminator");
         Ok(())
@@ -759,11 +772,7 @@ impl GenerationCtx {
     }
 
     fn generate_return(&mut self) -> Result<bool> {
-        debug!(
-            "generating a Return terminator to {} {}",
-            self.current_function.identifier(),
-            self.current_bb.identifier()
-        );
+        debug!("generating a Return terminator to {:?}", self.cursor);
         if !self.pt.is_place_init(Place::RETURN_SLOT) {
             return Err(SelectionError::Exhausted);
         }
@@ -833,7 +842,7 @@ impl GenerationCtx {
             let args = if self.program.use_debug_dumper {
                 let mut args = Vec::with_capacity(1 + Program::DUMPER_ARITY * 2);
                 args.push(Operand::Constant(
-                    self.current_function.index().try_into().unwrap(),
+                    self.cursor.function.index().try_into().unwrap(),
                 ));
                 for var in vars {
                     args.push(Operand::Constant(var.index().try_into().unwrap()));
@@ -888,11 +897,13 @@ impl GenerationCtx {
             return_ty.serialize(&self.tcx),
         );
 
-        self.current_function = new_fn;
-        self.current_bb = starting_bb;
+        self.cursor = Cursor {
+            function: new_fn,
+            basic_block: starting_bb,
+        };
 
         self.pt.enter_fn(
-            &self.program.functions[self.current_function],
+            &self.program.functions[self.cursor.function],
             args,
             return_dest,
         );
@@ -913,21 +924,22 @@ impl GenerationCtx {
             return_ty.serialize(&self.tcx),
         );
 
-        self.current_function = new_fn;
-        self.current_bb = starting_bb;
+        self.cursor = Cursor {
+            function: new_fn,
+            basic_block: starting_bb,
+        };
 
         self.pt
-            .enter_fn0(&self.program.functions[self.current_function]);
+            .enter_fn0(&self.program.functions[self.cursor.function]);
     }
 
     fn exit_fn(&mut self) -> bool {
-        let callee = self.current_function;
-        if let Some((func, target)) = self.return_stack.pop() {
-            debug!("leaving {} to {}", callee.identifier(), func.identifier());
+        let callee = self.cursor;
+        if let Some(return_dest) = self.return_stack.pop() {
+            debug!("leaving {:?} to {:?}", callee, return_dest);
 
             // Move cursor to the target bb in the call terminator
-            self.current_function = func;
-            self.current_bb = target;
+            self.cursor = return_dest;
             self.pt.exit_fn();
             true
         } else {
@@ -1056,8 +1068,10 @@ impl GenerationCtx {
             program: Program::new(debug_dump),
             pt: PlaceTable::new(tcx),
             return_stack: vec![],
-            current_function: Function::new(0),
-            current_bb: BasicBlock::new(0),
+            cursor: Cursor {
+                function: Function::new(0),
+                basic_block: BasicBlock::new(0),
+            },
         }
     }
 
@@ -1066,25 +1080,25 @@ impl GenerationCtx {
         debug!(
             "adding {} to {}",
             new_bb.identifier(),
-            self.current_function.identifier()
+            self.cursor.function.identifier()
         );
         new_bb
     }
 
     pub fn current_fn(&self) -> &Body {
-        &self.program.functions[self.current_function]
+        &self.program.functions[self.cursor.function]
     }
 
     pub fn current_fn_mut(&mut self) -> &mut Body {
-        &mut self.program.functions[self.current_function]
+        &mut self.program.functions[self.cursor.function]
     }
 
     pub fn current_bb(&mut self) -> &BasicBlockData {
-        &self.program.functions[self.current_function].basic_blocks[self.current_bb]
+        &self.program.functions[self.cursor.function].basic_blocks[self.cursor.basic_block]
     }
 
     pub fn current_bb_mut(&mut self) -> &mut BasicBlockData {
-        &mut self.program.functions[self.current_function].basic_blocks[self.current_bb]
+        &mut self.program.functions[self.cursor.function].basic_blocks[self.cursor.basic_block]
     }
 
     pub fn current_decls(&self) -> &LocalDecls {
