@@ -223,7 +223,6 @@ pub enum Literal {
     Char(char),
     // Every f32 can be expressed exactly as f64
     Float(f64, FloatTy),
-    // TODO: Adt literal?
 }
 
 #[derive(Clone)]
@@ -567,7 +566,6 @@ pub enum BinOp {
 
 #[derive(Clone, Copy)]
 pub enum UnOp {
-    Hole,
     Not,
     Neg,
 }
@@ -898,7 +896,6 @@ impl UnOp {
         match self {
             UnOp::Not => "!",
             UnOp::Neg => "-",
-            UnOp::Hole => panic!("op is a hole"),
         }
     }
 }
