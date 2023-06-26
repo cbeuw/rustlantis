@@ -27,6 +27,7 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 - https://github.com/rust-lang/rust/issues/112526 && https://github.com/llvm/llvm-project/issues/63266
 - https://github.com/rust-lang/rust/issues/112548
 - https://github.com/rust-lang/rust/issues/112767 && https://github.com/llvm/llvm-project/issues/63430
+- https://github.com/llvm/llvm-project/issues/63475
 
 ### Previously known bugs
 - https://github.com/rust-lang/rust/issues/109567 (first reported https://github.com/rust-lang/rust/issues/102403)
