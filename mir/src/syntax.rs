@@ -698,6 +698,7 @@ impl Program {
 
     static mut H: DefaultHasher = DefaultHasher::new();
 
+    #[inline(never)]
     fn dump_var<T: Hash, U: Hash, V: Hash, W: Hash>(
         val0: T,
         val1: U,
