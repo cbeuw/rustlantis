@@ -1,1 +1,8 @@
-miri_dir = "/Users/andy/Code/miri"
+# Path to Miri repository
+miri_dir = "../miri"
+
+# Path to rustc_codegen_cranelift repository
+cranelift_dir = "../rustc_codegen_cranelift"
+
+# Override toolchain for default rustc backend
+llvm_toolchain = "nightly"
