@@ -5,7 +5,7 @@ resolver = "2"
 members = [
     "difftest",
     "mir",
-    "fuzz",
+    "generate",
     "rangemap",
     "abi",
 ]

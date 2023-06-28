@@ -1,5 +1,5 @@
 [package]
-name = "fuzz"
+name = "generate"
 version = "0.1.0"
 edition = "2021"
 
