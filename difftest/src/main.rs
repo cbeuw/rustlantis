@@ -1,7 +1,7 @@
 #![feature(iter_intersperse)]
 
 use core::panic;
-use std::{collections::HashMap, path::PathBuf, str::FromStr};
+use std::{collections::HashMap, path::PathBuf, process::ExitCode, str::FromStr};
 
 use clap::{Arg, Command};
 use config::Config;
@@ -11,7 +11,7 @@ use difftest::{
 };
 use log::{debug, error, info};
 
-fn main() {
+fn main() -> ExitCode {
     env_logger::init();
 
     let matches = Command::new("difftest")
@@ -89,11 +89,13 @@ fn main() {
     if results.all_same() && results.all_success() {
         info!("{} is all the same", source.as_os_str().to_string_lossy());
         debug!("{}", results);
+        return ExitCode::SUCCESS;
     } else {
         let results = results.to_string();
         error!(
             "{} didn't pass:\n{results}",
             source.as_os_str().to_string_lossy(),
         );
+        return ExitCode::FAILURE;
     }
 }
