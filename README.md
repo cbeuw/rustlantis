@@ -48,21 +48,21 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 ## Tropies
 
 ### Crashes & ICEs
-- https://github.com/rust-lang/rust/issues/110902
-- https://github.com/rust-lang/rust/issues/111426
-- https://github.com/llvm/llvm-project/issues/63013
-- https://github.com/llvm/llvm-project/issues/63033
+- `RenameReturnPlace` is broken: https://github.com/rust-lang/rust/issues/110902
+- `ReferencePropagation` prevents partial initialisation: https://github.com/rust-lang/rust/issues/111426
+- phi nodes assumed to be non-empty: https://github.com/llvm/llvm-project/issues/63013
+- Assertion failure in `RegisterCoalescer`: https://github.com/llvm/llvm-project/issues/63033
 
 ### Silent Miscompilations
-- https://github.com/rust-lang/rust/issues/110947
-- https://github.com/rust-lang/rust/issues/111502
-- https://github.com/rust-lang/rust/issues/112061 && https://github.com/llvm/llvm-project/issues/63019
-- https://github.com/rust-lang/rust/issues/112170 && https://github.com/llvm/llvm-project/issues/63055
-- https://github.com/rust-lang/rust/issues/112526 && https://github.com/llvm/llvm-project/issues/63266
+- `ConstProp` propagates over mutating borrows: https://github.com/rust-lang/rust/issues/110947
+- `*const T` in function parameters annotated with `readonly`: https://github.com/rust-lang/rust/issues/111502
+- Aliasing analysis merges loads from different offsets: https://github.com/rust-lang/rust/issues/112061 & https://github.com/llvm/llvm-project/issues/63019
+- Constant folding produces invalid boolean values: https://github.com/rust-lang/rust/issues/112170 & https://github.com/llvm/llvm-project/issues/63055
+- Aliasing analysis broken for overflowing pointer offsets: https://github.com/rust-lang/rust/issues/112526 & https://github.com/llvm/llvm-project/issues/63266
 - https://github.com/rust-lang/rust/issues/112548
-- https://github.com/rust-lang/rust/issues/112767 && https://github.com/llvm/llvm-project/issues/63430
-- https://github.com/llvm/llvm-project/issues/63475
+- Copy elision corrupts stack arguments with two parts: https://github.com/rust-lang/rust/issues/112767 & https://github.com/llvm/llvm-project/issues/63430
+- Copy elision reads stack arguments from the wrong offsets: https://github.com/llvm/llvm-project/issues/63475
 
 ### Previously known bugs
-- https://github.com/rust-lang/rust/issues/109567 (first reported https://github.com/rust-lang/rust/issues/102403)
-- https://github.com/rust-lang/rust/issues/112213 (first reported https://github.com/llvm/llvm-project/issues/51838)
+- Const eval gives `x % x` wrong sign when `x` is a negative float: https://github.com/rust-lang/rust/issues/109567 (first reported https://github.com/rust-lang/rust/issues/102403)
+- Write to dangling pointer is hoisted outside of condition: https://github.com/rust-lang/rust/issues/112213 (first reported https://github.com/llvm/llvm-project/issues/51838)
