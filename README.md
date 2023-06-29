@@ -15,6 +15,9 @@ aggregate expressions
 - Creating pointers with `addr_of!` and `addr_of_mut!`, and dereferencing
 - Casts between integers, floating points, `char`, and `bool`
 
+Generated programs are terminating, UB-free, and deterministic. A discrepancy between testing backends
+always indicate a bug in them (or a bug in Rustlantis).
+
 ## Requirements
 - Rust nightly
 - rustup
