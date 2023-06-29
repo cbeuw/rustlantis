@@ -13,7 +13,7 @@ else
     SOURCE_DEBUG="$TMPDIR/$1-debug.rs"
     target/release/generate --debug $1 > $SOURCE_DEBUG
 
-    REPRO_DIR="${REPRO_DIR:-.}"
+    REPRO_DIR="${REPRO_DIR:-repros/}"
     mkdir -p $REPRO_DIR
 
     if target/release/difftest $SOURCE_DEBUG 2> /dev/null; then
