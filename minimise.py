@@ -42,6 +42,8 @@ if __name__ == "__main__":
                     continue
                 elif saved == "}":
                     continue
+                elif saved.startswith("#"):
+                    continue
 
                 print(line, end='\r')
 
