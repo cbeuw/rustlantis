@@ -699,11 +699,11 @@ impl Program {
     static mut H: DefaultHasher = DefaultHasher::new();
 
     #[inline(never)]
-    fn dump_var<T: Hash, U: Hash, V: Hash, W: Hash>(
-        val0: T,
-        val1: U,
-        val2: V,
-        val3: W,
+    fn dump_var(
+        val0: impl Hash,
+        val1: impl Hash,
+        val2: impl Hash,
+        val3: impl Hash,
     ) {
         unsafe {
             val0.hash(&mut H);
@@ -718,11 +718,12 @@ impl Program {
     use std::fmt::Debug;
 
     #[inline(never)]
-    pub fn dump_var<T: Debug, U: Debug, V: Debug, W: Debug>(f: usize,
-        var0: usize, val0: T,
-        var1: usize, val1: U,
-        var2: usize, val2: V,
-        var3: usize, val3: W,
+    fn dump_var(
+        f: usize,
+        var0: usize, val0: impl Debug,
+        var1: usize, val1: impl Debug,
+        var2: usize, val2: impl Debug,
+        var3: usize, val3: impl Debug,
     ) {
         println!("fn{f}:_{var0} = {val0:?}\n_{var1} = {val1:?}\n_{var2} = {val2:?}\n_{var3} = {val3:?}");
     }
