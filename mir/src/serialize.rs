@@ -339,7 +339,7 @@ impl Serialize for Program {
 
         program.push_str(&format!(
             "pub fn main() {{
-                println!(\"{{:?}}\", {first_fn}({arg_list}));
+                {first_fn}({arg_list});
                 {hash_printer}
             }}"
         ));

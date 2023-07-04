@@ -1120,11 +1120,7 @@ impl GenerationCtx {
             })
             .collect();
 
-        let return_ty = self.ty_weights.choose_ty_filtered(
-            &mut *self.rng.borrow_mut(),
-            &self.tcx,
-            |tcx, ty| ty.determ_printable(tcx),
-        );
+        let return_ty = self.ty_weights.choose_ty(&mut *self.rng.borrow_mut(), &self.tcx);
         self.enter_fn0(&arg_tys, return_ty, &arg_literals);
 
         loop {

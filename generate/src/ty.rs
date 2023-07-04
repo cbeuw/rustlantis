@@ -95,24 +95,6 @@ impl TySelect {
             .nth(self.weights.sample(rng))
             .expect("tyctxt isn't empty")
     }
-
-    pub fn choose_ty_filtered<P>(&self, rng: &mut impl Rng, tcx: &TyCtxt, predicate: P) -> TyId
-    where
-        P: Fn(&TyCtxt, TyId) -> bool + Copy,
-    {
-        let mut weights = self.weights.clone();
-        tcx.indices().for_each(|ty| {
-            if !predicate(tcx, ty) {
-                weights
-                    .update_weights(&[(ty.index(), &0.)])
-                    .expect("no types left");
-            }
-        });
-
-        tcx.indices()
-            .nth(weights.sample(rng))
-            .expect("tyctxt isn't empty")
-    }
 }
 pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
     // Seed with primitives
