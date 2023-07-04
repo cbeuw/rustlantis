@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::{cmp, fmt, vec};
 
 use index_vec::IndexVec;
-use log::{debug, trace};
+use log::trace;
 use mir::serialize::Serialize;
 use mir::syntax::{
     AggregateKind, BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal,
@@ -414,7 +414,7 @@ impl GenerationCtx {
 
         self.make_choice_weighted(lhs_choices.into_iter(), weights, |ppath| {
             let lhs = ppath.to_place(&self.pt);
-            debug!(
+            trace!(
                 "generating an assignment statement with lhs {}: {}",
                 lhs.serialize(&self.tcx),
                 lhs.ty(self.current_decls(), &self.tcx).serialize(&self.tcx)
@@ -527,7 +527,6 @@ impl GenerationCtx {
     // actually taken. Return value will contain a mix of existing and new BBs
     // filled with random statements.
     fn decoy_bbs(&mut self, count: usize) -> Vec<BasicBlock> {
-        debug!("picking {count} decoy bbs");
         // FIXME: -1 because we can't name the first BB, but custom_mir
         // should allow it
         // -1 to avoid the current bb
@@ -535,7 +534,6 @@ impl GenerationCtx {
 
         let pick_from_existing = self.rng.get_mut().gen_range(0..=cmp::min(available, count));
         let new = count - pick_from_existing;
-        debug!("picking {pick_from_existing} bbs and creating {new} new bbs");
 
         let mut picked = self
             .current_fn()
@@ -574,7 +572,7 @@ impl GenerationCtx {
     }
 
     fn generate_switch_int(&mut self) -> Result<()> {
-        debug!("generating a SwitchInt terminator");
+        trace!("generating a SwitchInt terminator");
         let (places, weights) = PlaceSelector::for_known_val(self.tcx.clone())
             .of_tys(&[
                 TyCtxt::ISIZE,
@@ -648,7 +646,7 @@ impl GenerationCtx {
     }
 
     fn generate_call(&mut self) -> Result<()> {
-        debug!("generating a Call terminator to {:?}", self.cursor);
+        trace!("generating a Call terminator to {:?}", self.cursor);
         let (return_places, weights) = PlaceSelector::for_lhs(self.tcx.clone())
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
@@ -698,7 +696,7 @@ impl GenerationCtx {
                 args,
             });
 
-        debug!("generated a Call terminator");
+        trace!("generated a Call terminator");
         Ok(())
     }
 
@@ -772,7 +770,7 @@ impl GenerationCtx {
     }
 
     fn generate_return(&mut self) -> Result<bool> {
-        debug!("generating a Return terminator to {:?}", self.cursor);
+        trace!("generating a Return terminator to {:?}", self.cursor);
         if !self.pt.is_place_init(Place::RETURN_SLOT) {
             return Err(SelectionError::Exhausted);
         }
@@ -890,7 +888,7 @@ impl GenerationCtx {
         let starting_bb = body.new_basic_block(BasicBlockData::new());
         let new_fn = self.program.push_fn(body);
 
-        debug!(
+        trace!(
             "entering {}({}) -> {}",
             new_fn.identifier(),
             args_ty.as_slice().serialize(&self.tcx),
@@ -917,7 +915,7 @@ impl GenerationCtx {
         let starting_bb = body.new_basic_block(BasicBlockData::new());
         let new_fn = self.program.push_fn(body);
 
-        debug!(
+        trace!(
             "entering {}({}) -> {}",
             new_fn.identifier(),
             args_ty.serialize(&self.tcx),
@@ -936,7 +934,7 @@ impl GenerationCtx {
     fn exit_fn(&mut self) -> bool {
         let callee = self.cursor;
         if let Some(return_dest) = self.return_stack.pop() {
-            debug!("leaving {:?} to {:?}", callee, return_dest);
+            trace!("leaving {:?} to {:?}", callee, return_dest);
 
             // Move cursor to the target bb in the call terminator
             self.cursor = return_dest;
@@ -1077,7 +1075,7 @@ impl GenerationCtx {
 
     fn add_new_bb(&mut self) -> BasicBlock {
         let new_bb = self.current_fn_mut().new_basic_block(BasicBlockData::new());
-        debug!(
+        trace!(
             "adding {} to {}",
             new_bb.identifier(),
             self.cursor.function.identifier()
@@ -1131,7 +1129,7 @@ impl GenerationCtx {
 
         loop {
             let statement_count = self.rng.get_mut().gen_range(1..=BB_MAX_LEN);
-            debug!("Generating a bb with {statement_count} statements");
+            trace!("Generating a bb with {statement_count} statements");
             for _ in 0..statement_count {
                 self.choose_statement();
             }

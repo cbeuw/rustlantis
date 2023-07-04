@@ -10,10 +10,12 @@ use std::{
     fmt,
     ops::Index,
     path::Path,
+    time::Instant,
 };
 
 use backends::{Backend, CompExecError, ExecResult};
 use colored::Colorize;
+use log::{debug, log_enabled};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
 pub type BackendName = &'static str;
@@ -140,7 +142,15 @@ pub fn run_diff_test<'a>(
         .par_iter()
         .map(|(&name, b)| {
             let target_path = target_dir.path().join(name);
-            let result = b.execute(source_file, &target_path);
+            let result = if log_enabled!(log::Level::Debug) {
+                let time = Instant::now();
+                let result = b.execute(source_file, &target_path);
+                let dur = time.elapsed();
+                debug!("{name} took {}s", dur.as_secs_f32());
+                result
+            } else {
+                b.execute(source_file, &target_path)
+            };
             (name, result)
         })
         .collect();
