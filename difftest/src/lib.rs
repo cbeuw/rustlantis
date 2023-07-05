@@ -117,6 +117,7 @@ impl fmt::Display for ExecResults {
                     f.write_fmt(format_args!("stdout:\n{}", out.stdout.to_string_lossy()))?;
                 }
                 Err(CompExecError(out)) => {
+                    f.write_fmt(format_args!("status: {}\n", out.status))?;
                     f.write_fmt(format_args!(
                         "stdout:\n{}================\n",
                         out.stdout.to_string_lossy()
