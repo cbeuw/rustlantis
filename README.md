@@ -62,6 +62,7 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 - https://github.com/rust-lang/rust/issues/112548
 - Copy elision corrupts stack arguments with two parts: https://github.com/rust-lang/rust/issues/112767 & https://github.com/llvm/llvm-project/issues/63430
 - Copy elision reads stack arguments from the wrong offsets: https://github.com/llvm/llvm-project/issues/63475
+- Subnormal f64 to f32 cast is wrong: https://github.com/rust-lang/rust/issues/113407
 
 ### Previously known bugs
 - Const eval gives `x % x` wrong sign when `x` is a negative float: https://github.com/rust-lang/rust/issues/109567 (first reported https://github.com/rust-lang/rust/issues/102403)
