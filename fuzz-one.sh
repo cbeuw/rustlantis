@@ -19,6 +19,7 @@ else
     if target/release/difftest $SOURCE_DEBUG 2> /dev/null; then
         mv $SOURCE $REPRO_DIR
     else
+        rm $SOURCE
         mv $SOURCE_DEBUG $REPRO_DIR
     fi
 fi
