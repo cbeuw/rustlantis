@@ -7,7 +7,10 @@ use mir::{
 };
 use rand_distr::WeightedIndex;
 
-use crate::{ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex}, mem::BasicMemory};
+use crate::{
+    mem::BasicMemory,
+    ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PlaceUsage {
@@ -120,25 +123,13 @@ impl PlaceSelector {
             .iter()
             .map(|place| place.to_place_index(pt).expect("excluded place exists"))
             .chain(pt.return_dest_stack()) // Don't touch anything that overlaps with any RET in the stack
+            .chain(pt.moved_in_args_stack()) // Don't touch anything that overlaps with moved in args in the stack
             .collect();
         pt.reachable_nodes().filter(move |ppath| {
             let index = ppath.target_index(pt);
 
             // Liveness
             if !pt.is_place_live(index) {
-                return false;
-            }
-
-            // Not moved
-            if pt.is_place_moved(index) {
-                return false;
-            }
-
-            // Only local can be moved in Call terminator, not projections
-            if self.usage == PlaceUsage::Argument
-                && !ppath.is_local()
-                && !pt.ty(index).is_copy(&self.tcx)
-            {
                 return false;
             }
 

@@ -1,5 +1,6 @@
 use std::{
     collections::{BinaryHeap, HashMap},
+    iter,
     rc::Rc,
     vec,
 };
@@ -25,15 +26,20 @@ pub type Path = SmallVec<[ProjectionIndex; 4]>;
 struct Frame {
     locals: BiHashMap<Local, PlaceIndex>,
     locals_ordered: BinaryHeap<PlaceIndex>,
+
+    // return destination and moved in places cannot be read or written
+    // while the frame is on stack
     return_destination: PlaceIndex,
+    moved_in: SmallVec<[PlaceIndex; 4]>,
 }
 
 impl Frame {
-    fn new(dest: PlaceIndex) -> Self {
+    fn new(dest: PlaceIndex, moved_in: impl Iterator<Item = PlaceIndex>) -> Self {
         Self {
             locals: BiHashMap::new(),
             locals_ordered: BinaryHeap::new(),
             return_destination: dest,
+            moved_in: SmallVec::from_iter(moved_in),
         }
     }
 
@@ -68,8 +74,6 @@ impl PlaceOperand {
             }
             Operand::Move(place) => {
                 let index = place.to_place_index(pt).expect("arg exists");
-                // Only whole local can be moved
-                assert!(pt.current_frame().get_by_index(index).is_some());
                 PlaceOperand::Move(index)
             }
             Operand::Constant(lit) => PlaceOperand::Constant(*lit),
@@ -77,12 +81,12 @@ impl PlaceOperand {
     }
 }
 
+/// A data structure keeping track of all _syntactically expressible places_ in the program.
 pub struct PlaceTable {
     /// The callstack
     frames: Vec<Frame>,
     index_candidates: HashMap<usize, SmallVec<[Local; 1]>>,
 
-    /// A program-global graph recording all places that can be reached through projections
     places: PlaceGraph,
     memory: BasicMemory,
     tcx: Rc<TyCtxt>,
@@ -93,7 +97,6 @@ pub struct PlaceNode {
     pub ty: TyId,
     alloc_id: AllocId,
     dataflow: usize,
-    moved: bool,
 
     // Only Tys fitting into a single Run have these
     run_ptr: Option<RunPointer>,
@@ -139,7 +142,10 @@ where
 impl PlaceTable {
     pub fn new(tcx: Rc<TyCtxt>) -> Self {
         Self {
-            frames: vec![Frame::new(/* fn0 dummy */ PlaceIndex::new(usize::MAX))],
+            frames: vec![Frame::new(
+                /* fn0 dummy */ PlaceIndex::new(usize::MAX),
+                iter::empty(),
+            )],
             index_candidates: HashMap::new(),
             places: Graph::default(),
             memory: BasicMemory::new(),
@@ -179,8 +185,13 @@ impl PlaceTable {
             .expect("return dest exists");
         self.assign_literal(return_dest, None);
 
+        let moved_in = args.iter().filter_map(|arg| match *arg {
+            PlaceOperand::Move(pidx) => Some(pidx),
+            _ => None,
+        });
+
         // Frame switch
-        self.frames.push(Frame::new(return_dest));
+        self.frames.push(Frame::new(return_dest, moved_in));
         self.index_candidates.clear();
 
         self.allocate_local(Local::RET, body.return_ty());
@@ -200,7 +211,6 @@ impl PlaceTable {
                     PlaceOperand::Constant(lit) => self.assign_literal(pidx, Some(*lit)),
                 }
                 if let PlaceOperand::Move(source_pidx) = arg {
-                    self.memory.deallocate(self.places[source_pidx].alloc_id);
                     self.mark_place_moved(source_pidx);
                 }
             });
@@ -253,7 +263,6 @@ impl PlaceTable {
                 ty,
                 alloc_id,
                 dataflow: 0,
-                moved: false,
                 run_ptr,
                 val: None,
                 offset: None,
@@ -264,7 +273,6 @@ impl PlaceTable {
                 ty,
                 alloc_id,
                 dataflow: 0,
-                moved: false,
                 run_ptr: Some(RunPointer {
                     alloc_id,
                     run_and_offset,
@@ -278,7 +286,6 @@ impl PlaceTable {
                 ty,
                 alloc_id,
                 dataflow: 0,
-                moved: false,
                 run_ptr: None,
                 val: None,
                 offset: None,
@@ -501,26 +508,8 @@ impl PlaceTable {
         }
     }
 
-    pub fn is_place_moved(&self, p: impl ToPlaceIndex) -> bool {
-        let pidx = p.to_place_index(self).expect("place exists");
-        self.places[pidx].moved
-    }
-
     pub fn mark_place_moved(&mut self, p: impl ToPlaceIndex) {
-        let pidx = p.to_place_index(self).expect("place exists");
-
-        self.update_transitive_subfields(pidx, |this, place| {
-            this.places[place].moved = true;
-            true
-        });
-
-        self.update_transitive_superfields(pidx, |this, place| {
-            let all_moved = this
-                .immediate_subfields(place)
-                .all(|p| this.places[p].moved);
-            this.places[place].moved = all_moved;
-            true
-        });
+        self.mark_place_uninit(p);
     }
 
     pub fn mark_place_uninit(&mut self, p: impl ToPlaceIndex) {
@@ -721,8 +710,19 @@ impl PlaceTable {
         }
     }
 
+    /// Return destinations of all currently active frames
     pub fn return_dest_stack(&self) -> impl Iterator<Item = PlaceIndex> + '_ {
+        // Skip fn0 which is a dummy
         self.frames.iter().skip(1).map(|f| f.return_destination)
+    }
+
+    /// Moved in places of all currently active frames
+    pub fn moved_in_args_stack(&self) -> impl Iterator<Item = PlaceIndex> + '_ {
+        // Skip fn0 which is a dummy
+        self.frames
+            .iter()
+            .skip(1)
+            .flat_map(|f| f.moved_in.iter().copied())
     }
 
     pub fn ty(&self, p: impl ToPlaceIndex) -> TyId {
@@ -774,7 +774,7 @@ impl PlaceTable {
     fn locals_with_val(&self, val: usize) -> Vec<Local> {
         if let Some(locals) = self.index_candidates.get(&val) {
             locals.iter().copied().filter(|local|
-                if self.is_place_init(local) && !self.is_place_moved(local) && let Some(Literal::Uint(v, UintTy::Usize)) = self.known_val(local) && *v as usize == val {
+                if self.is_place_init(local) && let Some(Literal::Uint(v, UintTy::Usize)) = self.known_val(local) && *v as usize == val {
                     true
                 } else {
                     false
