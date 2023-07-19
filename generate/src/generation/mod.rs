@@ -159,7 +159,22 @@ impl GenerationCtx {
                 Div | Rem => {
                     // Avoid div/rem by zero
                     let l = self.choose_operand(&[lhs_ty], lhs)?;
-                    let r = Operand::Constant(self.rng.borrow_mut().gen_literal_non_zero(lhs_ty, &self.tcx).expect("can generate literal"));
+                    let (ppath, weights) = PlaceSelector::for_non_zero(self.tcx.clone())
+                        .of_ty(lhs_ty)
+                        .except(&lhs)
+                        .into_weighted(&self.pt)
+                        .ok_or(SelectionError::Exhausted)?;
+                    let r = self.make_choice_weighted(ppath.into_iter(), weights, |ppath| {
+                        Ok(Operand::Copy(ppath.to_place(&self.pt)))
+                    });
+                    let r = r.unwrap_or_else(|_| {
+                        Operand::Constant(
+                            self.rng
+                                .borrow_mut()
+                                .gen_literal_non_zero(lhs_ty, &self.tcx)
+                                .expect("can generate literal"),
+                        )
+                    });
                     (l, r)
                 }
                 Add | Sub | Mul | BitXor | BitAnd | BitOr => {
@@ -1120,7 +1135,9 @@ impl GenerationCtx {
             })
             .collect();
 
-        let return_ty = self.ty_weights.choose_ty(&mut *self.rng.borrow_mut(), &self.tcx);
+        let return_ty = self
+            .ty_weights
+            .choose_ty(&mut *self.rng.borrow_mut(), &self.tcx);
         self.enter_fn0(&arg_tys, return_ty, &arg_literals);
 
         loop {
@@ -1278,8 +1295,8 @@ impl GenerationCtx {
                     AggregateKind::Tuple => ProjectionElem::TupleField(fid),
                     AggregateKind::Adt(ty, _) => {
                         let TyKind::Adt(adt) = ty.kind(&self.tcx) else {
-                        panic!("not an adt")
-                    };
+                            panic!("not an adt")
+                        };
                         if adt.is_enum() {
                             todo!()
                         } else {

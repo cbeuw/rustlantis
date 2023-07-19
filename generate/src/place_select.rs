@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use abi::size::Size;
 use mir::{
-    syntax::{Place, TyId},
+    syntax::{Literal, Place, TyId},
     tyctxt::TyCtxt,
 };
 use rand_distr::WeightedIndex;
@@ -19,6 +19,7 @@ enum PlaceUsage {
     Pointee,
     Argument,
     KnownVal,
+    NonZero,
     Offsetee,
 }
 
@@ -80,6 +81,13 @@ impl PlaceSelector {
     pub fn for_known_val(tcx: Rc<TyCtxt>) -> Self {
         Self {
             usage: PlaceUsage::KnownVal,
+            ..Self::for_operand(tcx)
+        }
+    }
+
+    pub fn for_non_zero(tcx: Rc<TyCtxt>) -> Self {
+        Self {
+            usage: PlaceUsage::NonZero,
             ..Self::for_operand(tcx)
         }
     }
@@ -146,6 +154,18 @@ impl PlaceSelector {
             // Known val
             if self.usage == PlaceUsage::KnownVal && pt.known_val(index).is_none() {
                 return false;
+            }
+
+            if self.usage == PlaceUsage::NonZero {
+                let Some(known_val) = pt.known_val(index) else {
+                    return false;
+                };
+                match known_val {
+                    Literal::Uint(v, _) if *v != 0 => {}
+                    Literal::Int(v, _) if *v != 0 => {}
+                    Literal::Float(v, _) if *v != 0. => {}
+                    _ => return false,
+                }
             }
 
             // Not excluded
@@ -215,7 +235,7 @@ impl PlaceSelector {
                         }
                         PlaceUsage::Operand => pt.get_dataflow(place),
                         PlaceUsage::Pointee => 1,
-                        PlaceUsage::KnownVal => pt.get_dataflow(place),
+                        PlaceUsage::KnownVal | PlaceUsage::NonZero => pt.get_dataflow(place),
                         PlaceUsage::Offsetee => 1,
                     };
 

@@ -386,7 +386,10 @@ impl GCC {
             ));
         };
 
-        let Ok(library) = cg_gcc.join("target/release/librustc_codegen_gcc.so").canonicalize() else {
+        let Ok(library) = cg_gcc
+            .join("target/release/librustc_codegen_gcc.so")
+            .canonicalize()
+        else {
             return Err(BackendInitError(
                 "cannot find librustc_codegen_gcc.so".to_string(),
             ));
