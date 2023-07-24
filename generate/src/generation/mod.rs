@@ -19,7 +19,7 @@ use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
 use crate::literal::GenLiteral;
 use crate::place_select::{PlaceSelector, Weight};
-use crate::ptable::{HasDataflow, PlaceIndex, PlaceOperand, PlaceTable, ToPlaceIndex};
+use crate::ptable::{HasComplexity, PlaceIndex, PlaceOperand, PlaceTable, ToPlaceIndex};
 use crate::ty::{seed_tys, TySelect};
 
 use self::intrinsics::{ArithOffset, Transmute};
@@ -800,7 +800,7 @@ impl GenerationCtx {
     fn choose_terminator(&mut self) -> bool {
         assert!(matches!(self.current_bb().terminator(), Terminator::Hole));
         if self.pt.is_place_init(Place::RETURN_SLOT) {
-            if Place::RETURN_SLOT.dataflow(&self.pt) > 10
+            if Place::RETURN_SLOT.complexity(&self.pt) > 10
                 || self.current_fn().basic_blocks.len() >= MAX_BB_COUNT
             {
                 return self.generate_return().unwrap();
@@ -1175,9 +1175,9 @@ impl GenerationCtx {
                             }));
                         }
                         _ => {
-                            let new_df = rvalue.dataflow(&self.pt);
+                            let new_df = rvalue.complexity(&self.pt);
                             actions.push(Box::new(move |pt| {
-                                pt.update_dataflow(lhs, new_df);
+                                pt.update_complexity(lhs, new_df);
                             }));
                         }
                     }

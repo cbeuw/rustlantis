@@ -199,7 +199,7 @@ impl PlaceSelector {
                     let place = ppath.target_index(pt);
                     let mut weight = match usage {
                         PlaceUsage::Argument => {
-                            // let mut weight = pt.get_dataflow(place);
+                            // let mut weight = pt.get_complexity(place);
                             let node = ppath.target_node(pt);
                             let index = ppath.target_index(pt);
                             let mut weight = 1;
@@ -233,9 +233,9 @@ impl PlaceSelector {
                             }
                             weight
                         }
-                        PlaceUsage::Operand => pt.get_dataflow(place),
+                        PlaceUsage::Operand => pt.get_complexity(place),
                         PlaceUsage::Pointee => 1,
-                        PlaceUsage::KnownVal | PlaceUsage::NonZero => pt.get_dataflow(place),
+                        PlaceUsage::KnownVal | PlaceUsage::NonZero => pt.get_complexity(place),
                         PlaceUsage::Offsetee => 1,
                     };
 

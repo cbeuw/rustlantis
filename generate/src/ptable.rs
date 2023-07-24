@@ -96,7 +96,7 @@ pub struct PlaceTable {
 pub struct PlaceNode {
     pub ty: TyId,
     alloc_id: AllocId,
-    dataflow: usize,
+    complexity: usize,
 
     // Only Tys fitting into a single Run have these
     run_ptr: Option<RunPointer>,
@@ -168,7 +168,7 @@ impl PlaceTable {
         body.args_decl_iter().for_each(|(local, decl)| {
             let pidx = self.allocate_local(local, decl.ty);
             // encourage use of args
-            self.update_dataflow(pidx, 5);
+            self.update_complexity(pidx, 5);
         });
     }
 
@@ -262,7 +262,7 @@ impl PlaceTable {
             places.add_node(PlaceNode {
                 ty,
                 alloc_id,
-                dataflow: 0,
+                complexity: 0,
                 run_ptr,
                 val: None,
                 offset: None,
@@ -272,7 +272,7 @@ impl PlaceTable {
             places.add_node(PlaceNode {
                 ty,
                 alloc_id,
-                dataflow: 0,
+                complexity: 0,
                 run_ptr: Some(RunPointer {
                     alloc_id,
                     run_and_offset,
@@ -285,7 +285,7 @@ impl PlaceTable {
             places.add_node(PlaceNode {
                 ty,
                 alloc_id,
-                dataflow: 0,
+                complexity: 0,
                 run_ptr: None,
                 val: None,
                 offset: None,
@@ -344,7 +344,7 @@ impl PlaceTable {
         if dst == src {
             return;
         }
-        self.update_dataflow(dst, self.places[src].dataflow);
+        self.update_complexity(dst, self.places[src].complexity);
         self.assign_literal(dst, None);
         let (dst_node, src_node) = self.places.index_twice_mut(dst, src);
         self.memory.copy(
@@ -363,7 +363,7 @@ impl PlaceTable {
         if dst == src {
             return;
         }
-        self.update_dataflow(dst, self.places[src].dataflow);
+        self.update_complexity(dst, self.places[src].complexity);
         self.assign_literal(dst, self.places[src].val);
 
         let (dst_node, src_node) = self.places.index_twice_mut(dst, src);
@@ -470,13 +470,13 @@ impl PlaceTable {
         }
     }
 
-    pub fn update_dataflow(&mut self, target: impl ToPlaceIndex, new_flow: usize) {
+    pub fn update_complexity(&mut self, target: impl ToPlaceIndex, new_flow: usize) {
         let target = target.to_place_index(self).expect("place exists");
         let new_flow = new_flow.min(100);
 
         // Subplaces' complexity is overwritten as target's new complexity
         self.update_transitive_subfields(target, |this, place| {
-            this.places[place].dataflow = new_flow;
+            this.places[place].complexity = new_flow;
             true
         });
 
@@ -484,27 +484,27 @@ impl PlaceTable {
         self.update_transitive_superfields(target, |this, place| {
             if let Some(max) = this
                 .immediate_subfields(place)
-                .map(|sub| this.places[sub].dataflow)
+                .map(|sub| this.places[sub].complexity)
                 .max()
             {
-                this.places[place].dataflow = max;
+                this.places[place].complexity = max;
             }
             true
         })
     }
 
-    pub fn get_dataflow(&self, p: impl ToPlaceIndex) -> usize {
+    pub fn get_complexity(&self, p: impl ToPlaceIndex) -> usize {
         let pidx = p.to_place_index(self).unwrap();
         let node = &self.places[pidx];
         if node.ty.is_any_ptr(&self.tcx) {
             if let Some(pointee) = self.project_from_node(pidx, ProjectionElem::Deref) {
-                self.get_dataflow(pointee)
+                self.get_complexity(pointee)
             } else {
-                // Use the initial dataflow
-                node.dataflow
+                // Use the initial complexity
+                node.complexity
             }
         } else {
-            node.dataflow
+            node.complexity
         }
     }
 
@@ -590,7 +590,7 @@ impl PlaceTable {
         );
         self.places[reference].offset = None;
 
-        self.update_dataflow(reference, self.places[pointee].dataflow);
+        self.update_complexity(reference, self.places[pointee].complexity);
 
         // Add new reference
         self.places
@@ -938,48 +938,48 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
     }
 }
 
-pub trait HasDataflow {
-    fn dataflow(&self, pt: &PlaceTable) -> usize;
+pub trait HasComplexity {
+    fn complexity(&self, pt: &PlaceTable) -> usize;
 }
 
-impl HasDataflow for Place {
-    fn dataflow(&self, pt: &PlaceTable) -> usize {
-        pt.places[self.to_place_index(pt).expect("place exists")].dataflow
+impl HasComplexity for Place {
+    fn complexity(&self, pt: &PlaceTable) -> usize {
+        pt.places[self.to_place_index(pt).expect("place exists")].complexity
     }
 }
 
-impl HasDataflow for Operand {
-    fn dataflow(&self, pt: &PlaceTable) -> usize {
+impl HasComplexity for Operand {
+    fn complexity(&self, pt: &PlaceTable) -> usize {
         match self {
-            Operand::Copy(place) | Operand::Move(place) => place.dataflow(pt),
+            Operand::Copy(place) | Operand::Move(place) => place.complexity(pt),
             Operand::Constant(_) => 1,
         }
     }
 }
 
-impl HasDataflow for Rvalue {
-    fn dataflow(&self, pt: &PlaceTable) -> usize {
+impl HasComplexity for Rvalue {
+    fn complexity(&self, pt: &PlaceTable) -> usize {
         match self {
             Rvalue::Use(operand) | Rvalue::Cast(operand, _) | Rvalue::UnaryOp(_, operand) => {
-                operand.dataflow(pt)
+                operand.complexity(pt)
             }
             Rvalue::BinaryOp(_, l, r) | Rvalue::CheckedBinaryOp(_, l, r) => {
-                l.dataflow(pt) + r.dataflow(pt)
+                l.complexity(pt) + r.complexity(pt)
             }
-            Rvalue::Aggregate(_, elems) => elems.iter().map(|op| op.dataflow(pt)).sum(),
+            Rvalue::Aggregate(_, elems) => elems.iter().map(|op| op.complexity(pt)).sum(),
             Rvalue::Len(_) => 1,
-            Rvalue::Discriminant(place) => place.dataflow(pt),
-            Rvalue::AddressOf(_, place) => place.dataflow(pt),
+            Rvalue::Discriminant(place) => place.complexity(pt),
+            Rvalue::AddressOf(_, place) => place.complexity(pt),
         }
     }
 }
 
-impl<T> HasDataflow for &T
+impl<T> HasComplexity for &T
 where
-    T: HasDataflow,
+    T: HasComplexity,
 {
-    fn dataflow(&self, pt: &PlaceTable) -> usize {
-        (*self).dataflow(pt)
+    fn complexity(&self, pt: &PlaceTable) -> usize {
+        (*self).complexity(pt)
     }
 }
 
@@ -997,7 +997,7 @@ mod tests {
 
     use crate::{
         mem::BasicMemory,
-        ptable::{HasDataflow, PlaceIndex, ToPlaceIndex},
+        ptable::{HasComplexity, PlaceIndex, ToPlaceIndex},
     };
 
     use super::PlaceTable;
@@ -1173,31 +1173,31 @@ mod tests {
     }
 
     #[test]
-    fn dataflow() {
+    fn complexity() {
         let (mut pt, local, a, b, c, d, e) = prepare_t();
 
-        pt.update_dataflow(&a, Rvalue::Use(Operand::Constant(1.into())).dataflow(&pt));
-        assert_eq!(a.dataflow(&pt), 1);
-        assert_eq!(Place::from(local).dataflow(&pt), 1);
-        pt.update_dataflow(&c, Rvalue::Use(Operand::Constant(1.into())).dataflow(&pt));
-        assert_eq!(c.dataflow(&pt), 1);
-        assert_eq!(Place::from(local).dataflow(&pt), 1);
+        pt.update_complexity(&a, Rvalue::Use(Operand::Constant(1.into())).complexity(&pt));
+        assert_eq!(a.complexity(&pt), 1);
+        assert_eq!(Place::from(local).complexity(&pt), 1);
+        pt.update_complexity(&c, Rvalue::Use(Operand::Constant(1.into())).complexity(&pt));
+        assert_eq!(c.complexity(&pt), 1);
+        assert_eq!(Place::from(local).complexity(&pt), 1);
 
-        pt.update_dataflow(
+        pt.update_complexity(
             &d,
             Rvalue::BinaryOp(
                 BinOp::Add,
                 Operand::Copy(a.clone()),
                 Operand::Copy(c.clone()),
             )
-            .dataflow(&pt),
+            .complexity(&pt),
         );
-        assert_eq!(d.dataflow(&pt), 2);
+        assert_eq!(d.complexity(&pt), 2);
 
-        pt.update_dataflow(&e, Rvalue::Use(Operand::Constant(1.into())).dataflow(&pt));
-        assert_eq!(b.dataflow(&pt), 2);
+        pt.update_complexity(&e, Rvalue::Use(Operand::Constant(1.into())).complexity(&pt));
+        assert_eq!(b.complexity(&pt), 2);
 
-        assert_eq!(Place::from(local).dataflow(&pt), 2);
+        assert_eq!(Place::from(local).complexity(&pt), 2);
     }
 
     #[test]
