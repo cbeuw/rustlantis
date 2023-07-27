@@ -147,8 +147,7 @@ impl GenerationCtx {
         let lhs_ty = lhs.ty(self.current_decls(), &self.tcx);
         let binops = match lhs_ty.kind(&self.tcx) {
             Bool => &[BitAnd, BitOr, BitXor, Eq, Lt, Le, Ne, Ge, Gt][..],
-            // FIXME: Floating point rem https://github.com/rust-lang/rust/issues/109567
-            Float(_) => &[Add, Sub, Mul, Div /*, Rem */][..],
+            Float(_) => &[Add, Sub, Mul, Div, Rem][..],
             Int(_) => &[BitAnd, BitOr, BitXor, Add, Sub, Mul, Shl, Shr][..],
             Uint(_) => &[BitAnd, BitOr, BitXor, Add, Sub, Mul, Div, Rem, Shl, Shr][..],
             // RawPtr(..) => &[Offset],
