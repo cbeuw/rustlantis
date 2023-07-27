@@ -199,10 +199,9 @@ impl PlaceSelector {
                     let place = ppath.target_index(pt);
                     let mut weight = match usage {
                         PlaceUsage::Argument => {
-                            // let mut weight = pt.get_complexity(place);
+                            let mut weight = pt.get_complexity(place);
                             let node = ppath.target_node(pt);
                             let index = ppath.target_index(pt);
-                            let mut weight = 1;
                             if node.ty.contains(&tcx, |tcx, ty| ty.is_any_ptr(tcx)) {
                                 weight *= PTR_ARG_WEIGHT_FACTOR;
                             }
