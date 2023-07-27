@@ -14,8 +14,10 @@ mod place_select;
 mod ptable;
 mod ty;
 
+use std::time::Instant;
+
 use clap::{arg, command, value_parser};
-use log::info;
+use log::{debug, info};
 use mir::serialize::Serialize;
 
 use crate::generation::GenerationCtx;
@@ -35,7 +37,10 @@ fn main() {
     let debug_dump = matches.get_one::<bool>("debug").copied().unwrap_or(false);
     info!("Generating a program with seed {seed}");
     let genctxt = GenerationCtx::new(seed, debug_dump);
+    let time = Instant::now();
     let (program, tcx) = genctxt.generate();
     println!("{}", program.serialize(&tcx));
     println!("{}", tcx.serialize());
+    let dur = time.elapsed();
+    debug!("took {}s to generate", dur.as_secs_f32());
 }
