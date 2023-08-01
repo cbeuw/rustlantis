@@ -23,7 +23,7 @@ always indicate a bug in them (or a bug in Rustlantis).
 - rustup
 
 ## Config
-Copy `config.toml.example` to `config.toml` and supply the paths to testing backends.
+Copy `config.toml.example` to `config.toml` and supply the paths to the *repository root* of testing backends.
 
 To prepare `rustc_codegen_cranelift`:
 ```bash
@@ -36,6 +36,40 @@ To prepare Miri:
 git clone https://github.com/rust-lang/miri
 cargo install rustup-toolchain-install-master
 cd miri && ./miri toolchain && ./miri build --release && ./target/release/cargo-miri miri setup
+```
+
+## Usage
+
+To generate and difftest one seed, run
+
+```bash
+./fuzz-one.sh <seed>
+```
+
+A program will be generated to `$TMPDIR` and tested. If difftest passes (no bug), it will exit with 0. If difftest spots a difference between testing backends, it will exit with 1 and save the reproduction file to `./repros/`.
+
+To generate a program only, run `generate`
+```
+Usage: generate [OPTIONS] <seed>
+
+Arguments:
+  <seed>  generation seed
+
+Options:
+  -d, --debug    generate a program where values are printed instead of hashed (slow)
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+To difftest an existing program, run `difftest`
+```
+Usage: difftest <file>
+
+Arguments:
+  <file>  
+
+Options:
+  -h, --help  Print help
 ```
 
 ## Quirks

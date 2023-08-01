@@ -26,7 +26,7 @@ fn main() {
     env_logger::init();
     let matches = command!()
         .args(&[
-            arg!(-d --debug "debug print dumpped variables"),
+            arg!(-d --debug "generate a program where values are printed instead of hashed (slow)"),
             arg!(<seed> "generation seed").value_parser(value_parser!(u64)),
         ])
         .get_matches();
