@@ -22,4 +22,5 @@ else
         rm $SOURCE
         mv $SOURCE_DEBUG $REPRO_DIR
     fi
+    exit 1
 fi
