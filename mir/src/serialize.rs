@@ -219,7 +219,7 @@ impl Serialize for Terminator {
                     Callee::Intrinsic(func) => format!("core::intrinsics::{func}"),
                 };
                 format!(
-                    "Call({}, {}, {fn_name}({args_list}))",
+                    "Call({} = {fn_name}({args_list}), {})",
                     destination.serialize(tcx),
                     target.identifier(),
                 )
