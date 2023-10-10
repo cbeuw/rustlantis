@@ -176,11 +176,6 @@ impl PlaceSelector {
                 return false;
             }
 
-            // No RET on rhs
-            if self.usage != PlaceUsage::LHS && pt.overlap(index, Place::RETURN_SLOT) {
-                return false;
-            }
-
             // Has the right size
             if self.size.is_some() && BasicMemory::ty_size(pt.ty(index), &self.tcx) != self.size {
                 return false;
