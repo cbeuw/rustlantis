@@ -13,6 +13,7 @@ use rand_distr::{Distribution, Poisson, WeightedIndex};
 const TUPLE_MAX_LEN: usize = 12;
 pub const ARRAY_MAX_LEN: usize = 8;
 const STRUCT_MAX_FIELDS: usize = 8;
+const ADT_MAX_VARIANTS: usize = 4;
 
 pub struct TySelect {
     weights: WeightedIndex<f32>,
@@ -142,16 +143,20 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
 
     // TODO: recursive types
     for _ in 0..=16 {
-        let field_count = rng.gen_range(1..=STRUCT_MAX_FIELDS);
-        let field_tys = tcx
-            .indices()
-            .filter(|ty| *ty != TyCtxt::UNIT)
-            .choose_multiple(rng, field_count);
-        let def = VariantDef {
-            fields: IndexVec::from_iter(field_tys.into_iter()),
-        };
+        let variant_count = rng.gen_range(1..=ADT_MAX_VARIANTS);
+
+        let variants = (0..variant_count).map(|_| {
+            let field_count = rng.gen_range(1..=STRUCT_MAX_FIELDS);
+            let field_tys = tcx
+                .indices()
+                .filter(|ty| *ty != TyCtxt::UNIT)
+                .choose_multiple(rng, field_count);
+            VariantDef {
+                fields: IndexVec::from_iter(field_tys.into_iter()),
+            }
+        });
         let adt = Adt {
-            variants: IndexVec::from(vec![def]),
+            variants: IndexVec::from_iter(variants),
         };
 
         let copy = if adt.copy_derivable(&tcx) {

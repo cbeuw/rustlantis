@@ -70,6 +70,11 @@ impl FieldIdx {
         format!("fld{}", self.index())
     }
 }
+impl VariantIdx {
+    pub fn identifier(&self) -> String {
+        format!("Variant{}", self.index())
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Place {
@@ -126,7 +131,8 @@ pub enum ProjectionElem {
     TupleField(FieldIdx),
     Field(FieldIdx),
     Index(Local),
-    Downcast(VariantIdx),
+    // We need the field ty because serialisaion needs it
+    DowncastField(VariantIdx, FieldIdx, TyId),
     ConstantIndex {
         offset: u64,
     },
@@ -335,7 +341,6 @@ impl TyId {
     pub fn projected_ty(self, tcx: &TyCtxt, projs: &[ProjectionElem]) -> Self {
         match projs {
             [] => self,
-            [ProjectionElem::Downcast(vid), proj, tail @ ..] => todo!(),
             [head, tail @ ..] => {
                 let projected = match head {
                     ProjectionElem::Deref => match self.kind(tcx) {
@@ -358,7 +363,10 @@ impl TyId {
                         }
                         _ => panic!("not an adt"),
                     },
-                    ProjectionElem::Downcast(_) => unreachable!("Downcast is handled separately"),
+                    ProjectionElem::DowncastField(vid, fid, _) => match self.kind(tcx) {
+                        TyKind::Adt(adt) => adt.variants[*vid].fields[*fid],
+                        _ => panic!("not an adt"),
+                    },
                 };
                 projected.projected_ty(tcx, tail)
             }
@@ -501,6 +509,13 @@ impl TyKind {
     pub fn is_adt(&self) -> bool {
         match self {
             &TyKind::Adt(..) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_enum(&self) -> bool {
+        match self {
+            &TyKind::Adt(ref adt) => adt.is_enum(),
             _ => false,
         }
     }
@@ -684,15 +699,15 @@ impl From<f64> for Literal {
 }
 
 impl Program {
-    pub const FUNCTION_ATTRIBUTE: &str =
+    pub const FUNCTION_ATTRIBUTE: &'static str =
         "#[custom_mir(dialect = \"runtime\", phase = \"initial\")]";
-    pub const HEADER: &str = "#![recursion_limit = \"256\"]
+    pub const HEADER: &'static str = "#![recursion_limit = \"256\"]
     #![feature(custom_mir, core_intrinsics, const_hash)]
     #![allow(unused_parens, unused_assignments, overflowing_literals)]
     extern crate core;
     use core::intrinsics::mir::*;\n";
 
-    pub const DUMPER: &str = r#"
+    pub const DUMPER: &'static str = r#"
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -714,7 +729,7 @@ impl Program {
     }
     "#;
 
-    pub const DEBUG_DUMPER: &str = r#"
+    pub const DEBUG_DUMPER: &'static str = r#"
     use std::fmt::Debug;
 
     #[inline(never)]

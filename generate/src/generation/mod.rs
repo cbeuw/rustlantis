@@ -117,7 +117,7 @@ impl GenerationCtx {
     fn generate_use(&self, lhs: &Place) -> Result<Rvalue> {
         trace!(
             "generating use with {}: {}",
-            lhs.serialize(&self.tcx),
+            lhs.serialize_value(&self.tcx),
             lhs.ty(self.current_decls(), &self.tcx).serialize(&self.tcx)
         );
         let operand = self.choose_operand(&[lhs.ty(self.current_decls(), &self.tcx)], lhs)?;
@@ -364,18 +364,20 @@ impl GenerationCtx {
                 Rvalue::Aggregate(AggregateKind::Array(*ty), IndexVec::from_vec(ops))
             }
             TyKind::Adt(adt) => {
-                if adt.is_enum() {
-                    todo!()
+                let variant = if adt.is_enum() {
+                    let variant = self.rng.borrow_mut().gen_range(0..adt.variants.len());
+                    VariantIdx::new(variant)
                 } else {
-                    let fields = &adt.variants.first().unwrap().fields;
-                    let mut agg = IndexVec::new();
-                    for (fid, ty) in fields.iter_enumerated() {
-                        let op = self.choose_operand(&[*ty], lhs)?;
-                        let new_fid = agg.push(op);
-                        assert_eq!(fid, new_fid);
-                    }
-                    Rvalue::Aggregate(AggregateKind::Adt(target_ty, VariantIdx::new(0)), agg)
+                    VariantIdx::new(0)
+                };
+                let fields = &adt.variants[variant].fields;
+                let mut agg = IndexVec::new();
+                for (fid, ty) in fields.iter_enumerated() {
+                    let op = self.choose_operand(&[*ty], lhs)?;
+                    let new_fid = agg.push(op);
+                    assert_eq!(fid, new_fid);
                 }
+                Rvalue::Aggregate(AggregateKind::Adt(target_ty, variant), agg)
             }
             TyKind::Unit => Rvalue::Aggregate(AggregateKind::Tuple, IndexVec::new()),
             _ => return Err(SelectionError::Exhausted),
@@ -430,7 +432,7 @@ impl GenerationCtx {
             let lhs = ppath.to_place(&self.pt);
             trace!(
                 "generating an assignment statement with lhs {}: {}",
-                lhs.serialize(&self.tcx),
+                lhs.serialize_value(&self.tcx),
                 lhs.ty(self.current_decls(), &self.tcx).serialize(&self.tcx)
             );
 
@@ -1219,7 +1221,15 @@ impl GenerationCtx {
                         }));
                     }
                 },
-                agg @ Rvalue::Aggregate(..) => {
+                agg @ Rvalue::Aggregate(agg_kind, ..) => {
+                    if self.pt.ty(lhs).kind(&self.tcx).is_enum() {
+                        let AggregateKind::Adt(_, vid) = agg_kind else {
+                            panic!("agg kind is not an adt");
+                        };
+                        actions.push(Box::new(move |pt| {
+                            pt.assign_discriminant(lhs, Some(*vid));
+                        }))
+                    }
                     for (target, op) in self.aggregate_places(lhs, agg) {
                         match op {
                             Operand::Copy(rhs) | Operand::Move(rhs) => {
@@ -1292,12 +1302,12 @@ impl GenerationCtx {
                         offset: fid.index() as u64,
                     },
                     AggregateKind::Tuple => ProjectionElem::TupleField(fid),
-                    AggregateKind::Adt(ty, _) => {
+                    AggregateKind::Adt(ty, vid) => {
                         let TyKind::Adt(adt) = ty.kind(&self.tcx) else {
                             panic!("not an adt")
                         };
                         if adt.is_enum() {
-                            todo!()
+                            ProjectionElem::DowncastField(*vid, fid, adt.variants[*vid].fields[fid])
                         } else {
                             ProjectionElem::Field(fid)
                         }

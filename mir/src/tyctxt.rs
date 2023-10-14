@@ -123,7 +123,15 @@ impl TyCtxt {
             };
             str += &self.adt_meta[&id].derive_attrs();
             if adt.is_enum() {
-                todo!()
+                let variants: String = adt
+                    .variants
+                    .iter_enumerated()
+                    .map(|(vid, def)| {
+                        format!("{}{{\n{}\n}}", vid.identifier(), def.serialize(self))
+                    })
+                    .intersperse(",\n".to_string())
+                    .collect();
+                str += &format!("pub enum {} {{\n{variants}}}\n", id.type_name())
             } else {
                 let def = adt.variants.first().expect("has only one variant");
                 str += &format!(

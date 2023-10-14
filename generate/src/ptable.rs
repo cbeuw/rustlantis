@@ -6,10 +6,11 @@ use std::{
 };
 
 use bimap::BiHashMap;
+use log::trace;
 use mir::{
     syntax::{
         Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, TyId, TyKind,
-        UintTy,
+        UintTy, VariantIdx,
     },
     tyctxt::TyCtxt,
 };
@@ -106,6 +107,9 @@ pub struct PlaceNode {
 
     // Offsetted pointer value
     offset: Option<isize>,
+
+    // For enum types, the currently active variant
+    active_variant: Option<VariantIdx>,
 }
 
 pub trait ToPlaceIndex {
@@ -266,6 +270,7 @@ impl PlaceTable {
                 run_ptr,
                 val: None,
                 offset: None,
+                active_variant: None,
             })
         } else if let Some(size) = BasicMemory::ty_size(ty, tcx) {
             let run_and_offset = alloc_builder.new_run(size);
@@ -280,6 +285,7 @@ impl PlaceTable {
                 }),
                 val: None,
                 offset: None,
+                active_variant: None,
             })
         } else {
             places.add_node(PlaceNode {
@@ -289,6 +295,7 @@ impl PlaceTable {
                 run_ptr: None,
                 val: None,
                 offset: None,
+                active_variant: None,
             })
         };
         match ty.kind(tcx) {
@@ -324,7 +331,18 @@ impl PlaceTable {
                     );
                 }
             }
-            TyKind::Adt(adt) if adt.is_enum() => todo!(),
+            TyKind::Adt(adt) if adt.is_enum() => {
+                for (vid, var) in adt.variants.iter_enumerated() {
+                    for (fid, ty) in var.fields.iter_enumerated() {
+                        let field_pidx = Self::add_place(places, *ty, tcx, alloc_builder, None);
+                        places.add_edge(
+                            pidx,
+                            field_pidx,
+                            ProjectionElem::DowncastField(vid, fid, *ty),
+                        );
+                    }
+                }
+            }
             TyKind::Adt(adt) => {
                 let fields = &adt.variants.first().expect("adt is a struct").fields;
                 for (fid, ty) in fields.iter_enumerated() {
@@ -357,6 +375,32 @@ impl PlaceTable {
         }
     }
 
+    pub fn assign_discriminant(&mut self, p: impl ToPlaceIndex, discriminant: Option<VariantIdx>) {
+        let p = p.to_place_index(self).expect("place exists");
+        assert!(self.ty(p).kind(&self.tcx).is_enum());
+        self.places[p].active_variant = discriminant;
+
+        // All inactive variant fields are uninit
+        let invalidated: Vec<NodeIndex> = self
+            .places
+            .edges_directed(p, Direction::Outgoing)
+            .filter_map(|e| {
+                let ProjectionElem::DowncastField(vid, ..) = e.weight() else {
+                    panic!("projections from an enum is always DowncastField")
+                };
+                if Some(*vid) == discriminant {
+                    None
+                } else {
+                    Some(e.target())
+                }
+            })
+            .collect();
+
+        for pidx in invalidated {
+            self.mark_place_uninit(pidx);
+        }
+    }
+
     pub fn copy_place(&mut self, dst: impl ToPlaceIndex, src: impl ToPlaceIndex) {
         let dst = dst.to_place_index(self).expect("place exists");
         let src = src.to_place_index(self).expect("place exists");
@@ -365,6 +409,10 @@ impl PlaceTable {
         }
         self.update_complexity(dst, self.places[src].complexity);
         self.assign_literal(dst, self.places[src].val);
+
+        if self.places[dst].ty.kind(&self.tcx).is_enum() {
+            self.assign_discriminant(dst, self.places[src].active_variant);
+        }
 
         let (dst_node, src_node) = self.places.index_twice_mut(dst, src);
         assert_eq!(dst_node.ty, src_node.ty);
@@ -380,6 +428,7 @@ impl PlaceTable {
             }
             self.places[dst].offset = self.places[src].offset;
         }
+
         let projs: Vec<_> = self
             .places
             .edges_directed(dst, Direction::Outgoing)
@@ -614,7 +663,19 @@ impl PlaceTable {
         if let Some(run_ptr) = node.run_ptr {
             self.memory.bytes(run_ptr).iter().all(|b| b.is_init())
         } else {
-            self.immediate_subfields(pidx)
+            self.places
+                .edges_directed(pidx, Direction::Outgoing)
+                .filter_map(|e| {
+                    if e.weight().is_deref() {
+                        None
+                    } else if let ProjectionElem::DowncastField(vid, ..) = e.weight() &&
+                                self.places[e.source()].active_variant != Some(*vid) {
+                        // Only check active variant
+                        None
+                    } else {
+                        Some(e.target())
+                    }
+                })
                 .all(|sub| self.is_place_init(sub))
         }
     }
@@ -733,6 +794,10 @@ impl PlaceTable {
         self.places[p.to_place_index(self).expect("place exists")]
             .val
             .as_ref()
+    }
+
+    pub fn known_variant(&self, p: impl ToPlaceIndex) -> Option<VariantIdx> {
+        self.places[p.to_place_index(self).expect("place exists")].active_variant
     }
 
     // Whether the pointer has been offsetted (and therefore unusable)
@@ -882,6 +947,10 @@ impl<'pt> ProjectionIter<'pt> {
                 .places
                 .edges_directed(root, Direction::Outgoing)
                 .filter_map(|e| {
+                    // Only downcast to current variants
+                    if let ProjectionElem::DowncastField(vid, _, _) = e.weight() && pt.known_variant(e.source()) != Some(*vid) {
+                        return None;
+                    }
                     // Only do indexing if we can find a local as index 
                     // TODO: move this to a function
                     if let ProjectionElem::ConstantIndex { offset } = e.weight() && pt.locals_with_val(*offset as usize).is_empty() {
@@ -917,6 +986,11 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
 
             let new_edges = self.pt.places.edges_directed(target, Direction::Outgoing);
             self.to_visit.extend(new_edges.filter_map(|e| {
+                // Only downcast to current variants
+                if let ProjectionElem::DowncastField(vid, _, _) = e.weight() && self.pt.known_variant(e.source()) != Some(*vid) {
+                    return None;
+                }
+
                 // Do not follow deref edges since we are not root
                 if e.weight().is_deref() {
                     return None;

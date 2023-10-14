@@ -56,15 +56,38 @@ impl Serialize for &[TyId] {
     }
 }
 
-impl Serialize for Place {
-    fn serialize(&self, _: &TyCtxt) -> String {
+impl Place {
+    pub fn serialize_value(&self, tcx: &TyCtxt) -> String {
         let str = self.local().identifier();
         self.projection().iter().fold(str, |acc, proj| match proj {
             ProjectionElem::Deref => format!("(*{acc})"),
             ProjectionElem::TupleField(id) => format!("{acc}.{}", id.index()),
             ProjectionElem::Field(id) => format!("{acc}.{}", id.identifier()),
             ProjectionElem::Index(local) => format!("{acc}[{}]", local.identifier()),
-            ProjectionElem::Downcast(..) => todo!(),
+            ProjectionElem::DowncastField(vid, fid, ty) => format!(
+                "Field::<{}>(Variant({acc}, {}), {})",
+                ty.serialize(tcx),
+                vid.index(),
+                fid.index()
+            ),
+            ProjectionElem::ConstantIndex { offset } => format!("{acc}[{offset}]"),
+        })
+    }
+
+    // Place context needs place!() for Field(Variant())
+    pub fn serialize_place(&self, tcx: &TyCtxt) -> String {
+        let str = self.local().identifier();
+        self.projection().iter().fold(str, |acc, proj| match proj {
+            ProjectionElem::Deref => format!("(*{acc})"),
+            ProjectionElem::TupleField(id) => format!("{acc}.{}", id.index()),
+            ProjectionElem::Field(id) => format!("{acc}.{}", id.identifier()),
+            ProjectionElem::Index(local) => format!("{acc}[{}]", local.identifier()),
+            ProjectionElem::DowncastField(vid, fid, ty) => format!(
+                "place!(Field::<{}>(Variant({acc}, {}), {}))",
+                ty.serialize(tcx),
+                vid.index(),
+                fid.index()
+            ),
             ProjectionElem::ConstantIndex { offset } => format!("{acc}[{offset}]"),
         })
     }
@@ -100,8 +123,8 @@ impl Serialize for Literal {
 impl Serialize for Operand {
     fn serialize(&self, tcx: &TyCtxt) -> String {
         match self {
-            Operand::Copy(place) => place.serialize(tcx),
-            Operand::Move(place) => format!("Move({})", place.serialize(tcx)),
+            Operand::Copy(place) => place.serialize_value(tcx),
+            Operand::Move(place) => format!("Move({})", place.serialize_value(tcx)),
             Operand::Constant(lit) => lit.serialize(tcx),
         }
     }
@@ -126,13 +149,13 @@ impl Serialize for Rvalue {
             ),
 
             Rvalue::Cast(a, target) => format!("{} as {}", a.serialize(tcx), target.serialize(tcx)),
-            Rvalue::Len(place) => format!("Len({})", place.serialize(tcx)),
-            Rvalue::Discriminant(place) => format!("Discriminant({})", place.serialize(tcx)),
+            Rvalue::Len(place) => format!("Len({})", place.serialize_value(tcx)),
+            Rvalue::Discriminant(place) => format!("Discriminant({})", place.serialize_value(tcx)),
             Rvalue::AddressOf(Mutability::Not, place) => {
-                format!("core::ptr::addr_of!({})", place.serialize(tcx))
+                format!("core::ptr::addr_of!({})", place.serialize_place(tcx))
             }
             Rvalue::AddressOf(Mutability::Mut, place) => {
-                format!("core::ptr::addr_of_mut!({})", place.serialize(tcx))
+                format!("core::ptr::addr_of_mut!({})", place.serialize_place(tcx))
             }
             Rvalue::Aggregate(kind, operands) => match kind {
                 AggregateKind::Array(_) => {
@@ -165,7 +188,7 @@ impl Serialize for Rvalue {
                         .intersperse(",".to_owned())
                         .collect();
                     if adt.is_enum() {
-                        todo!()
+                        format!("{}::{} {{ {list} }}", ty.type_name(), variant.identifier())
                     } else {
                         format!("{} {{ {list} }}", ty.type_name())
                     }
@@ -179,15 +202,15 @@ impl Serialize for Statement {
     fn serialize(&self, tcx: &TyCtxt) -> String {
         match self {
             Statement::Assign(place, rvalue) => {
-                format!("{} = {}", place.serialize(tcx), rvalue.serialize(tcx))
+                format!("{} = {}", place.serialize_place(tcx), rvalue.serialize(tcx))
             }
             Statement::StorageLive(local) => format!("StorageLive({})", local.identifier()),
             Statement::StorageDead(local) => format!("StorageDead({})", local.identifier()),
-            Statement::Deinit(local) => format!("Deinit({})", local.serialize(tcx)),
+            Statement::Deinit(local) => format!("Deinit({})", local.serialize_value(tcx)),
             Statement::SetDiscriminant(place, discr) => {
-                format!("SetDiscriminant({}, {discr})", place.serialize(tcx))
+                format!("SetDiscriminant({}, {discr})", place.serialize_value(tcx))
             }
-            Statement::Retag(place) => format!("Retag({})", place.serialize(tcx)),
+            Statement::Retag(place) => format!("Retag({})", place.serialize_value(tcx)),
             Statement::Nop => String::default(),
         }
     }
@@ -200,7 +223,7 @@ impl Serialize for Terminator {
             Terminator::Goto { target } => format!("Goto({})", target.identifier()),
             Terminator::Unreachable => "Unreachable()".to_owned(),
             Terminator::Drop { place, target } => {
-                format!("Drop({}, {})", place.serialize(tcx), target.identifier())
+                format!("Drop({}, {})", place.serialize_value(tcx), target.identifier())
             }
             Terminator::Call {
                 destination,
@@ -220,7 +243,7 @@ impl Serialize for Terminator {
                 };
                 format!(
                     "Call({} = {fn_name}({args_list}), {})",
-                    destination.serialize(tcx),
+                    destination.serialize_place(tcx),
                     target.identifier(),
                 )
             }
