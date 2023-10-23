@@ -6,7 +6,6 @@ use std::{
 };
 
 use bimap::BiHashMap;
-use log::trace;
 use mir::{
     syntax::{
         Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, TyId, TyKind,
@@ -14,7 +13,12 @@ use mir::{
     },
     tyctxt::TyCtxt,
 };
-use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
+use petgraph::{
+    prelude::EdgeIndex,
+    stable_graph::NodeIndex,
+    visit::EdgeRef,
+    Direction, Graph,
+};
 use smallvec::{smallvec, SmallVec};
 
 use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunPointer};
@@ -397,8 +401,30 @@ impl PlaceTable {
             .collect();
 
         for pidx in invalidated {
-            self.mark_place_uninit(pidx);
+            self.invalidate_place(pidx);
         }
+    }
+
+    /// Invalidate place marks the place as uninit, it additionally removes any deref edges *into* the place + transitive subplaces
+    fn invalidate_place(&mut self, p: impl ToPlaceIndex) {
+        let pidx = p.to_place_index(self).unwrap();
+
+        self.update_transitive_subfields(pidx, |this, place| {
+            let node = &this.places[place];
+            if let Some(run_ptr) = node.run_ptr {
+                this.memory.fill(run_ptr, AbstractByte::Uninit);
+            }
+            let refs: Vec<ProjectionIndex> = this
+                .places
+                .edges_directed(place, Direction::Outgoing)
+                .chain(this.places.edges_directed(place, Direction::Incoming))
+                .filter_map(|e| (e.weight() == &ProjectionElem::Deref).then_some(e.id()))
+                .collect();
+            for edge in refs {
+                this.places.remove_edge(edge);
+            }
+            true
+        });
     }
 
     pub fn copy_place(&mut self, dst: impl ToPlaceIndex, src: impl ToPlaceIndex) {
@@ -423,6 +449,9 @@ impl PlaceTable {
         }
 
         if dst_node.ty.is_any_ptr(&self.tcx) {
+            if let Some(old) = self.ref_edge(dst) {
+                self.places.remove_edge(old);
+            }
             if let Some(pointee) = self.pointee(src) {
                 self.set_ref(dst, pointee);
             }
@@ -565,6 +594,7 @@ impl PlaceTable {
         let pidx = p.to_place_index(self).unwrap();
 
         // If this is a pointer, we have to remove the Deref edge, but not for other projections
+        // FIXME: this should be transitive
         if self.places[pidx].ty.is_any_ptr(&self.tcx) && let Some(old) = self.ref_edge(pidx) {
             self.places.remove_edge(old);
         }
@@ -572,10 +602,7 @@ impl PlaceTable {
         self.update_transitive_subfields(pidx, |this, place| {
             let node = &this.places[place];
             if let Some(run_ptr) = node.run_ptr {
-                this.memory
-                    .bytes_mut(run_ptr)
-                    .iter_mut()
-                    .for_each(|b| *b = AbstractByte::Uninit);
+                this.memory.fill(run_ptr, AbstractByte::Uninit);
                 false
             } else {
                 true
@@ -588,10 +615,7 @@ impl PlaceTable {
         self.update_transitive_subfields(pidx, |this, place| {
             let node = &this.places[place];
             if let Some(run_ptr) = node.run_ptr {
-                this.memory
-                    .bytes_mut(run_ptr)
-                    .iter_mut()
-                    .for_each(|b| *b = AbstractByte::Init);
+                this.memory.fill(run_ptr, AbstractByte::Init);
                 false
             } else {
                 true

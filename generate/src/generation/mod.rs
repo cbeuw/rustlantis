@@ -10,7 +10,7 @@ use mir::serialize::Serialize;
 use mir::syntax::{
     AggregateKind, BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal,
     Local, LocalDecls, Mutability, Operand, Place, Program, ProjectionElem, Rvalue, Statement,
-    SwitchTargets, Terminator, TyId, TyKind, UnOp, VariantIdx,
+    SwitchTargets, Terminator, TyId, TyKind, UnOp, VariantIdx, 
 };
 use mir::tyctxt::TyCtxt;
 use rand::seq::SliceRandom;
@@ -432,7 +432,7 @@ impl GenerationCtx {
             let lhs = ppath.to_place(&self.pt);
             trace!(
                 "generating an assignment statement with lhs {}: {}",
-                lhs.serialize_value(&self.tcx),
+                lhs.serialize_place(&self.tcx),
                 lhs.ty(self.current_decls(), &self.tcx).serialize(&self.tcx)
             );
 
@@ -485,13 +485,43 @@ impl GenerationCtx {
         Ok(Statement::Deinit(place))
     }
 
+    fn generate_set_discriminant(&self) -> Result<Statement> {
+        let enum_tys: Vec<TyId> = self
+            .tcx
+            .iter_enumerated()
+            .filter_map(|(ty, kind)| kind.is_enum().then_some(ty))
+            .collect();
+        let (choices, weights) = PlaceSelector::for_argument(self.tcx.clone())
+            .of_tys(&enum_tys)
+            .into_weighted(&self.pt)
+            .ok_or(SelectionError::Exhausted)?;
+
+        self.make_choice_weighted(choices.into_iter(), weights, |ppath| {
+            let place = ppath.to_place(&self.pt);
+            trace!(
+                "generating a set discriminant statement with place {}",
+                place.serialize_place(&self.tcx),
+            );
+
+            let TyKind::Adt(adt) = self.tcx.kind(self.pt.ty(ppath.target_index(&self.pt))) else {
+                panic!("not an enum type")
+            };
+
+            let variant_count = adt.variants.len() as u32;
+            let discr = self.rng.borrow_mut().gen_range(0..variant_count);
+            let statement = Statement::SetDiscriminant(place.clone(), discr);
+            Ok(statement)
+        })
+    }
+
     // fn generate_set_discriminant(&self) -> Result<Statement> {
     //     todo!()
     // }
     fn choose_statement(&mut self) {
         let choices_and_weights: Vec<(fn(&GenerationCtx) -> Result<Statement>, usize)> = vec![
-            (Self::generate_assign, 5),
-            (Self::generate_new_var, 1),
+            (Self::generate_assign, 20),
+            (Self::generate_new_var, 4),
+            (Self::generate_set_discriminant, 1),
             // (Self::generate_deinit, 1),
             // (Self::generate_storage_live, 5),
             // (Self::generate_storage_dead, 2),
@@ -1198,7 +1228,12 @@ impl GenerationCtx {
                     let place = place.to_place_index(&self.pt).unwrap();
                     actions.push(Box::new(move |pt| pt.mark_place_uninit(place)));
                 }
-                Statement::SetDiscriminant(_, _) => todo!(),
+                Statement::SetDiscriminant(place, discr) => {
+                    let place = place.to_place_index(&self.pt).unwrap();
+                    actions.push(Box::new(move |pt| {
+                        pt.assign_discriminant(place, Some(VariantIdx::new(*discr as usize)))
+                    }));
+                }
                 Statement::Nop => {}
                 Statement::Retag(_) => todo!(),
             }

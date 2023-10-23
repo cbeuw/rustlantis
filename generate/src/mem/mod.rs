@@ -166,6 +166,10 @@ impl BasicMemory {
             [run_ptr.bytes_range()]
     }
 
+    pub fn fill(&mut self, run_ptr: RunPointer, val: AbstractByte) {
+        self.bytes_mut(run_ptr).fill(val);
+    }
+
     pub fn bytes_mut(&mut self, run_ptr: RunPointer) -> &mut [AbstractByte] {
         assert!(
             self.allocations[run_ptr.alloc_id].live,

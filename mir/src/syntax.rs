@@ -433,7 +433,6 @@ impl TyId {
     }
 }
 
-// FIXME: probably shouldn't derive Eq
 #[derive(Clone, Debug)]
 pub enum TyKind {
     // Scalars
