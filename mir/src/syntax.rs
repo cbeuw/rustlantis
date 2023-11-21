@@ -700,7 +700,7 @@ impl From<f64> for Literal {
 impl Program {
     pub const FUNCTION_ATTRIBUTE: &'static str =
         "#[custom_mir(dialect = \"runtime\", phase = \"initial\")]";
-    pub const HEADER: &'static str = "#![recursion_limit = \"256\"]
+    pub const HEADER: &'static str = "#![recursion_limit = \"1024\"]
     #![feature(custom_mir, core_intrinsics, const_hash)]
     #![allow(unused_parens, unused_assignments, overflowing_literals)]
     extern crate core;
