@@ -270,7 +270,6 @@ impl Backend for Miri {
                 .arg("-Zmiri-disable-alignment-check");
         }
         command
-            .arg("-Zmiri-disable-abi-check") // we don't ever generate FFI
             .env_clear()
             .args([OsStr::new("--sysroot"), self.sysroot.as_os_str()])
             .arg(source);
