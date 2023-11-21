@@ -86,6 +86,7 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 - `ReferencePropagation` prevents partial initialisation: https://github.com/rust-lang/rust/issues/111426
 - phi nodes assumed to be non-empty: https://github.com/llvm/llvm-project/issues/63013
 - Assertion failure in `RegisterCoalescer`: https://github.com/llvm/llvm-project/issues/63033
+- MIR inlining inserts statements at the wrong place: https://github.com/rust-lang/rust/issues/117355
 
 ### Silent Miscompilations
 - `ConstProp` propagates over mutating borrows: https://github.com/rust-lang/rust/issues/110947
