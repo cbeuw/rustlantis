@@ -13,12 +13,7 @@ use mir::{
     },
     tyctxt::TyCtxt,
 };
-use petgraph::{
-    prelude::EdgeIndex,
-    stable_graph::NodeIndex,
-    visit::EdgeRef,
-    Direction, Graph,
-};
+use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 use smallvec::{smallvec, SmallVec};
 
 use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunPointer};
@@ -193,10 +188,11 @@ impl PlaceTable {
             .expect("return dest exists");
         self.assign_literal(return_dest, None);
 
-        let moved_in = args.iter().filter_map(|arg| match *arg {
-            PlaceOperand::Move(pidx) => Some(pidx),
-            _ => None,
-        });
+        let moved_in =
+            args.iter().filter_map(|arg| match *arg {
+                PlaceOperand::Move(pidx) => Some(pidx),
+                _ => None,
+            });
 
         // Frame switch
         self.frames.push(Frame::new(return_dest, moved_in));
@@ -410,6 +406,7 @@ impl PlaceTable {
         let pidx = p.to_place_index(self).unwrap();
 
         self.update_transitive_subfields(pidx, |this, place| {
+            this.places[place].active_variant = None;
             let node = &this.places[place];
             if let Some(run_ptr) = node.run_ptr {
                 this.memory.fill(run_ptr, AbstractByte::Uninit);
@@ -595,11 +592,14 @@ impl PlaceTable {
 
         // If this is a pointer, we have to remove the Deref edge, but not for other projections
         // FIXME: this should be transitive
-        if self.places[pidx].ty.is_any_ptr(&self.tcx) && let Some(old) = self.ref_edge(pidx) {
+        if self.places[pidx].ty.is_any_ptr(&self.tcx)
+            && let Some(old) = self.ref_edge(pidx)
+        {
             self.places.remove_edge(old);
         }
 
         self.update_transitive_subfields(pidx, |this, place| {
+            this.places[place].active_variant = None;
             let node = &this.places[place];
             if let Some(run_ptr) = node.run_ptr {
                 this.memory.fill(run_ptr, AbstractByte::Uninit);
@@ -685,15 +685,20 @@ impl PlaceTable {
         let pidx = p.to_place_index(self).unwrap();
         let node = &self.places[pidx];
         if let Some(run_ptr) = node.run_ptr {
+            // Leaf
             self.memory.bytes(run_ptr).iter().all(|b| b.is_init())
+        } else if node.ty.kind(&self.tcx).is_enum() && node.active_variant.is_none() {
+            // Uninit enum
+            false
         } else {
             self.places
                 .edges_directed(pidx, Direction::Outgoing)
                 .filter_map(|e| {
                     if e.weight().is_deref() {
                         None
-                    } else if let ProjectionElem::DowncastField(vid, ..) = e.weight() &&
-                                self.places[e.source()].active_variant != Some(*vid) {
+                    } else if let ProjectionElem::DowncastField(vid, ..) = e.weight()
+                        && self.places[e.source()].active_variant != Some(*vid)
+                    {
                         // Only check active variant
                         None
                     } else {
@@ -766,9 +771,10 @@ impl PlaceTable {
         let p = p.to_place_index(self).expect("place exists");
         if let Some(local) = self.current_frame().get_by_index(p) {
             // If place is a local
-            if let Some(&Literal::Uint(i, UintTy::Usize)) = self.known_val(p) &&
-                    let Some(old) = self.index_candidates.get_mut(&(i as usize)) &&
-                    let Some(to_remove) = old.iter().position(|&l| l == local) {
+            if let Some(&Literal::Uint(i, UintTy::Usize)) = self.known_val(p)
+                && let Some(old) = self.index_candidates.get_mut(&(i as usize))
+                && let Some(to_remove) = old.iter().position(|&l| l == local)
+            {
                 // unconditionally remove the old entry if it exists
                 old.remove(to_remove);
             }
@@ -862,13 +868,20 @@ impl PlaceTable {
 
     fn locals_with_val(&self, val: usize) -> Vec<Local> {
         if let Some(locals) = self.index_candidates.get(&val) {
-            locals.iter().copied().filter(|local|
-                if self.is_place_init(local) && let Some(Literal::Uint(v, UintTy::Usize)) = self.known_val(local) && *v as usize == val {
-                    true
-                } else {
-                    false
-                }
-            ).collect()
+            locals
+                .iter()
+                .copied()
+                .filter(|local| {
+                    if self.is_place_init(local)
+                        && let Some(Literal::Uint(v, UintTy::Usize)) = self.known_val(local)
+                        && *v as usize == val
+                    {
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .collect()
         } else {
             vec![]
         }
@@ -972,12 +985,16 @@ impl<'pt> ProjectionIter<'pt> {
                 .edges_directed(root, Direction::Outgoing)
                 .filter_map(|e| {
                     // Only downcast to current variants
-                    if let ProjectionElem::DowncastField(vid, _, _) = e.weight() && pt.known_variant(e.source()) != Some(*vid) {
+                    if let ProjectionElem::DowncastField(vid, _, _) = e.weight()
+                        && pt.known_variant(e.source()) != Some(*vid)
+                    {
                         return None;
                     }
-                    // Only do indexing if we can find a local as index 
+                    // Only do indexing if we can find a local as index
                     // TODO: move this to a function
-                    if let ProjectionElem::ConstantIndex { offset } = e.weight() && pt.locals_with_val(*offset as usize).is_empty() {
+                    if let ProjectionElem::ConstantIndex { offset } = e.weight()
+                        && pt.locals_with_val(*offset as usize).is_empty()
+                    {
                         return None;
                     }
 
@@ -1011,7 +1028,9 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
             let new_edges = self.pt.places.edges_directed(target, Direction::Outgoing);
             self.to_visit.extend(new_edges.filter_map(|e| {
                 // Only downcast to current variants
-                if let ProjectionElem::DowncastField(vid, _, _) = e.weight() && self.pt.known_variant(e.source()) != Some(*vid) {
+                if let ProjectionElem::DowncastField(vid, _, _) = e.weight()
+                    && self.pt.known_variant(e.source()) != Some(*vid)
+                {
                     return None;
                 }
 
@@ -1020,10 +1039,12 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
                     return None;
                 }
 
-                if let ProjectionElem::ConstantIndex { offset } = e.weight() && self.pt.locals_with_val(*offset as usize).is_empty() {
+                if let ProjectionElem::ConstantIndex { offset } = e.weight()
+                    && self.pt.locals_with_val(*offset as usize).is_empty()
+                {
                     return None;
                 }
-                Some((e.id(), depth+1))
+                Some((e.id(), depth + 1))
             }));
 
             Some(PlacePath {
@@ -1231,10 +1252,7 @@ mod tests {
             .next()
             .unwrap();
 
-        assert!(matches!(
-            place.projection()[0],
-            ProjectionElem::TupleField(..)
-        ));
+        assert!(matches!(place.projection()[0], ProjectionElem::TupleField(..)));
     }
 
     #[test]
