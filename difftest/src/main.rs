@@ -22,11 +22,12 @@ fn main() -> ExitCode {
 
     // Initialise backends
     // TODO: extract this out into a function
-    let settings = Config::builder()
-        .add_source(config::File::with_name("config.toml").required(false))
-        .add_source(config::Environment::default())
-        .build()
-        .unwrap();
+    let settings =
+        Config::builder()
+            .add_source(config::File::with_name("config.toml").required(false))
+            .add_source(config::Environment::default())
+            .build()
+            .unwrap();
 
     let mut backends: HashMap<BackendName, Box<dyn Backend>> = HashMap::default();
     if let Ok(clif_dir) = settings.get_string("cranelift_dir") {
@@ -38,7 +39,7 @@ fn main() -> ExitCode {
     }
 
     if let Ok(miri_dir) = settings.get_string("miri_dir") {
-        let check_ub = settings
+        let check_ub = !settings
             .get_string("miri_check_ub")
             .is_ok_and(|config| config == "true" || config == "1");
         let miri = Miri::from_repo(miri_dir, check_ub);
