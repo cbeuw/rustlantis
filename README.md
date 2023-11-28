@@ -79,7 +79,7 @@ Options:
 ## Namesake
 The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https://en.wikipedia.org/wiki/Shuttle%E2%80%93Mir_program
 
-## Tropies
+## Trophies
 
 ### Crashes & ICEs
 - `RenameReturnPlace` is broken: https://github.com/rust-lang/rust/issues/110902
