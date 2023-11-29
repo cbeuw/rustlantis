@@ -9,7 +9,7 @@ use difftest::{
     backends::{Backend, Cranelift, Miri, OptLevel, GCC, LLVM},
     run_diff_test, BackendName,
 };
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 
 fn main() -> ExitCode {
     env_logger::init();
@@ -39,9 +39,10 @@ fn main() -> ExitCode {
     }
 
     if let Ok(miri_dir) = settings.get_string("miri_dir") {
-        let check_ub = !settings
+        let check_ub = settings
             .get_string("miri_check_ub")
-            .is_ok_and(|config| config == "true" || config == "1");
+            .map(|config| config == "true" || config == "1")
+            .unwrap_or(true);
         let miri = Miri::from_repo(miri_dir, check_ub);
         match miri {
             Ok(miri) if check_ub => backends.insert("miri-checked", Box::new(miri)),
@@ -93,6 +94,13 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     } else {
         let results = results.to_string();
+        if results.contains("__internal_declare_basic_blocks") {
+            warn!(
+                "{} recursion too deep",
+                source.as_os_str().to_string_lossy()
+            );
+            return ExitCode::SUCCESS;
+        }
         error!(
             "{} didn't pass:\n{results}",
             source.as_os_str().to_string_lossy(),
