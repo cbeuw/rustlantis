@@ -375,6 +375,10 @@ impl PlaceTable {
         }
     }
 
+    /// Assigns a discriminant to a enum-typed place, and invalidates all variant projections
+    /// of the enum. If the old and new discrimiant are equal, all variants are still invalidated.
+    /// This is not necessary if the discriminant assignment originates from a SetDiscriminant statement,
+    /// but it's needed if it originates from assigning a whole enum from another enum.
     pub fn assign_discriminant(&mut self, p: impl ToPlaceIndex, discriminant: Option<VariantIdx>) {
         let p = p.to_place_index(self).expect("place exists");
         assert!(self.ty(p).kind(&self.tcx).is_enum());
@@ -384,16 +388,7 @@ impl PlaceTable {
         let invalidated: Vec<NodeIndex> = self
             .places
             .edges_directed(p, Direction::Outgoing)
-            .filter_map(|e| {
-                let ProjectionElem::DowncastField(vid, ..) = e.weight() else {
-                    panic!("projections from an enum is always DowncastField")
-                };
-                if Some(*vid) == discriminant {
-                    None
-                } else {
-                    Some(e.target())
-                }
-            })
+            .map(|e| e.target())
             .collect();
 
         for pidx in invalidated {
