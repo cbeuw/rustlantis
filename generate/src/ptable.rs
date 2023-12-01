@@ -13,12 +13,15 @@ use mir::{
     },
     tyctxt::TyCtxt,
 };
-use petgraph::{prelude::EdgeIndex, stable_graph::NodeIndex, visit::EdgeRef, Direction, Graph};
+use petgraph::{
+    prelude::EdgeIndex, prelude::NodeIndex, stable_graph::StableGraph, visit::EdgeRef,
+    Direction,
+};
 use smallvec::{smallvec, SmallVec};
 
 use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunPointer};
 
-type PlaceGraph = Graph<PlaceNode, ProjectionElem>;
+type PlaceGraph = StableGraph<PlaceNode, ProjectionElem>;
 pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
@@ -150,7 +153,7 @@ impl PlaceTable {
                 iter::empty(),
             )],
             index_candidates: HashMap::new(),
-            places: Graph::default(),
+            places: StableGraph::default(),
             memory: BasicMemory::new(),
             tcx,
         }
@@ -412,6 +415,8 @@ impl PlaceTable {
                 .chain(this.places.edges_directed(place, Direction::Incoming))
                 .filter_map(|e| (e.weight() == &ProjectionElem::Deref).then_some(e.id()))
                 .collect();
+            // We are keeping EdgeIndices across calls to remove_edge. This means that we have to use
+            // StableGraph
             for edge in refs {
                 this.places.remove_edge(edge);
             }
