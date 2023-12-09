@@ -94,13 +94,6 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     } else {
         let results = results.to_string();
-        if results.contains("__internal_declare_basic_blocks") {
-            warn!(
-                "{} recursion too deep",
-                source.as_os_str().to_string_lossy()
-            );
-            return ExitCode::SUCCESS;
-        }
         error!(
             "{} didn't pass:\n{results}",
             source.as_os_str().to_string_lossy(),

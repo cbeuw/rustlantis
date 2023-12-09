@@ -62,6 +62,8 @@ impl RunAndOffset {
     }
 }
 
+
+#[derive(Clone)]
 struct Allocation {
     /// The data stored in this allocation.
     runs: IndexVec<RunId, Run>,
@@ -123,6 +125,7 @@ impl RunPointer {
     }
 }
 
+#[derive(Clone)]
 pub struct BasicMemory {
     allocations: IndexVec<AllocId, Allocation>,
 }

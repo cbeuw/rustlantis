@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Write};
 
 use index_vec::IndexVec;
-use log::{debug, log_enabled};
+use log::{log_enabled, trace};
 use mir::{
     serialize::Serialize,
     syntax::{Adt, IntTy, Mutability, TyId, TyKind, VariantDef},
@@ -15,6 +15,7 @@ pub const ARRAY_MAX_LEN: usize = 8;
 const STRUCT_MAX_FIELDS: usize = 8;
 const ADT_MAX_VARIANTS: usize = 4;
 
+#[derive(Clone)]
 pub struct TySelect {
     weights: WeightedIndex<f32>,
 }
@@ -83,8 +84,8 @@ impl TySelect {
                 ))
                 .unwrap();
             }
-            debug!("Typing context with weights:\n{s}");
-            debug!("{}", tcx.serialize());
+            trace!("Typing context with weights:\n{s}");
+            trace!("{}", tcx.serialize());
         }
 
         WeightedIndex::new(tcx.iter_enumerated().map(|(tyid, _)| weights[&tyid]))

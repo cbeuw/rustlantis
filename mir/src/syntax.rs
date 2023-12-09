@@ -5,6 +5,7 @@ use smallvec::SmallVec;
 
 use crate::tyctxt::TyCtxt;
 
+#[derive(Clone)]
 pub struct Program {
     pub functions: IndexVec<Function, Body>,
     pub entry_args: Vec<Literal>,
@@ -14,6 +15,7 @@ pub struct Program {
 pub type LocalDecls = IndexVec<Local, LocalDecl>;
 
 define_index_type! {pub struct Function = u32;}
+#[derive(Clone)]
 pub struct Body {
     pub basic_blocks: IndexVec<BasicBlock, BasicBlockData>,
     pub local_decls: LocalDecls,
@@ -52,6 +54,7 @@ impl BasicBlockData {
 }
 
 define_index_type! {pub struct Local = u32;}
+#[derive(Clone)]
 pub struct LocalDecl {
     /// Whether this is a mutable binding (i.e., `let x` or `let mut x`).
     ///

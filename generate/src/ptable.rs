@@ -25,6 +25,7 @@ pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
 
+#[derive(Clone)]
 struct Frame {
     locals: BiHashMap<Local, PlaceIndex>,
     locals_ordered: BinaryHeap<PlaceIndex>,
@@ -84,6 +85,7 @@ impl PlaceOperand {
 }
 
 /// A data structure keeping track of all _syntactically expressible places_ in the program.
+#[derive(Clone)]
 pub struct PlaceTable {
     /// The callstack
     frames: Vec<Frame>,

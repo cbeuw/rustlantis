@@ -2,15 +2,15 @@ mod intrinsics;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::{cmp, fmt, vec};
+use std::{cmp, fmt,vec};
 
 use index_vec::IndexVec;
-use log::trace;
+use log::{debug, trace};
 use mir::serialize::Serialize;
 use mir::syntax::{
     AggregateKind, BasicBlock, BasicBlockData, BinOp, Body, Callee, Function, IntTy, Literal,
     Local, LocalDecls, Mutability, Operand, Place, Program, ProjectionElem, Rvalue, Statement,
-    SwitchTargets, Terminator, TyId, TyKind, UnOp, VariantIdx, 
+    SwitchTargets, Terminator, TyId, TyKind, UnOp, VariantIdx,
 };
 use mir::tyctxt::TyCtxt;
 use rand::seq::SliceRandom;
@@ -29,8 +29,13 @@ use crate::generation::intrinsics::CoreIntrinsic;
 const BB_MAX_LEN: usize = 32;
 /// Max. number of switch targets in a SwitchInt terminator
 const MAX_SWITCH_TARGETS: usize = 8;
+/// Max. number of BB in a function if RET is init (a Return must be generated)
 const MAX_BB_COUNT: usize = 15;
+/// Max. number of BB in a function before giving up this function
+const MAX_BB_COUNT_HARD: usize = 60;
+/// Max. number of functions in the program Call generator stops being a possible candidate
 const MAX_FN_COUNT: usize = 20;
+/// Expected proportion of variables to be dumped
 const VAR_DUMP_CHANCE: f32 = 0.5;
 
 #[derive(Debug)]
@@ -56,6 +61,14 @@ impl fmt::Debug for Cursor {
     }
 }
 
+#[derive(Clone)]
+pub struct SavedCtx {
+    program: Program,
+    pt: PlaceTable,
+    return_stack: Vec<Cursor>,
+    cursor: Cursor,
+}
+
 pub struct GenerationCtx {
     rng: RefCell<Box<dyn RngCore>>,
     program: Program,
@@ -63,6 +76,7 @@ pub struct GenerationCtx {
     ty_weights: TySelect,
     pt: PlaceTable,
     return_stack: Vec<Cursor>,
+    saved_ctx: Vec<SavedCtx>,
     cursor: Cursor,
 }
 
@@ -128,12 +142,13 @@ impl GenerationCtx {
         use TyKind::*;
         use UnOp::*;
         let lhs_ty = lhs.ty(self.current_decls(), &self.tcx);
-        let unops = match lhs_ty.kind(&self.tcx) {
-            Int(_) => &[Neg, Not][..],
-            Float(_) => &[Neg][..],
-            Uint(_) | Bool => &[Not][..],
-            _ => &[][..],
-        };
+        let unops =
+            match lhs_ty.kind(&self.tcx) {
+                Int(_) => &[Neg, Not][..],
+                Float(_) => &[Neg][..],
+                Uint(_) | Bool => &[Not][..],
+                _ => &[][..],
+            };
         let rvalue = self.make_choice(unops.iter(), |unop| {
             let operand = self.choose_operand(&[lhs_ty], lhs)?;
             Ok(Rvalue::UnaryOp(*unop, operand))
@@ -677,13 +692,14 @@ impl GenerationCtx {
             })
             .collect();
 
-        let term = Terminator::SwitchInt {
-            discr: Operand::Copy(place),
-            targets: SwitchTargets {
-                branches,
-                otherwise,
-            },
-        };
+        let term =
+            Terminator::SwitchInt {
+                discr: Operand::Copy(place),
+                targets: SwitchTargets {
+                    branches,
+                    otherwise,
+                },
+            };
 
         self.current_bb_mut().set_terminator(term);
         self.enter_bb(target_bb);
@@ -723,6 +739,8 @@ impl GenerationCtx {
             args.push(arg);
         }
 
+        // Modification must start after this point, as we may bail during above
+        self.save_ctx();
         let target_bb = self.add_new_bb();
         self.return_stack.push(Cursor {
             function: self.cursor.function,
@@ -815,6 +833,8 @@ impl GenerationCtx {
         Ok(())
     }
 
+    // Generate a Return terminator, returns false if it's being
+    // generated in fn0
     fn generate_return(&mut self) -> Result<bool> {
         trace!("generating a Return terminator to {:?}", self.cursor);
         if !self.pt.is_place_init(Place::RETURN_SLOT) {
@@ -824,6 +844,9 @@ impl GenerationCtx {
         self.insert_dump_var_gadget();
 
         self.current_bb_mut().set_terminator(Terminator::Return);
+        // If we reach this point, we have succesfully generated the current function.
+        // The context saved when we generated the call is no longer needed
+        self.saved_ctx.pop();
         Ok(self.exit_fn())
     }
 
@@ -838,15 +861,16 @@ impl GenerationCtx {
             }
         }
 
-        let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> = vec![
-            (Self::generate_goto, 20),
-            (Self::generate_switch_int, 20),
-            (Self::generate_intrinsic_call, 20),
-            (
-                Self::generate_call,
-                MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
-            ),
-        ];
+        let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> =
+            vec![
+                (Self::generate_goto, 20),
+                (Self::generate_switch_int, 20),
+                (Self::generate_intrinsic_call, 20),
+                (
+                    Self::generate_call,
+                    MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
+                ),
+            ];
         let (choices, weights): (Vec<fn(&mut GenerationCtx) -> Result<()>>, Vec<usize>) =
             choices_and_weights.into_iter().unzip();
 
@@ -883,32 +907,31 @@ impl GenerationCtx {
         for vars in dumpped.chunks(Program::DUMPER_ARITY) {
             let new_bb = self.add_new_bb();
 
-            let args = if self.program.use_debug_dumper {
-                let mut args = Vec::with_capacity(1 + Program::DUMPER_ARITY * 2);
-                args.push(Operand::Constant(
-                    self.cursor.function.index().try_into().unwrap(),
-                ));
-                for var in vars {
-                    args.push(Operand::Constant(var.index().try_into().unwrap()));
-                    args.push(Operand::Move(Place::from_local(*var)));
-                }
+            let args =
+                if self.program.use_debug_dumper {
+                    let mut args = Vec::with_capacity(1 + Program::DUMPER_ARITY * 2);
+                    args.push(Operand::Constant(self.cursor.function.index().try_into().unwrap()));
+                    for var in vars {
+                        args.push(Operand::Constant(var.index().try_into().unwrap()));
+                        args.push(Operand::Move(Place::from_local(*var)));
+                    }
 
-                while args.len() < 1 + Program::DUMPER_ARITY * 2 {
-                    args.push(Operand::Constant(unit2.index().try_into().unwrap()));
-                    args.push(Operand::Copy(Place::from_local(unit2)));
-                }
-                args
-            } else {
-                let mut args = Vec::with_capacity(Program::DUMPER_ARITY);
-                for var in vars {
-                    args.push(Operand::Move(Place::from_local(*var)));
-                }
+                    while args.len() < 1 + Program::DUMPER_ARITY * 2 {
+                        args.push(Operand::Constant(unit2.index().try_into().unwrap()));
+                        args.push(Operand::Copy(Place::from_local(unit2)));
+                    }
+                    args
+                } else {
+                    let mut args = Vec::with_capacity(Program::DUMPER_ARITY);
+                    for var in vars {
+                        args.push(Operand::Move(Place::from_local(*var)));
+                    }
 
-                while args.len() < Program::DUMPER_ARITY {
-                    args.push(Operand::Copy(Place::from_local(unit2)));
-                }
-                args
-            };
+                    while args.len() < Program::DUMPER_ARITY {
+                        args.push(Operand::Copy(Place::from_local(unit2)));
+                    }
+                    args
+                };
             self.current_bb_mut().set_terminator(Terminator::Call {
                 callee: Program::DUMPER_CALL,
                 destination: Place::from_local(unit),
@@ -922,6 +945,32 @@ impl GenerationCtx {
 
 // Frame controls
 impl GenerationCtx {
+    // save_ctx should be called before generating a Call terminator. If the
+    // target function ended up being too long, we give up and restore context
+    // to try generate another Call terminator
+    fn save_ctx(&mut self) {
+        self.saved_ctx.push(SavedCtx {
+            program: self.program.clone(),
+            pt: self.pt.clone(),
+            return_stack: self.return_stack.clone(),
+            cursor: self.cursor.clone(),
+        });
+    }
+
+    // restore_ctx is called when the current function is too long.
+    // We restore context to before the Call terminator is added,
+    // and try to generate something else
+    fn restore_ctx(&mut self) {
+        let saved = self
+            .saved_ctx
+            .pop()
+            .expect("has a saved ctx to restore from");
+        self.program = saved.program;
+        self.pt = saved.pt;
+        self.return_stack = saved.return_stack;
+        self.cursor = saved.cursor;
+    }
+
     // Move generation context to an executed function
     fn enter_new_fn(&mut self, args: &[Operand], return_dest: &Place, public: bool) -> Function {
         let args_ty: Vec<TyId> = args
@@ -977,6 +1026,8 @@ impl GenerationCtx {
             .enter_fn0(&self.program.functions[self.cursor.function]);
     }
 
+    // Returns from the currnt function. Returns false if we're returning from
+    // fn0. True otherwise
     fn exit_fn(&mut self) -> bool {
         let callee = self.cursor;
         if let Some(return_dest) = self.return_stack.pop() {
@@ -1110,12 +1161,13 @@ impl GenerationCtx {
             tcx: tcx.clone(),
             ty_weights,
             program: Program::new(debug_dump),
-            pt: PlaceTable::new(tcx),
+            pt: PlaceTable::new(tcx.clone()),
             return_stack: vec![],
             cursor: Cursor {
                 function: Function::new(0),
                 basic_block: BasicBlock::new(0),
             },
+            saved_ctx: vec![],
         }
     }
 
@@ -1149,28 +1201,35 @@ impl GenerationCtx {
         &self.current_fn().local_decls
     }
 
-    pub fn generate(mut self) -> (Program, TyCtxt) {
+    fn generate_fn0(&mut self) {
+        self.save_ctx();
         let args_count = self.rng.get_mut().gen_range(2..=16);
         let arg_tys: Vec<TyId> = self
             .tcx
             .indices()
             .filter(|ty| <dyn RngCore>::is_literalble(*ty, &self.tcx))
             .choose_multiple(&mut *self.rng.borrow_mut(), args_count);
-        let arg_literals: Vec<Literal> = arg_tys
-            .iter()
-            .map(|ty| {
-                self.rng
-                    .borrow_mut()
-                    .gen_literal(*ty, &self.tcx)
-                    .expect("ty is literable")
-            })
-            .collect();
+        let arg_literals: Vec<Literal> =
+            arg_tys
+                .iter()
+                .map(|ty| {
+                    self.rng
+                        .borrow_mut()
+                        .gen_literal(*ty, &self.tcx)
+                        .expect("ty is literable")
+                })
+                .collect();
 
         let return_ty = self
             .ty_weights
             .choose_ty(&mut *self.rng.borrow_mut(), &self.tcx);
         self.enter_fn0(&arg_tys, return_ty, &arg_literals);
+    }
 
+    pub fn generate(mut self) -> (Program, TyCtxt) {
+        self.generate_fn0();
+
+        // Main loop
         loop {
             let statement_count = self.rng.get_mut().gen_range(1..=BB_MAX_LEN);
             trace!("Generating a bb with {statement_count} statements");
@@ -1180,8 +1239,24 @@ impl GenerationCtx {
             if !self.choose_terminator() {
                 break;
             }
+            if self.current_fn().basic_blocks.len() >= MAX_BB_COUNT_HARD {
+                debug!(
+                    "{} is too long, retrying",
+                    self.cursor.function.identifier()
+                );
+                if self.cursor.function.index() == 0 {
+                    self.restore_ctx();
+                    self.generate_fn0();
+                } else {
+                    self.restore_ctx();
+                    if !self.choose_terminator() {
+                        break;
+                    }
+                }
+            }
         }
 
+        // Remove the Rc to self.tcx, so we can own it
         drop(self.pt);
 
         (self.program, Rc::into_inner(self.tcx).unwrap())
