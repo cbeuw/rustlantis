@@ -14,8 +14,7 @@ use mir::{
     tyctxt::TyCtxt,
 };
 use petgraph::{
-    prelude::EdgeIndex, prelude::NodeIndex, stable_graph::StableGraph, visit::EdgeRef,
-    Direction,
+    prelude::EdgeIndex, prelude::NodeIndex, stable_graph::StableGraph, visit::EdgeRef, Direction,
 };
 use smallvec::{smallvec, SmallVec};
 
@@ -1089,6 +1088,7 @@ impl HasComplexity for Rvalue {
             Rvalue::Len(_) => 1,
             Rvalue::Discriminant(place) => place.complexity(pt),
             Rvalue::AddressOf(_, place) => place.complexity(pt),
+            Rvalue::Ref(_, place) => place.complexity(pt),
         }
     }
 }

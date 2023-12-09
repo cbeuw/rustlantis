@@ -157,6 +157,12 @@ impl Serialize for Rvalue {
             Rvalue::AddressOf(Mutability::Mut, place) => {
                 format!("core::ptr::addr_of_mut!({})", place.serialize_place(tcx))
             }
+            Rvalue::Ref(Mutability::Not, place) => {
+                format!("&{}", place.serialize_place(tcx))
+            }
+            Rvalue::Ref(Mutability::Mut, place) => {
+                format!("&mut {}", place.serialize_place(tcx))
+            }
             Rvalue::Aggregate(kind, operands) => match kind {
                 AggregateKind::Array(_) => {
                     let list: String = operands
@@ -193,7 +199,7 @@ impl Serialize for Rvalue {
                         format!("{} {{ {list} }}", ty.type_name())
                     }
                 }
-            },
+            }
         }
     }
 }

@@ -210,6 +210,7 @@ pub enum Rvalue {
     Discriminant(Place),
     AddressOf(Mutability, Place),
     Aggregate(AggregateKind, IndexVec<FieldIdx, Operand>),
+    Ref(Mutability, Place),
 }
 
 #[derive(Clone, Copy)]
