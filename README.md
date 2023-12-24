@@ -100,6 +100,7 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 - Subnormal f64 to f32 cast is wrong: https://github.com/rust-lang/rust/issues/113407
 - AST size merging is wrong: https://github.com/llvm/llvm-project/issues/64897 
 - `ConstProp` propagates over assignment of unknown values: https://github.com/rust-lang/rust/issues/118328
+- Bad `undef`/`poison` handling in `InstCombine`: https://github.com/llvm/llvm-project/issues/74890
 
 ### Previously known bugs
 - Const eval gives `x % x` wrong sign when `x` is a negative float: https://github.com/rust-lang/rust/issues/109567 (first reported https://github.com/rust-lang/rust/issues/102403)
