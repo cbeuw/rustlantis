@@ -148,7 +148,7 @@ impl CoreIntrinsic for Transmute {
             .filter(|ty| {
                 !ty.contains(&ctx.tcx, |tcx, ty| {
                     // Avoid inspecting the bytes in fp as NaN payload is nd
-                    ty.is_raw_ptr(tcx) || ty == TyCtxt::F32 || ty == TyCtxt::F64
+                    ty.is_any_ptr(tcx) || ty == TyCtxt::F32 || ty == TyCtxt::F64
                 })
             })
             .collect();
