@@ -148,6 +148,15 @@ where
     }
 }
 
+/// VisitAction specifies what to do next after visiting
+/// each node in {update, visit}_transitive_{sub, super}fields
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum VisitAction {
+    // Keep going in the current branch
+    Continue,
+    Stop,
+}
+
 impl PlaceTable {
     pub fn new(tcx: Rc<TyCtxt>) -> Self {
         Self {
@@ -247,9 +256,9 @@ impl PlaceTable {
                     if local_allocs.contains(&self.places[pointee].alloc_id) {
                         has_stack_ref = true;
                     }
-                    return false;
+                    return VisitAction::Stop;
                 }
-                true
+                VisitAction::Continue
             },
         );
         !has_stack_ref
@@ -273,7 +282,7 @@ impl PlaceTable {
         for pidx in old_frame.locals.right_values() {
             self.visit_transitive_subfields(*pidx, |node| {
                 ref_edges.extend(self.pointers_to(node).iter().map(|(_, edge)| edge));
-                true
+                VisitAction::Continue
             });
         }
         for edge in ref_edges {
@@ -465,7 +474,7 @@ impl PlaceTable {
             for edge in refs {
                 this.remove_edge(edge);
             }
-            true
+            VisitAction::Continue
         });
     }
 
@@ -552,13 +561,12 @@ impl PlaceTable {
     /// Call update on all transitive superfields of start, *excluding* start
     fn update_transitive_superfields<F>(&mut self, start: PlaceIndex, mut visit: F)
     where
-        //FIXME: return an enum instead of bool
-        F: FnMut(&mut Self, PlaceIndex) -> bool,
+        F: FnMut(&mut Self, PlaceIndex) -> VisitAction,
     {
         let mut to_visit: Vec<NodeIndex> = self.immediate_superfields(start).collect();
         while let Some(node) = to_visit.pop() {
-            let cont = visit(self, node);
-            if cont {
+            let todo = visit(self, node);
+            if todo == VisitAction::Continue {
                 to_visit.extend(self.immediate_superfields(node));
             }
         }
@@ -567,13 +575,12 @@ impl PlaceTable {
     /// Call visit on all transitive subfields of start, *including* start
     fn update_transitive_subfields<F>(&mut self, start: PlaceIndex, mut visit: F)
     where
-        //FIXME: return an enum instead of bool
-        F: FnMut(&mut Self, PlaceIndex) -> bool,
+        F: FnMut(&mut Self, PlaceIndex) -> VisitAction,
     {
         let mut to_visit = vec![start];
         while let Some(node) = to_visit.pop() {
-            let cont = visit(self, node);
-            if cont {
+            let todo = visit(self, node);
+            if todo == VisitAction::Continue {
                 to_visit.extend(self.immediate_subfields(node));
             }
         }
@@ -581,13 +588,12 @@ impl PlaceTable {
 
     fn visit_transitive_subfields<F>(&self, start: PlaceIndex, mut visit: F)
     where
-        //FIXME: return an enum instead of bool
-        F: FnMut(PlaceIndex) -> bool,
+        F: FnMut(PlaceIndex) -> VisitAction,
     {
         let mut to_visit = vec![start];
         while let Some(node) = to_visit.pop() {
-            let cont = visit(node);
-            if cont {
+            let todo = visit(node);
+            if todo == VisitAction::Continue {
                 to_visit.extend(self.immediate_subfields(node));
             }
         }
@@ -600,7 +606,7 @@ impl PlaceTable {
         // Subplaces' complexity is overwritten as target's new complexity
         self.update_transitive_subfields(target, |this, place| {
             this.places[place].complexity = new_flow;
-            true
+            VisitAction::Continue
         });
 
         // Superplaces' complexity is updated to be the max of its children
@@ -612,7 +618,7 @@ impl PlaceTable {
             {
                 this.places[place].complexity = max;
             }
-            true
+            VisitAction::Continue
         })
     }
 
@@ -659,9 +665,9 @@ impl PlaceTable {
             let node = &this.places[place];
             if let Some(run_ptr) = node.run_ptr {
                 this.memory.fill(run_ptr, AbstractByte::Uninit);
-                false
+                VisitAction::Stop
             } else {
-                true
+                VisitAction::Continue
             }
         });
     }
@@ -672,9 +678,9 @@ impl PlaceTable {
             let node = &this.places[place];
             if let Some(run_ptr) = node.run_ptr {
                 this.memory.fill(run_ptr, AbstractByte::Init);
-                false
+                VisitAction::Stop
             } else {
-                true
+                VisitAction::Continue
             }
         });
     }
@@ -748,9 +754,9 @@ impl PlaceTable {
         self.update_transitive_subfields(pointee, |this, place| {
             if let Some(run) = this.places[place].run_ptr {
                 this.memory.add_ref(run, ref_type, edge_id);
-                false
+                VisitAction::Stop
             } else {
-                true
+                VisitAction::Continue
             }
         });
     }
@@ -832,13 +838,13 @@ impl PlaceTable {
         let mut a_sub: Vec<PlaceIndex> = vec![];
         self.visit_transitive_subfields(a, |sub| {
             a_sub.push(sub);
-            true
+            VisitAction::Continue
         });
 
         let mut b_sub: Vec<PlaceIndex> = vec![];
         self.visit_transitive_subfields(b, |sub| {
             b_sub.push(sub);
-            true
+            VisitAction::Continue
         });
 
         // TODO: should I use a hashmap here?
@@ -876,11 +882,11 @@ impl PlaceTable {
         } else {
             self.update_transitive_subfields(p, |this, node| {
                 this.places[node].val = None;
-                true
+                VisitAction::Continue
             });
             self.update_transitive_superfields(p, |this, node| {
                 this.places[node].val = None;
-                true
+                VisitAction::Continue
             });
         }
     }
@@ -987,9 +993,9 @@ impl PlaceTable {
                 for edge in invalidated {
                     this.remove_edge(edge);
                 }
-                false
+                VisitAction::Stop
             } else {
-                true
+                VisitAction::Continue
             }
         });
     }
@@ -1008,9 +1014,9 @@ impl PlaceTable {
                     //TODO: short circuit
                     can = false;
                 }
-                false
+                VisitAction::Stop
             } else {
-                true
+                VisitAction::Continue
             }
         });
         can
