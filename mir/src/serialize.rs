@@ -30,6 +30,9 @@ impl Serialize for TyId {
             TyKind::RawPtr(ty, mutability) => {
                 format!("{}{}", mutability.ptr_prefix_str(), ty.serialize(tcx))
             }
+            TyKind::Ref(ty, mutability) => {
+                format!("&'static {}{}", mutability.prefix_str(), ty.serialize(tcx))
+            }
             // Sequence types
             TyKind::Tuple(elems) => {
                 if elems.len() == 1 {

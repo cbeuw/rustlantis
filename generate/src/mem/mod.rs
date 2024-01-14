@@ -1,4 +1,4 @@
-use std::{fmt, mem, ops::Range};
+use std::{collections::HashMap, fmt, mem, ops::Range};
 
 use abi::size::Size;
 use index_vec::{define_index_type, IndexVec};
@@ -6,6 +6,10 @@ use mir::{
     syntax::{TyId, TyKind},
     tyctxt::TyCtxt,
 };
+use rangemap::RangeMap;
+use smallvec::SmallVec;
+
+use crate::ptable::ProjectionIndex;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AbstractByte {
@@ -30,20 +34,85 @@ impl AbstractByte {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorrowType {
+    Raw,
+    Shared,
+    Exclusive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Borrow {
+    borrow_type: BorrowType,
+    edge: ProjectionIndex,
+}
+
 /// A Run represents a contiguous region of memory free of padding
 #[derive(Debug, Clone)]
 pub struct Run {
     bytes: Box<[AbstractByte]>,
+    ref_stack: RangeMap<Vec<Borrow>>,
 }
 
 impl Run {
     pub fn new_uninit(size: Size) -> Self {
         let bytes = vec![AbstractByte::Uninit; size.bytes() as usize].into_boxed_slice();
-        Self { bytes }
+        let ref_stack = RangeMap::new(size, vec![]);
+        Self { bytes, ref_stack }
     }
 
     pub fn size(&self) -> Size {
         Size::from_bytes(self.bytes.len())
+    }
+
+    pub fn add_borrow(
+        &mut self,
+        offset: Size,
+        len: Size,
+        borrow_type: BorrowType,
+        edge: ProjectionIndex,
+    ) {
+        for (_, stack) in self.ref_stack.iter_mut(offset, len) {
+            stack.push(Borrow { borrow_type, edge });
+        }
+    }
+
+    pub fn remove_borrow(&mut self, offset: Size, len: Size, edge: ProjectionIndex) {
+        for (_, stack) in self.ref_stack.iter_mut(offset, len) {
+            if let Some(i) = stack.iter().position(|b| b.edge == edge) {
+                stack.remove(i);
+            }
+        }
+    }
+
+    /// Gets all edges including and below edge (and therefore potentially borrowed from it)
+    pub fn below(&self, offset: Size, len: Size, edge: ProjectionIndex) -> Vec<ProjectionIndex> {
+        let mut edges = vec![];
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let index = stack.iter().position(|borrow| borrow.edge == edge);
+            if let Some(index) = index {
+                edges.extend(stack[index..].iter().map(|borrow| borrow.edge));
+            }
+        }
+        edges
+    }
+
+    pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<ProjectionIndex> {
+        let mut edges = vec![];
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let first_shared = stack
+                .iter()
+                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
+            if let Some(first_shared) = first_shared {
+                edges.extend(stack[first_shared..].iter().map(|borrow| borrow.edge));
+            }
+        }
+        edges
+    }
+
+    pub fn can_write_through(&self, offset: Size, len: Size, edge: ProjectionIndex) -> bool {
+        //FIXME: performance
+        !self.below_first_shared(offset, len).contains(&edge)
     }
 }
 
@@ -61,7 +130,6 @@ impl RunAndOffset {
         Self(self.0, Size::from_bytes(self.1.bytes() as isize + offset))
     }
 }
-
 
 #[derive(Clone)]
 struct Allocation {
@@ -128,6 +196,10 @@ impl RunPointer {
 #[derive(Clone)]
 pub struct BasicMemory {
     allocations: IndexVec<AllocId, Allocation>,
+
+    // a lookup table to aid removal from borrow stacks
+    // an edge may cover multiple runs, e.g. &(u32, u32),
+    pointers: HashMap<ProjectionIndex, SmallVec<[RunPointer; 4]>>,
 }
 
 impl BasicMemory {
@@ -136,6 +208,7 @@ impl BasicMemory {
     pub fn new() -> Self {
         Self {
             allocations: IndexVec::new(),
+            pointers: HashMap::new(),
         }
     }
 
@@ -206,6 +279,7 @@ impl BasicMemory {
             TyCtxt::ISIZE | TyCtxt::USIZE => Self::PTR_SIZE,
             _ => match ty.kind(tcx) {
                 TyKind::RawPtr(..) => Self::PTR_SIZE,
+                TyKind::Ref(..) => Self::PTR_SIZE,
                 TyKind::Array(ty, len) => {
                     return Self::ty_size(*ty, tcx)
                         .map(|elem| Size::from_bytes(elem.bytes_usize() * len))
@@ -213,5 +287,44 @@ impl BasicMemory {
                 _ => return None,
             },
         })
+    }
+
+    pub fn add_ref(&mut self, run_ptr: RunPointer, borrow_type: BorrowType, edge: ProjectionIndex) {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].add_borrow(
+            run_ptr.run_and_offset.1,
+            run_ptr.size,
+            borrow_type,
+            edge,
+        );
+        self.pointers
+            .entry(edge)
+            .and_modify(|ptrs| ptrs.push(run_ptr))
+            .or_insert(SmallVec::from([run_ptr].as_slice()));
+    }
+
+    pub fn remove_ref(&mut self, edge: ProjectionIndex) {
+        let run_ptrs = self.pointers.remove(&edge);
+        if let Some(run_ptrs) = run_ptrs {
+            for run_ptr in run_ptrs {
+                self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].remove_borrow(
+                    run_ptr.run_and_offset.1,
+                    run_ptr.size,
+                    edge,
+                );
+            }
+        }
+    }
+
+    pub fn below_first_shared(&self, run_ptr: RunPointer) -> Vec<ProjectionIndex> {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
+            .below_first_shared(run_ptr.run_and_offset.1, run_ptr.size)
+    }
+
+    pub fn can_write_through(&self, run_ptr: RunPointer, edge: ProjectionIndex) -> bool {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].can_write_through(
+            run_ptr.run_and_offset.1,
+            run_ptr.size,
+            edge,
+        )
     }
 }

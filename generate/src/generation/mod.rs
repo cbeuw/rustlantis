@@ -2,7 +2,7 @@ mod intrinsics;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::{cmp, fmt,vec};
+use std::{cmp, fmt, vec};
 
 use index_vec::IndexVec;
 use log::{debug, trace};
@@ -142,13 +142,12 @@ impl GenerationCtx {
         use TyKind::*;
         use UnOp::*;
         let lhs_ty = lhs.ty(self.current_decls(), &self.tcx);
-        let unops =
-            match lhs_ty.kind(&self.tcx) {
-                Int(_) => &[Neg, Not][..],
-                Float(_) => &[Neg][..],
-                Uint(_) | Bool => &[Not][..],
-                _ => &[][..],
-            };
+        let unops = match lhs_ty.kind(&self.tcx) {
+            Int(_) => &[Neg, Not][..],
+            Float(_) => &[Neg][..],
+            Uint(_) | Bool => &[Not][..],
+            _ => &[][..],
+        };
         let rvalue = self.make_choice(unops.iter(), |unop| {
             let operand = self.choose_operand(&[lhs_ty], lhs)?;
             Ok(Rvalue::UnaryOp(*unop, operand))
@@ -362,6 +361,22 @@ impl GenerationCtx {
         })
     }
 
+    fn generate_ref(&self, lhs: &Place) -> Result<Rvalue> {
+        let target_ty = lhs.ty(self.current_decls(), &self.tcx);
+        let (source_ty, mutability) = match target_ty.kind(&self.tcx) {
+            TyKind::Ref(ty, mutability) => (ty, mutability),
+            _ => return Err(SelectionError::Exhausted),
+        };
+        let (candidates, weights) = PlaceSelector::for_pointee(self.tcx.clone())
+            .of_ty(*source_ty)
+            .except(lhs)
+            .into_weighted(&self.pt)
+            .ok_or(SelectionError::Exhausted)?;
+        self.make_choice_weighted(candidates.into_iter(), weights, |ppath| {
+            Ok(Rvalue::Ref(*mutability, ppath.to_place(&self.pt)))
+        })
+    }
+
     fn generate_aggregate(&self, lhs: &Place) -> Result<Rvalue> {
         let target_ty = lhs.ty(self.current_decls(), &self.tcx);
         let agg = match target_ty.kind(&self.tcx) {
@@ -419,7 +434,8 @@ impl GenerationCtx {
             (Self::generate_binary_op, 1),
             (Self::generate_checked_binary_op, 1),
             (Self::generate_cast, 1),
-            (Self::generate_address_of, 2),
+            (Self::generate_address_of, 1),
+            (Self::generate_ref, 1),
             (Self::generate_aggregate, 2),
         ];
 
@@ -506,7 +522,7 @@ impl GenerationCtx {
             .iter_enumerated()
             .filter_map(|(ty, kind)| kind.is_enum().then_some(ty))
             .collect();
-        let (choices, weights) = PlaceSelector::for_argument(self.tcx.clone())
+        let (choices, weights) = PlaceSelector::for_set_discriminant(self.tcx.clone())
             .of_tys(&enum_tys)
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
@@ -561,10 +577,10 @@ impl GenerationCtx {
             self.declare_new_var(Mutability::Mut, ty);
         }
 
-        self.post_generation(&statement);
         if !matches!(statement, Statement::Nop) {
             trace!("generated {}", statement.serialize(&self.tcx));
         }
+        self.post_generation(&statement);
         self.current_bb_mut().insert_statement(statement);
     }
 }
@@ -692,14 +708,13 @@ impl GenerationCtx {
             })
             .collect();
 
-        let term =
-            Terminator::SwitchInt {
-                discr: Operand::Copy(place),
-                targets: SwitchTargets {
-                    branches,
-                    otherwise,
-                },
-            };
+        let term = Terminator::SwitchInt {
+            discr: Operand::Copy(place),
+            targets: SwitchTargets {
+                branches,
+                otherwise,
+            },
+        };
 
         self.current_bb_mut().set_terminator(term);
         self.enter_bb(target_bb);
@@ -741,6 +756,7 @@ impl GenerationCtx {
 
         // Modification must start after this point, as we may bail during above
         self.save_ctx();
+        self.pt.place_written(&return_place);
         let target_bb = self.add_new_bb();
         self.return_stack.push(Cursor {
             function: self.cursor.function,
@@ -784,6 +800,7 @@ impl GenerationCtx {
             .collect();
 
         self.pt.mark_place_init(ret);
+        self.pt.place_written(ret);
         let Callee::Intrinsic(intrinsic_name) = callee else {
             panic!("callee is intrinsic");
         };
@@ -837,9 +854,7 @@ impl GenerationCtx {
     // generated in fn0
     fn generate_return(&mut self) -> Result<bool> {
         trace!("generating a Return terminator to {:?}", self.cursor);
-        if !self.pt.is_place_init(Place::RETURN_SLOT) {
-            return Err(SelectionError::Exhausted);
-        }
+        debug_assert!(self.pt.can_return());
 
         self.insert_dump_var_gadget();
 
@@ -853,7 +868,7 @@ impl GenerationCtx {
     /// Terminates the current BB, and moves the generation context to the new BB
     fn choose_terminator(&mut self) -> bool {
         assert!(matches!(self.current_bb().terminator(), Terminator::Hole));
-        if self.pt.is_place_init(Place::RETURN_SLOT) {
+        if self.pt.can_return() {
             if Place::RETURN_SLOT.complexity(&self.pt) > 10
                 || self.current_fn().basic_blocks.len() >= MAX_BB_COUNT
             {
@@ -861,16 +876,15 @@ impl GenerationCtx {
             }
         }
 
-        let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> =
-            vec![
-                (Self::generate_goto, 20),
-                (Self::generate_switch_int, 20),
-                (Self::generate_intrinsic_call, 20),
-                (
-                    Self::generate_call,
-                    MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
-                ),
-            ];
+        let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> = vec![
+            (Self::generate_goto, 20),
+            (Self::generate_switch_int, 20),
+            (Self::generate_intrinsic_call, 20),
+            (
+                Self::generate_call,
+                MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
+            ),
+        ];
         let (choices, weights): (Vec<fn(&mut GenerationCtx) -> Result<()>>, Vec<usize>) =
             choices_and_weights.into_iter().unzip();
 
@@ -907,31 +921,32 @@ impl GenerationCtx {
         for vars in dumpped.chunks(Program::DUMPER_ARITY) {
             let new_bb = self.add_new_bb();
 
-            let args =
-                if self.program.use_debug_dumper {
-                    let mut args = Vec::with_capacity(1 + Program::DUMPER_ARITY * 2);
-                    args.push(Operand::Constant(self.cursor.function.index().try_into().unwrap()));
-                    for var in vars {
-                        args.push(Operand::Constant(var.index().try_into().unwrap()));
-                        args.push(Operand::Move(Place::from_local(*var)));
-                    }
+            let args = if self.program.use_debug_dumper {
+                let mut args = Vec::with_capacity(1 + Program::DUMPER_ARITY * 2);
+                args.push(Operand::Constant(
+                    self.cursor.function.index().try_into().unwrap(),
+                ));
+                for var in vars {
+                    args.push(Operand::Constant(var.index().try_into().unwrap()));
+                    args.push(Operand::Move(Place::from_local(*var)));
+                }
 
-                    while args.len() < 1 + Program::DUMPER_ARITY * 2 {
-                        args.push(Operand::Constant(unit2.index().try_into().unwrap()));
-                        args.push(Operand::Copy(Place::from_local(unit2)));
-                    }
-                    args
-                } else {
-                    let mut args = Vec::with_capacity(Program::DUMPER_ARITY);
-                    for var in vars {
-                        args.push(Operand::Move(Place::from_local(*var)));
-                    }
+                while args.len() < 1 + Program::DUMPER_ARITY * 2 {
+                    args.push(Operand::Constant(unit2.index().try_into().unwrap()));
+                    args.push(Operand::Copy(Place::from_local(unit2)));
+                }
+                args
+            } else {
+                let mut args = Vec::with_capacity(Program::DUMPER_ARITY);
+                for var in vars {
+                    args.push(Operand::Move(Place::from_local(*var)));
+                }
 
-                    while args.len() < Program::DUMPER_ARITY {
-                        args.push(Operand::Copy(Place::from_local(unit2)));
-                    }
-                    args
-                };
+                while args.len() < Program::DUMPER_ARITY {
+                    args.push(Operand::Copy(Place::from_local(unit2)));
+                }
+                args
+            };
             self.current_bb_mut().set_terminator(Terminator::Call {
                 callee: Program::DUMPER_CALL,
                 destination: Place::from_local(unit),
@@ -1209,20 +1224,25 @@ impl GenerationCtx {
             .indices()
             .filter(|ty| <dyn RngCore>::is_literalble(*ty, &self.tcx))
             .choose_multiple(&mut *self.rng.borrow_mut(), args_count);
-        let arg_literals: Vec<Literal> =
-            arg_tys
-                .iter()
-                .map(|ty| {
-                    self.rng
-                        .borrow_mut()
-                        .gen_literal(*ty, &self.tcx)
-                        .expect("ty is literable")
-                })
-                .collect();
+        let arg_literals: Vec<Literal> = arg_tys
+            .iter()
+            .map(|ty| {
+                self.rng
+                    .borrow_mut()
+                    .gen_literal(*ty, &self.tcx)
+                    .expect("ty is literable")
+            })
+            .collect();
 
-        let return_ty = self
-            .ty_weights
-            .choose_ty(&mut *self.rng.borrow_mut(), &self.tcx);
+        // Return type of fn0 cannot contain reference
+        let return_ty = loop {
+            let candidate = self
+                .ty_weights
+                .choose_ty(&mut *self.rng.borrow_mut(), &self.tcx);
+            if !candidate.contains(&self.tcx, |tcx, ty| ty.is_ref(tcx)) {
+                break candidate;
+            }
+        };
         self.enter_fn0(&arg_tys, return_ty, &arg_literals);
     }
 
@@ -1274,7 +1294,7 @@ impl GenerationCtx {
                         pt.mark_place_init(lhs);
                     }));
                     match rvalue {
-                        Rvalue::AddressOf(_, referent) => {
+                        Rvalue::AddressOf(_, referent) | Rvalue::Ref(_, referent) => {
                             let referent = referent.to_place_index(&self.pt).unwrap();
                             actions.push(Box::new(move |pt| {
                                 pt.set_ref(lhs, referent);
@@ -1312,83 +1332,98 @@ impl GenerationCtx {
                 Statement::Nop => {}
                 Statement::Retag(_) => todo!(),
             }
-        }
-        // Copies & literals
-        // One of copy, literal assignment or literal deletion must happen
-        if let Statement::Assign(lhs, rvalue) = stmt {
-            let lhs = lhs.to_place_index(&self.pt).unwrap();
-            match rvalue {
-                Rvalue::Use(op) => match op {
-                    Operand::Copy(rhs) | Operand::Move(rhs) => {
-                        let rhs = rhs.to_place_index(&self.pt).unwrap();
-                        actions.push(Box::new(move |pt| {
-                            pt.copy_place(lhs, rhs);
-                        }));
-                    }
-                    Operand::Constant(lit) => {
-                        actions.push(Box::new(move |pt| {
-                            pt.assign_literal(lhs, Some(*lit));
-                        }));
-                    }
-                },
-                agg @ Rvalue::Aggregate(agg_kind, ..) => {
-                    if self.pt.ty(lhs).kind(&self.tcx).is_enum() {
-                        let AggregateKind::Adt(_, vid) = agg_kind else {
-                            panic!("agg kind is not an adt");
-                        };
-                        actions.push(Box::new(move |pt| {
-                            pt.assign_discriminant(lhs, Some(*vid));
-                        }))
-                    }
-                    for (target, op) in self.aggregate_places(lhs, agg) {
-                        match op {
-                            Operand::Copy(rhs) | Operand::Move(rhs) => {
-                                let rhs = rhs.to_place_index(&self.pt).unwrap();
-                                actions.push(Box::new(move |pt| {
-                                    pt.copy_place(target, rhs);
-                                }));
-                            }
-                            Operand::Constant(lit) => {
-                                actions.push(Box::new(move |pt| {
-                                    pt.assign_literal(target, Some(*lit));
-                                }));
-                            }
-                        }
-                    }
-                }
-                _ => actions.push(Box::new(move |pt| {
-                    pt.assign_literal(lhs, None);
-                })),
-            }
-        }
-        // Moves
-        if let Statement::Assign(lhs, rvalue) = stmt {
-            match rvalue {
-                Rvalue::Use(Operand::Move(o))
-                | Rvalue::UnaryOp(_, Operand::Move(o))
-                | Rvalue::BinaryOp(_, Operand::Move(o), _)
-                | Rvalue::BinaryOp(_, _, Operand::Move(o))
-                | Rvalue::Cast(Operand::Move(o), _)
-                | Rvalue::CheckedBinaryOp(_, Operand::Move(o), _)
-                | Rvalue::CheckedBinaryOp(_, _, Operand::Move(o)) => {
-                    let pidx = o.to_place_index(&self.pt).unwrap();
-                    actions.push(Box::new(move |pt| {
-                        pt.mark_place_moved(pidx);
-                    }));
-                }
-                agg @ Rvalue::Aggregate(..) => {
-                    // FIXME: we don't actually need projections from lhs here
-                    let lhs = lhs.to_place_index(&self.pt).unwrap();
-                    for (_, op) in self.aggregate_places(lhs, agg) {
-                        if let Operand::Move(o) = op {
-                            let pidx = o.to_place_index(&self.pt).unwrap();
+            // Copies & literals
+            // One of copy, literal assignment or literal deletion must happen
+            if let Statement::Assign(lhs, rvalue) = stmt {
+                let lhs = lhs.to_place_index(&self.pt).unwrap();
+                match rvalue {
+                    Rvalue::Use(op) => match op {
+                        Operand::Copy(rhs) | Operand::Move(rhs) => {
+                            let rhs = rhs.to_place_index(&self.pt).unwrap();
                             actions.push(Box::new(move |pt| {
-                                pt.mark_place_moved(pidx);
+                                pt.copy_place(lhs, rhs);
                             }));
                         }
+                        Operand::Constant(lit) => {
+                            actions.push(Box::new(move |pt| {
+                                pt.assign_literal(lhs, Some(*lit));
+                            }));
+                        }
+                    },
+                    agg @ Rvalue::Aggregate(agg_kind, ..) => {
+                        if self.pt.ty(lhs).kind(&self.tcx).is_enum() {
+                            let AggregateKind::Adt(_, vid) = agg_kind else {
+                                panic!("agg kind is not an adt");
+                            };
+                            actions.push(Box::new(move |pt| {
+                                pt.assign_discriminant(lhs, Some(*vid));
+                            }))
+                        }
+                        for (target, op) in self.aggregate_places(lhs, agg) {
+                            match op {
+                                Operand::Copy(rhs) | Operand::Move(rhs) => {
+                                    let rhs = rhs.to_place_index(&self.pt).unwrap();
+                                    actions.push(Box::new(move |pt| {
+                                        pt.copy_place(target, rhs);
+                                    }));
+                                }
+                                Operand::Constant(lit) => {
+                                    actions.push(Box::new(move |pt| {
+                                        pt.assign_literal(target, Some(*lit));
+                                    }));
+                                }
+                            }
+                        }
                     }
+                    _ => actions.push(Box::new(move |pt| {
+                        pt.assign_literal(lhs, None);
+                    })),
                 }
-                _ => {}
+            }
+            // Moves
+            if let Statement::Assign(lhs, rvalue) = stmt {
+                match rvalue {
+                    Rvalue::Use(Operand::Move(o))
+                    | Rvalue::UnaryOp(_, Operand::Move(o))
+                    | Rvalue::BinaryOp(_, Operand::Move(o), _)
+                    | Rvalue::BinaryOp(_, _, Operand::Move(o))
+                    | Rvalue::Cast(Operand::Move(o), _)
+                    | Rvalue::CheckedBinaryOp(_, Operand::Move(o), _)
+                    | Rvalue::CheckedBinaryOp(_, _, Operand::Move(o)) => {
+                        let pidx = o.to_place_index(&self.pt).unwrap();
+                        actions.push(Box::new(move |pt| {
+                            pt.mark_place_moved(pidx);
+                        }));
+                    }
+                    agg @ Rvalue::Aggregate(..) => {
+                        // FIXME: we don't actually need projections from lhs here
+                        let lhs = lhs.to_place_index(&self.pt).unwrap();
+                        for (_, op) in self.aggregate_places(lhs, agg) {
+                            if let Operand::Move(o) = op {
+                                let pidx = o.to_place_index(&self.pt).unwrap();
+                                actions.push(Box::new(move |pt| {
+                                    pt.mark_place_moved(pidx);
+                                }));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Ref invalidations
+            match stmt {
+                Statement::Assign(place, _)
+                | Statement::Deinit(place)
+                | Statement::SetDiscriminant(place, _) => {
+                    let pidx = place.to_place_index(&self.pt).unwrap();
+                    actions.push(Box::new(move |pt| {
+                        pt.place_written(pidx);
+                    }))
+                }
+                Statement::StorageLive(_) => {}
+                Statement::StorageDead(_) => {}
+                Statement::Retag(_) => todo!(),
+                Statement::Nop => {}
             }
         }
         for action in actions {

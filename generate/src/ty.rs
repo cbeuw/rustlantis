@@ -104,7 +104,7 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
 
     // Generate composite structural types
     for _ in 0..=32 {
-        let new_ty = match rng.gen_range(0..=2) {
+        let new_ty = match rng.gen_range(0..=3) {
             0 => TyKind::Tuple({
                 let dist = Poisson::<f32>::new(2.7).unwrap();
                 let length = dist.sample(rng).clamp(1., TUPLE_MAX_LEN as f32) as usize;
@@ -128,7 +128,14 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
                     Mutability::Not
                 },
             ),
-            2 => TyKind::Array(
+            2 => TyKind::Ref(
+                tcx.indices()
+                    .filter(|ty| *ty != TyCtxt::UNIT)
+                    .choose(rng)
+                    .unwrap(),
+                Mutability::Not,
+            ),
+            3 => TyKind::Array(
                 tcx.iter_enumerated()
                     .filter_map(|(ty, kind)| (ty != TyCtxt::UNIT && kind.is_scalar()).then_some(ty))
                     .choose(rng)
@@ -150,7 +157,7 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
             let field_count = rng.gen_range(1..=STRUCT_MAX_FIELDS);
             let field_tys = tcx
                 .indices()
-                .filter(|ty| *ty != TyCtxt::UNIT)
+                .filter(|ty| *ty != TyCtxt::UNIT && /* https://github.com/rust-lang/rust/issues/119940 */ !ty.contains(&tcx, |tcx, ty| ty.is_ref(tcx)))
                 .choose_multiple(rng, field_count);
             VariantDef {
                 fields: IndexVec::from_iter(field_tys.into_iter()),

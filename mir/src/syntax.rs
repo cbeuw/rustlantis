@@ -346,32 +346,33 @@ impl TyId {
         match projs {
             [] => self,
             [head, tail @ ..] => {
-                let projected = match head {
-                    ProjectionElem::Deref => match self.kind(tcx) {
-                        TyKind::RawPtr(pointee, ..) => *pointee,
-                        _ => panic!("not a reference"),
-                    },
-                    ProjectionElem::TupleField(idx) => {
-                        self.tuple_elems(tcx).expect("is a tuple")[idx.index()]
-                    }
-                    ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } => {
-                        match self.kind(tcx) {
-                            TyKind::Array(ty, ..) => *ty,
-                            _ => panic!("not an array"),
+                let projected =
+                    match head {
+                        ProjectionElem::Deref => match self.kind(tcx) {
+                            TyKind::RawPtr(pointee, ..) | TyKind::Ref(pointee, ..) => *pointee,
+                            _ => panic!("not a reference"),
+                        },
+                        ProjectionElem::TupleField(idx) => {
+                            self.tuple_elems(tcx).expect("is a tuple")[idx.index()]
                         }
-                    }
-                    ProjectionElem::Field(fid) => match self.kind(tcx) {
-                        TyKind::Adt(adt) => {
-                            let fields = &adt.variants.first().expect("adt is a struct").fields;
-                            fields[*fid]
+                        ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } => {
+                            match self.kind(tcx) {
+                                TyKind::Array(ty, ..) => *ty,
+                                _ => panic!("not an array"),
+                            }
                         }
-                        _ => panic!("not an adt"),
-                    },
-                    ProjectionElem::DowncastField(vid, fid, _) => match self.kind(tcx) {
-                        TyKind::Adt(adt) => adt.variants[*vid].fields[*fid],
-                        _ => panic!("not an adt"),
-                    },
-                };
+                        ProjectionElem::Field(fid) => match self.kind(tcx) {
+                            TyKind::Adt(adt) => {
+                                let fields = &adt.variants.first().expect("adt is a struct").fields;
+                                fields[*fid]
+                            }
+                            _ => panic!("not an adt"),
+                        },
+                        ProjectionElem::DowncastField(vid, fid, _) => match self.kind(tcx) {
+                            TyKind::Adt(adt) => adt.variants[*vid].fields[*fid],
+                            _ => panic!("not an adt"),
+                        },
+                    };
                 projected.projected_ty(tcx, tail)
             }
         }
@@ -396,28 +397,28 @@ impl TyId {
         }
     }
 
-    // pub fn is_ref(self) -> bool {
-    //     matches!(self, Ty::Ref(..))
-    // }
+    pub fn is_ref(self, tcx: &TyCtxt) -> bool {
+        matches!(self.kind(tcx), TyKind::Ref(..))
+    }
 
-    pub fn is_unsafe_ptr(self, tcx: &TyCtxt) -> bool {
+    pub fn is_raw_ptr(self, tcx: &TyCtxt) -> bool {
         matches!(self.kind(tcx), TyKind::RawPtr(..))
     }
 
     pub fn is_any_ptr(self, tcx: &TyCtxt) -> bool {
-        self.is_unsafe_ptr(tcx)
+        matches!(self.kind(tcx), TyKind::RawPtr(..) | TyKind::Ref(..))
     }
 
     pub fn pointee_ty(self, tcx: &TyCtxt) -> Option<Self> {
         match self.kind(tcx) {
-            TyKind::RawPtr(ty, ..) => Some(*ty),
+            TyKind::RawPtr(ty, ..) | TyKind::Ref(ty, ..) => Some(*ty),
             _ => None,
         }
     }
 
     // If doesn't contain printer
     pub fn determ_printable(self, tcx: &TyCtxt) -> bool {
-        !self.contains(tcx, |tcx, ty| ty.is_unsafe_ptr(tcx))
+        !self.contains(tcx, |tcx, ty| ty.is_any_ptr(tcx))
     }
 
     pub fn hashable(self, tcx: &TyCtxt) -> bool {
@@ -429,8 +430,10 @@ impl TyId {
     }
 
     pub fn is_copy(self, tcx: &TyCtxt) -> bool {
-        if self.kind(tcx).is_structural() {
-            true
+        let kind = self.kind(tcx);
+        if kind.is_structural() {
+            let has_ref = self.contains(tcx, |tcx, ty| matches!(ty.kind(tcx), TyKind::Ref(..)));
+            !has_ref
         } else {
             tcx.meta(self).copy
         }
@@ -448,6 +451,7 @@ pub enum TyKind {
     Float(FloatTy),
     // Composite
     RawPtr(TyId, Mutability),
+    Ref(TyId, Mutability),
     Tuple(Vec<TyId>),
     // User-defined
     Adt(Adt),
@@ -471,23 +475,25 @@ impl TyKind {
     pub const F32: Self = TyKind::Float(FloatTy::F32);
     pub const F64: Self = TyKind::Float(FloatTy::F64);
 
-    pub const INTS: [Self; 6] = [
-        Self::ISIZE,
-        Self::I8,
-        Self::I16,
-        Self::I32,
-        Self::I64,
-        Self::I128,
-    ];
+    pub const INTS: [Self; 6] =
+        [
+            Self::ISIZE,
+            Self::I8,
+            Self::I16,
+            Self::I32,
+            Self::I64,
+            Self::I128,
+        ];
 
-    pub const UINTS: [Self; 6] = [
-        Self::USIZE,
-        Self::U8,
-        Self::U16,
-        Self::U32,
-        Self::U64,
-        Self::U128,
-    ];
+    pub const UINTS: [Self; 6] =
+        [
+            Self::USIZE,
+            Self::U8,
+            Self::U16,
+            Self::U32,
+            Self::U64,
+            Self::U128,
+        ];
 
     pub const FLOATS: [Self; 2] = [Self::F32, Self::F64];
 

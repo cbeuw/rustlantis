@@ -127,7 +127,7 @@ impl CoreIntrinsic for Transmute {
     fn dest_type(&self, ty: TyId, tcx: &TyCtxt) -> bool {
         if ty.contains(tcx, |tcx, ty| match ty.kind(tcx) {
             // Tys with value validity contstraints
-            TyKind::Unit | TyKind::Bool | TyKind::Char | TyKind::RawPtr(_, _) => true, // TODO: pointer transmute
+            TyKind::Unit | TyKind::Bool | TyKind::Char | TyKind::RawPtr(..) | TyKind::Ref(..) => true, // TODO: pointer transmute
             _ => false,
         }) {
             return false;
@@ -148,7 +148,7 @@ impl CoreIntrinsic for Transmute {
             .filter(|ty| {
                 !ty.contains(&ctx.tcx, |tcx, ty| {
                     // Avoid inspecting the bytes in fp as NaN payload is nd
-                    ty.is_any_ptr(tcx) || ty == TyCtxt::F32 || ty == TyCtxt::F64
+                    ty.is_raw_ptr(tcx) || ty == TyCtxt::F32 || ty == TyCtxt::F64
                 })
             })
             .collect();

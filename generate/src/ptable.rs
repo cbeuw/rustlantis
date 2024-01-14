@@ -1,5 +1,5 @@
 use std::{
-    collections::{BinaryHeap, HashMap},
+    collections::{BinaryHeap, HashMap, HashSet},
     iter,
     rc::Rc,
     vec,
@@ -8,8 +8,8 @@ use std::{
 use bimap::BiHashMap;
 use mir::{
     syntax::{
-        Body, FieldIdx, Literal, Local, Operand, Place, ProjectionElem, Rvalue, TyId, TyKind,
-        UintTy, VariantIdx,
+        Body, FieldIdx, Literal, Local, Mutability, Operand, Place, ProjectionElem, Rvalue, TyId,
+        TyKind, UintTy, VariantIdx,
     },
     tyctxt::TyCtxt,
 };
@@ -18,7 +18,7 @@ use petgraph::{
 };
 use smallvec::{smallvec, SmallVec};
 
-use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, RunPointer};
+use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, BorrowType, RunPointer};
 
 type PlaceGraph = StableGraph<PlaceNode, ProjectionElem>;
 pub type PlaceIndex = NodeIndex;
@@ -28,6 +28,8 @@ pub type Path = SmallVec<[ProjectionIndex; 4]>;
 #[derive(Clone)]
 struct Frame {
     locals: BiHashMap<Local, PlaceIndex>,
+
+    // To maintain iteration order and determinism
     locals_ordered: BinaryHeap<PlaceIndex>,
 
     // return destination and moved in places cannot be read or written
@@ -192,11 +194,10 @@ impl PlaceTable {
             .expect("return dest exists");
         self.assign_literal(return_dest, None);
 
-        let moved_in =
-            args.iter().filter_map(|arg| match *arg {
-                PlaceOperand::Move(pidx) => Some(pidx),
-                _ => None,
-            });
+        let moved_in = args.iter().filter_map(|arg| match *arg {
+            PlaceOperand::Move(pidx) => Some(pidx),
+            _ => None,
+        });
 
         // Frame switch
         self.frames.push(Frame::new(return_dest, moved_in));
@@ -224,6 +225,36 @@ impl PlaceTable {
             });
     }
 
+    /// Checks if the value in RET would be valid upon return
+    pub fn can_return(&self) -> bool {
+        if !self.is_place_init(Local::RET) {
+            return false;
+        }
+
+        let local_allocs: HashSet<AllocId> = self
+            .current_frame()
+            .locals_ordered
+            .iter()
+            .map(|local| self.places[*local].alloc_id)
+            .collect();
+        let mut has_stack_ref = false;
+        // Check if it contains any references that will be invalidated upon return
+        self.visit_transitive_subfields(
+            Local::RET.to_place_index(self).expect("ret exists"),
+            |node| {
+                if self.ty(node).is_ref(&self.tcx) {
+                    let pointee = self.pointee(node).expect("points to something");
+                    if local_allocs.contains(&self.places[pointee].alloc_id) {
+                        has_stack_ref = true;
+                    }
+                    return false;
+                }
+                true
+            },
+        );
+        !has_stack_ref
+    }
+
     pub fn exit_fn(&mut self) {
         // FIXME: this is quite flimsy wrt. statement order
         let callee_ret = Place::RETURN_SLOT
@@ -236,7 +267,20 @@ impl PlaceTable {
         // Copy ret
         self.copy_place(old_frame.return_destination, callee_ret);
 
-        // Deinit places
+        // TODO: the following to loops can probably be merged
+        // Remove ref edges into about to be deallocated places (necessary to prevent dangling references)
+        let mut ref_edges = vec![];
+        for pidx in old_frame.locals.right_values() {
+            self.visit_transitive_subfields(*pidx, |node| {
+                ref_edges.extend(self.pointers_to(node).iter().map(|(_, edge)| edge));
+                true
+            });
+        }
+        for edge in ref_edges {
+            self.remove_edge(edge);
+        }
+
+        // Deallocate places
         for pidx in old_frame.locals.right_values() {
             self.memory.deallocate(self.places[*pidx].alloc_id);
         }
@@ -419,7 +463,7 @@ impl PlaceTable {
             // We are keeping EdgeIndices across calls to remove_edge. This means that we have to use
             // StableGraph
             for edge in refs {
-                this.places.remove_edge(edge);
+                this.remove_edge(edge);
             }
             true
         });
@@ -448,7 +492,7 @@ impl PlaceTable {
 
         if dst_node.ty.is_any_ptr(&self.tcx) {
             if let Some(old) = self.ref_edge(dst) {
-                self.places.remove_edge(old);
+                self.remove_edge(old);
             }
             if let Some(pointee) = self.pointee(src) {
                 self.set_ref(dst, pointee);
@@ -508,6 +552,7 @@ impl PlaceTable {
     /// Call update on all transitive superfields of start, *excluding* start
     fn update_transitive_superfields<F>(&mut self, start: PlaceIndex, mut visit: F)
     where
+        //FIXME: return an enum instead of bool
         F: FnMut(&mut Self, PlaceIndex) -> bool,
     {
         let mut to_visit: Vec<NodeIndex> = self.immediate_superfields(start).collect();
@@ -522,6 +567,7 @@ impl PlaceTable {
     /// Call visit on all transitive subfields of start, *including* start
     fn update_transitive_subfields<F>(&mut self, start: PlaceIndex, mut visit: F)
     where
+        //FIXME: return an enum instead of bool
         F: FnMut(&mut Self, PlaceIndex) -> bool,
     {
         let mut to_visit = vec![start];
@@ -535,6 +581,7 @@ impl PlaceTable {
 
     fn visit_transitive_subfields<F>(&self, start: PlaceIndex, mut visit: F)
     where
+        //FIXME: return an enum instead of bool
         F: FnMut(PlaceIndex) -> bool,
     {
         let mut to_visit = vec![start];
@@ -596,7 +643,15 @@ impl PlaceTable {
         if self.places[pidx].ty.is_any_ptr(&self.tcx)
             && let Some(old) = self.ref_edge(pidx)
         {
-            self.places.remove_edge(old);
+            self.remove_edge(old);
+        }
+
+        // If this place is pointed to by a reference, we must remove the Deref edge
+        // so the reference is invalidated
+        for (pointer, ref_edge) in self.pointers_to(pidx) {
+            if self.ty(pointer).is_ref(&self.tcx) {
+                self.remove_edge(ref_edge);
+            }
         }
 
         self.update_transitive_subfields(pidx, |this, place| {
@@ -624,51 +679,80 @@ impl PlaceTable {
         });
     }
 
-    /// Returns the pointee in reference -[Deref]-> pointee, if one exists
-    fn pointee(&self, reference: PlaceIndex) -> Option<PlaceIndex> {
-        assert!(self.places[reference].ty.is_any_ptr(&self.tcx));
+    /// Returns all pointers to a pointee, and the ref edge
+    fn pointers_to(&self, pointee: PlaceIndex) -> Vec<(NodeIndex, ProjectionIndex)> {
         self.places
-            .edges_directed(reference, Direction::Outgoing)
+            .edges_directed(pointee, Direction::Incoming)
+            .filter_map(|edge| {
+                edge.weight()
+                    .is_deref()
+                    .then_some((edge.source(), edge.id()))
+            })
+            .collect()
+    }
+
+    /// Returns the pointee in pointer -[Deref]-> pointee, if one exists
+    fn pointee(&self, pointer: PlaceIndex) -> Option<PlaceIndex> {
+        assert!(self.places[pointer].ty.is_any_ptr(&self.tcx));
+        self.places
+            .edges_directed(pointer, Direction::Outgoing)
             .next()
             .map(|deref| deref.target())
     }
 
-    /// Returns the edge in reference -[edge: Deref]-> pointee, if one exists
-    fn ref_edge(&self, reference: PlaceIndex) -> Option<ProjectionIndex> {
-        assert!(self.places[reference].ty.is_any_ptr(&self.tcx));
+    /// Returns the edge in pointer -[edge: Deref]-> pointee, if one exists
+    fn ref_edge(&self, pointer: PlaceIndex) -> Option<ProjectionIndex> {
+        assert!(self.places[pointer].ty.is_any_ptr(&self.tcx));
         self.places
-            .edges_directed(reference, Direction::Outgoing)
+            .edges_directed(pointer, Direction::Outgoing)
             .next()
             .map(|deref| deref.id())
     }
 
-    /// Creates an edge reference -[Deref]-> pointee
-    pub fn set_ref(&mut self, reference: impl ToPlaceIndex, pointee: impl ToPlaceIndex) {
-        let reference = reference.to_place_index(self).expect("place exists");
+    /// Creates an edge pointer -[Deref]-> pointee
+    pub fn set_ref(&mut self, pointer: impl ToPlaceIndex, pointee: impl ToPlaceIndex) {
+        let pointer = pointer.to_place_index(self).expect("place exists");
         let pointee = pointee.to_place_index(self).expect("place exists");
 
         assert_eq!(
-            self.places[reference].ty.pointee_ty(&self.tcx).unwrap(),
+            self.places[pointer].ty.pointee_ty(&self.tcx).unwrap(),
             self.places[pointee].ty
         );
 
-        // Remove any old reference edges
-        if let Some(old) = self.ref_edge(reference) {
-            self.places.remove_edge(old);
+        let ref_type = match self.ty(pointer).kind(&self.tcx) {
+            TyKind::RawPtr(_, _) => BorrowType::Raw,
+            TyKind::Ref(_, Mutability::Mut) => BorrowType::Exclusive,
+            TyKind::Ref(_, Mutability::Not) => BorrowType::Shared,
+            _ => panic!("source must be of pointer type"),
+        };
+
+        // Remove any old ref edges
+        if let Some(old) = self.ref_edge(pointer) {
+            self.remove_edge(old);
         }
         assert_eq!(
             self.places
-                .edges_directed(reference, Direction::Outgoing)
+                .edges_directed(pointer, Direction::Outgoing)
                 .count(),
             0
         );
-        self.places[reference].offset = None;
+        self.places[pointer].offset = None;
 
-        self.update_complexity(reference, self.places[pointee].complexity);
+        self.update_complexity(pointer, self.places[pointee].complexity);
 
-        // Add new reference
-        self.places
-            .add_edge(reference, pointee, ProjectionElem::Deref);
+        // Add new ref edge
+        let edge_id = self
+            .places
+            .add_edge(pointer, pointee, ProjectionElem::Deref);
+
+        self.update_transitive_subfields(pointee, |this, place| {
+            if let Some(run) = this.places[place].run_ptr {
+                this.memory.add_ref(run, ref_type, edge_id);
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn is_place_live(&self, p: impl ToPlaceIndex) -> bool {
@@ -780,7 +864,6 @@ impl PlaceTable {
                 old.remove(to_remove);
             }
             if let Some(Literal::Uint(i, UintTy::Usize)) = val {
-                // If we're assigning a new usize literal to it
                 self.index_candidates
                     .entry(i as usize)
                     .or_default()
@@ -834,7 +917,7 @@ impl PlaceTable {
     // Whether the pointer has been offsetted (and therefore unusable)
     pub fn offseted(&self, p: impl ToPlaceIndex) -> bool {
         let p = p.to_place_index(self).expect("place exists");
-        assert!(self.places[p].ty.is_any_ptr(&self.tcx));
+        assert!(self.places[p].ty.is_raw_ptr(&self.tcx));
 
         match self.places[p].offset {
             None => false,
@@ -845,14 +928,14 @@ impl PlaceTable {
 
     pub fn get_offset(&self, p: impl ToPlaceIndex) -> Option<isize> {
         let p = p.to_place_index(self).expect("place exists");
-        assert!(self.places[p].ty.is_any_ptr(&self.tcx));
+        assert!(self.places[p].ty.is_raw_ptr(&self.tcx));
 
         self.places[p].offset
     }
 
     pub fn offset_ptr(&mut self, p: impl ToPlaceIndex, offset: isize) {
         let p = p.to_place_index(self).expect("place exists");
-        assert!(self.places[p].ty.is_any_ptr(&self.tcx));
+        assert!(self.places[p].ty.is_raw_ptr(&self.tcx));
 
         self.places[p].offset = match self.places[p].offset {
             None => Some(offset),
@@ -860,9 +943,10 @@ impl PlaceTable {
         };
     }
 
+    /// Whether a pointer has had multiple offsets summing up to zero (therefore usable)
     pub fn has_offset_roundtripped(&self, p: impl ToPlaceIndex) -> bool {
         let p = p.to_place_index(self).expect("place exists");
-        assert!(self.places[p].ty.is_any_ptr(&self.tcx));
+        assert!(self.places[p].ty.is_raw_ptr(&self.tcx));
 
         self.places[p].offset == Some(0)
     }
@@ -891,6 +975,61 @@ impl PlaceTable {
     pub fn place_count(&self) -> usize {
         self.places.node_count()
     }
+
+    /// To be called when a place is written to. Invalidates (removes) all references and raw pointers after the first
+    /// shared reference on the stack, and mark references uninit
+    pub fn place_written(&mut self, p: impl ToPlaceIndex) {
+        let p = p.to_place_index(&self).expect("place exists");
+        self.update_transitive_subfields(p, |this, place| {
+            if let Some(run) = this.places[place].run_ptr {
+                let invalidated = this.memory.below_first_shared(run);
+                // TODO: this is probably too much. Items may point to other runs
+                for edge in invalidated {
+                    this.remove_edge(edge);
+                }
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Checks if a Deref edge can be used to write through its target
+    pub fn can_write_through(&self, e: ProjectionIndex) -> bool {
+        if !self.places[e].is_deref() {
+            // You can always write through a non-Deref edge
+            return true;
+        }
+        let (_, target) = self.places.edge_endpoints(e).expect("edge exists");
+        let mut can = true;
+        self.visit_transitive_subfields(target, |node| {
+            if let Some(run) = self.places[node].run_ptr {
+                if !self.memory.can_write_through(run, e) {
+                    //TODO: short circuit
+                    can = false;
+                }
+                false
+            } else {
+                true
+            }
+        });
+        can
+    }
+
+    // petgraph::StableGraph does not allow us to hang onto graph indicies that have been
+    // removed (they may get reused by irrelevant edges). So we need to clean up everything
+    // when removing an edge
+    // Also we need to mark reference uninit if the edge is removed (though not raw pointers)
+    fn remove_edge(&mut self, e: ProjectionIndex) {
+        let (source, _) = self.places.edge_endpoints(e).expect("edge exists");
+        // FIXME: why do we need a live check?
+        if self.ty(source).is_ref(&self.tcx) && self.is_place_live(source) {
+            let run_ptr = self.places[source].run_ptr.expect("pointer is a scalar");
+            self.memory.fill(run_ptr, AbstractByte::Uninit);
+        }
+        self.memory.remove_ref(e);
+        self.places.remove_edge(e).expect("edge exists");
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -917,6 +1056,10 @@ impl PlacePath {
             pt.current_frame().get_by_index(self.source).unwrap(),
             &projs,
         )
+    }
+
+    pub fn projection_indices<'pt>(&'pt self) -> impl Iterator<Item = ProjectionIndex> + 'pt {
+        self.path.iter().copied()
     }
 
     pub fn projections<'pt>(
@@ -999,7 +1142,7 @@ impl<'pt> ProjectionIter<'pt> {
                         return None;
                     }
 
-                    if e.weight().is_deref() && pt.offseted(e.source()) {
+                    if pt.ty(e.source()).is_raw_ptr(&pt.tcx) && pt.offseted(e.source()) {
                         return None;
                     }
 
@@ -1254,7 +1397,10 @@ mod tests {
             .next()
             .unwrap();
 
-        assert!(matches!(place.projection()[0], ProjectionElem::TupleField(..)));
+        assert!(matches!(
+            place.projection()[0],
+            ProjectionElem::TupleField(..)
+        ));
     }
 
     #[test]
