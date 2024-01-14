@@ -154,7 +154,10 @@ where
 enum VisitAction {
     // Keep going in the current branch
     Continue,
+    // Stop going in the current branch, but keep going in others
     Stop,
+    // Stop going in all branches
+    ShortCircuit,
 }
 
 impl PlaceTable {
@@ -255,6 +258,7 @@ impl PlaceTable {
                     let pointee = self.pointee(node).expect("points to something");
                     if local_allocs.contains(&self.places[pointee].alloc_id) {
                         has_stack_ref = true;
+                        return VisitAction::ShortCircuit;
                     }
                     return VisitAction::Stop;
                 }
@@ -566,8 +570,11 @@ impl PlaceTable {
         let mut to_visit: Vec<NodeIndex> = self.immediate_superfields(start).collect();
         while let Some(node) = to_visit.pop() {
             let todo = visit(self, node);
-            if todo == VisitAction::Continue {
-                to_visit.extend(self.immediate_superfields(node));
+            match todo {
+                VisitAction::Continue => to_visit.extend(self.immediate_superfields(node)),
+                // These two should be the same as there is only one branch
+                VisitAction::Stop => {}
+                VisitAction::ShortCircuit => break,
             }
         }
     }
@@ -580,8 +587,10 @@ impl PlaceTable {
         let mut to_visit = vec![start];
         while let Some(node) = to_visit.pop() {
             let todo = visit(self, node);
-            if todo == VisitAction::Continue {
-                to_visit.extend(self.immediate_subfields(node));
+            match todo {
+                VisitAction::Continue => to_visit.extend(self.immediate_subfields(node)),
+                VisitAction::Stop => {}
+                VisitAction::ShortCircuit => break,
             }
         }
     }
@@ -593,8 +602,10 @@ impl PlaceTable {
         let mut to_visit = vec![start];
         while let Some(node) = to_visit.pop() {
             let todo = visit(node);
-            if todo == VisitAction::Continue {
-                to_visit.extend(self.immediate_subfields(node));
+            match todo {
+                VisitAction::Continue => to_visit.extend(self.immediate_subfields(node)),
+                VisitAction::Stop => {}
+                VisitAction::ShortCircuit => break,
             }
         }
     }
@@ -1011,8 +1022,8 @@ impl PlaceTable {
         self.visit_transitive_subfields(target, |node| {
             if let Some(run) = self.places[node].run_ptr {
                 if !self.memory.can_write_through(run, e) {
-                    //TODO: short circuit
                     can = false;
+                    return VisitAction::ShortCircuit;
                 }
                 VisitAction::Stop
             } else {
