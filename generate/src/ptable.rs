@@ -1000,9 +1000,12 @@ impl PlaceTable {
         self.update_transitive_subfields(p, |this, place| {
             if let Some(run) = this.places[place].run_ptr {
                 let invalidated = this.memory.below_first_shared(run);
-                // TODO: this is probably too much. Items may point to other runs
                 for edge in invalidated {
-                    this.remove_edge(edge);
+                    let all_gone = this.memory.remove_ref_run_ptr(edge, run);
+                    if all_gone {
+                        // TODO invalidate the reference as it cannot be read even if only partially removed
+                        this.remove_edge(edge);
+                    }
                 }
                 VisitAction::Stop
             } else {
@@ -1011,15 +1014,34 @@ impl PlaceTable {
         });
     }
 
+    pub fn can_read_through(&self, e: ProjectionIndex, p: PlaceIndex) -> bool {
+        if !self.places[e].is_deref() {
+            // You can always read through a non-Deref edge
+            return true;
+        }
+        let mut can = true;
+        self.visit_transitive_subfields(p, |node| {
+            if let Some(run) = self.places[node].run_ptr {
+                if !self.memory.can_read_through(run, e) {
+                    can = false;
+                    return VisitAction::ShortCircuit;
+                }
+                VisitAction::Stop
+            } else {
+                VisitAction::Continue
+            }
+        });
+        can
+    }
+
     /// Checks if a Deref edge can be used to write through its target
-    pub fn can_write_through(&self, e: ProjectionIndex) -> bool {
+    pub fn can_write_through(&self, e: ProjectionIndex, p: PlaceIndex) -> bool {
         if !self.places[e].is_deref() {
             // You can always write through a non-Deref edge
             return true;
         }
-        let (_, target) = self.places.edge_endpoints(e).expect("edge exists");
         let mut can = true;
-        self.visit_transitive_subfields(target, |node| {
+        self.visit_transitive_subfields(p, |node| {
             if let Some(run) = self.places[node].run_ptr {
                 if !self.memory.can_write_through(run, e) {
                     can = false;

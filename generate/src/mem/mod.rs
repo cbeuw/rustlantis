@@ -110,9 +110,29 @@ impl Run {
         edges
     }
 
+    pub fn above_first_shared(&self, offset: Size, len: Size) -> Vec<ProjectionIndex> {
+        let mut edges = vec![];
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let first_shared = stack
+                .iter()
+                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
+            if let Some(first_shared) = first_shared {
+                edges.extend(stack[..first_shared].iter().map(|borrow| borrow.edge));
+            }
+        }
+        edges
+    }
+
+    pub fn can_read_through(&self, offset: Size, len: Size, edge: ProjectionIndex) -> bool {
+        //FIXME: performance
+        self.ref_stack
+            .iter(offset, len)
+            .all(|(_, stack)| stack.iter().find(|borrow| borrow.edge == edge).is_some())
+    }
+
     pub fn can_write_through(&self, offset: Size, len: Size, edge: ProjectionIndex) -> bool {
         //FIXME: performance
-        !self.below_first_shared(offset, len).contains(&edge)
+        self.above_first_shared(offset, len).contains(&edge)
     }
 }
 
@@ -177,6 +197,31 @@ impl AllocationBuilder {
     }
 }
 
+trait RangeExt: Sized {
+    fn overlap(&self, other: &Self) -> bool;
+    fn subtract(&self, other: &Self) -> [Option<Self>; 2];
+}
+
+impl RangeExt for Range<usize> {
+    fn overlap(&self, other: &Self) -> bool {
+        self.start <= other.end && other.start <= self.end
+    }
+    fn subtract(&self, other: &Self) -> [Option<Self>; 2] {
+        assert!(self.overlap(other));
+        let left = if self.start < other.start {
+            Some(self.start..other.start)
+        } else {
+            None
+        };
+        let right = if other.end < self.end {
+            Some(other.end..self.end)
+        } else {
+            None
+        };
+        [left, right]
+    }
+}
+
 define_index_type! {pub struct AllocId = u32;}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,9 +232,31 @@ pub struct RunPointer {
 }
 
 impl RunPointer {
+    pub fn from_bytes_range(range: Range<usize>, alloc_id: AllocId, run: RunId) -> Self {
+        RunPointer {
+            alloc_id,
+            run_and_offset: RunAndOffset(run, Size::from_bytes(range.start)),
+            size: Size::from_bytes(range.count()),
+        }
+    }
+
+    pub fn run(&self) -> RunId {
+        self.run_and_offset.0
+    }
+
     pub fn bytes_range(&self) -> Range<usize> {
         self.run_and_offset.1.bytes_usize()
             ..self.run_and_offset.1.bytes_usize() + self.size.bytes_usize()
+    }
+
+    pub fn overlap(&self, other: &Self) -> bool {
+        if self.alloc_id != other.alloc_id {
+            return false;
+        }
+        if !self.run_and_offset.same_run(&other.run_and_offset) {
+            return false;
+        }
+        return self.bytes_range().overlap(&other.bytes_range());
     }
 }
 
@@ -302,6 +369,7 @@ impl BasicMemory {
             .or_insert(SmallVec::from([run_ptr].as_slice()));
     }
 
+    /// Remove ref for all runs
     pub fn remove_ref(&mut self, edge: ProjectionIndex) {
         let run_ptrs = self.pointers.remove(&edge);
         if let Some(run_ptrs) = run_ptrs {
@@ -315,9 +383,55 @@ impl BasicMemory {
         }
     }
 
+    /// Remove ref for a run ptr. Returns true if the ref is no longer present in any
+    /// borrow stack
+    pub fn remove_ref_run_ptr(&mut self, edge: ProjectionIndex, run_ptr: RunPointer) -> bool {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].remove_borrow(
+            run_ptr.run_and_offset.1,
+            run_ptr.size,
+            edge,
+        );
+
+        let all_run_ptrs = &self.pointers[&edge];
+        // Check if the run_ptr we removed overlaps with ones cached, then remove/split them as necessary
+        let mut updated = SmallVec::new();
+        for stored in all_run_ptrs {
+            if stored.overlap(&run_ptr) {
+                let left_and_right = stored.bytes_range().subtract(&run_ptr.bytes_range());
+                for range in left_and_right {
+                    if let Some(range) = range {
+                        updated.push(RunPointer::from_bytes_range(
+                            range,
+                            stored.alloc_id,
+                            stored.run(),
+                        ));
+                    }
+                }
+            } else {
+                updated.push(*stored);
+            }
+        }
+
+        let empty = updated.is_empty();
+        if empty {
+            self.pointers.remove(&edge);
+        } else {
+            self.pointers.insert(edge, updated);
+        }
+        empty
+    }
+
     pub fn below_first_shared(&self, run_ptr: RunPointer) -> Vec<ProjectionIndex> {
         self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
             .below_first_shared(run_ptr.run_and_offset.1, run_ptr.size)
+    }
+
+    pub fn can_read_through(&self, run_ptr: RunPointer, edge: ProjectionIndex) -> bool {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].can_read_through(
+            run_ptr.run_and_offset.1,
+            run_ptr.size,
+            edge,
+        )
     }
 
     pub fn can_write_through(&self, run_ptr: RunPointer, edge: ProjectionIndex) -> bool {

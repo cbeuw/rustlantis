@@ -189,11 +189,25 @@ impl PlaceSelector {
                 return false;
             }
 
-            // Do not write through shared reference and any ref potentially derived from it
-            if (self.usage == PlaceUsage::LHS || self.usage == PlaceUsage::SetDiscriminant)
-                && ppath.projection_indices().any(|e| !pt.can_write_through(e))
-            {
-                return false;
+            match self.usage {
+                // writes
+                PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
+                    if ppath
+                        .projection_indices()
+                        .any(|e| !pt.can_write_through(e, ppath.target_index(pt)))
+                    {
+                        return false;
+                    }
+                }
+                // reads
+                _ => {
+                    if ppath
+                        .projection_indices()
+                        .any(|e| !pt.can_read_through(e, ppath.target_index(pt)))
+                    {
+                        return false;
+                    }
+                }
             }
 
             true
@@ -203,65 +217,64 @@ impl PlaceSelector {
     pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
         let usage = self.usage;
         let tcx = self.tcx.clone();
-        let (places, weights): (Vec<PlacePath>, Vec<Weight>) = self
-            .into_iter_path(pt)
-            .map(|ppath| {
-                let place = ppath.target_index(pt);
-                let mut weight = match usage {
-                    PlaceUsage::Argument => {
-                        let mut weight = pt.get_complexity(place);
-                        let node = ppath.target_node(pt);
-                        let index = ppath.target_index(pt);
-                        if node.ty.contains(&tcx, |tcx, ty| ty.is_any_ptr(tcx)) {
-                            weight *= PTR_ARG_WEIGHT_FACTOR;
+        let (places, weights): (Vec<PlacePath>, Vec<Weight>) =
+            self.into_iter_path(pt)
+                .map(|ppath| {
+                    let place = ppath.target_index(pt);
+                    let mut weight = match usage {
+                        PlaceUsage::Argument => {
+                            let mut weight = pt.get_complexity(place);
+                            let node = ppath.target_node(pt);
+                            let index = ppath.target_index(pt);
+                            if node.ty.contains(&tcx, |tcx, ty| ty.is_any_ptr(tcx)) {
+                                weight *= PTR_ARG_WEIGHT_FACTOR;
+                            }
+                            if pt.known_val(index).is_some() {
+                                weight *= LIT_ARG_WEIGHT_FACTOR;
+                            }
+                            // Encourage isize for pointer offset
+                            if node.ty.contains(&tcx, |_, ty| ty == TyCtxt::ISIZE) {
+                                weight *= LIT_ARG_WEIGHT_FACTOR;
+                            }
+                            if node.ty.is_raw_ptr(&tcx) && pt.offseted(index) {
+                                weight *= OFFSETTED_PTR_WEIGHT_FACTOR;
+                            }
+                            weight
                         }
-                        if pt.known_val(index).is_some() {
-                            weight *= LIT_ARG_WEIGHT_FACTOR;
+                        PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
+                            let mut weight = if !pt.is_place_init(place) {
+                                UNINIT_WEIGHT_FACTOR
+                            } else {
+                                1
+                            };
+                            if ppath.is_return_proj(pt) {
+                                weight *= RET_LHS_WEIGH_FACTOR;
+                            }
+                            let target = ppath.target_index(pt);
+                            if pt.ty(target).is_raw_ptr(&tcx) && pt.get_offset(target).is_some() {
+                                weight = 0;
+                            }
+                            weight
                         }
-                        // Encourage isize for pointer offset
-                        if node.ty.contains(&tcx, |_, ty| ty == TyCtxt::ISIZE) {
-                            weight *= LIT_ARG_WEIGHT_FACTOR;
-                        }
-                        if node.ty.is_raw_ptr(&tcx) && pt.offseted(index) {
-                            weight *= OFFSETTED_PTR_WEIGHT_FACTOR;
-                        }
-                        weight
+                        PlaceUsage::Operand => pt.get_complexity(place),
+                        PlaceUsage::Pointee => 1,
+                        PlaceUsage::KnownVal | PlaceUsage::NonZero => pt.get_complexity(place),
+                        PlaceUsage::Offsetee => 1,
+                    };
+
+                    if ppath.projections(pt).any(|proj| proj.is_deref()) {
+                        weight *= DEREF_WEIGHT_FACTOR;
                     }
-                    PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
-                        let mut weight = if !pt.is_place_init(place) {
-                            UNINIT_WEIGHT_FACTOR
-                        } else {
-                            1
-                        };
-                        if ppath.is_return_proj(pt) {
-                            weight *= RET_LHS_WEIGH_FACTOR;
-                        }
-                        let target = ppath.target_index(pt);
-                        if pt.ty(target).is_raw_ptr(&tcx) && pt.get_offset(target).is_some() {
-                            weight = 0;
-                        }
-                        weight
+
+                    if ppath.nodes(pt).any(|place| {
+                        pt.ty(place).is_raw_ptr(&tcx) && pt.has_offset_roundtripped(place)
+                    }) {
+                        weight *= ROUNDTRIPPED_PTR_WEIGHT_FACTOR;
                     }
-                    PlaceUsage::Operand => pt.get_complexity(place),
-                    PlaceUsage::Pointee => 1,
-                    PlaceUsage::KnownVal | PlaceUsage::NonZero => pt.get_complexity(place),
-                    PlaceUsage::Offsetee => 1,
-                };
 
-                if ppath.projections(pt).any(|proj| proj.is_deref()) {
-                    weight *= DEREF_WEIGHT_FACTOR;
-                }
-
-                if ppath
-                    .nodes(pt)
-                    .any(|place| pt.ty(place).is_raw_ptr(&tcx) && pt.has_offset_roundtripped(place))
-                {
-                    weight *= ROUNDTRIPPED_PTR_WEIGHT_FACTOR;
-                }
-
-                (ppath, weight)
-            })
-            .unzip();
+                    (ppath, weight)
+                })
+                .unzip();
         if let Ok(weighted_index) = WeightedIndex::new(weights) {
             Some((places, weighted_index))
         } else {
