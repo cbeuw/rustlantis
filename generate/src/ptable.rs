@@ -1563,4 +1563,71 @@ mod tests {
         assert_eq!(pt.places[one_zero].ty, TyCtxt::I32);
         assert_eq!(pt.places[local_pidx].alloc_id, pt.places[one_zero].alloc_id);
     }
+
+    #[test]
+    fn shared_reference() {
+        let mut tcx = TyCtxt::from_primitives();
+
+        let t_i16_i32 = tcx.push(TyKind::Tuple(vec![TyCtxt::I16, TyCtxt::I32]));
+        let t_ref = tcx.push(TyKind::Ref(t_i16_i32, Mutability::Not));
+        let t_ptr = tcx.push(TyKind::RawPtr(t_i16_i32, Mutability::Not));
+
+        let mut pt = PlaceTable::new(Rc::new(tcx));
+
+        let root = Local::new(1);
+        pt.allocate_local(root, t_i16_i32);
+        pt.mark_place_init(root);
+
+        let root_0 = Place::from_projected(root, &[ProjectionElem::TupleField(FieldIdx::new(0))])
+            .to_place_index(&pt)
+            .unwrap();
+        let root_1 = Place::from_projected(root, &[ProjectionElem::TupleField(FieldIdx::new(1))])
+            .to_place_index(&pt)
+            .unwrap();
+
+        // root_ptr1 = addr_of!(root)
+        let root_ptr1 = Local::new(2);
+        pt.allocate_local(root_ptr1, t_ptr);
+        pt.set_ref(root_ptr1, root, None);
+        let ptr1_edge = pt.ref_edge(root_ptr1.to_place_index(&pt).unwrap()).unwrap();
+
+        // root_ref = &root
+        let root_ref = Local::new(3);
+        pt.allocate_local(root_ref, t_ref);
+        pt.set_ref(root_ref, root, None);
+        let ref_edge = pt.ref_edge(root_ref.to_place_index(&pt).unwrap()).unwrap();
+
+        // (*root_ref).0 can be read
+        assert!(pt.can_read_through(ref_edge, root_0));
+
+        // (*root_ref).0 cannot be written to
+        assert!(!pt.can_write_through(ref_edge, root_0));
+
+        // root_ptr2 = addr_of!(root)
+        let root_ptr2 = Local::new(4);
+        pt.allocate_local(root_ptr2, t_ptr);
+        pt.set_ref(root_ptr2, root, None);
+        let ptr2_edge = pt.ref_edge(root_ptr2.to_place_index(&pt).unwrap()).unwrap();
+
+        // (*root_ptr2).0 cannot be written to
+        assert!(!pt.can_write_through(ptr2_edge, root_0));
+
+        // Writing through (*root_ptr1).0
+        pt.place_written(root_0);
+
+        // (*root_ref).0 is invalidated
+        assert!(!pt.can_read_through(ref_edge, root_0));
+
+        // (*root_ptr2).0 is invalidated
+        assert!(!pt.can_read_through(ptr2_edge, root_0));
+
+        // (*root_ref).1 is not invalidated
+        assert!(pt.can_read_through(ref_edge, root_1));
+
+        // (*root_ptr2).1 is not invalidated
+        assert!(pt.can_read_through(ptr2_edge, root_1));
+
+        // *root_ptr1 is not invalidated
+        assert!(pt.can_read_through(ptr1_edge, root.to_place_index(&pt).unwrap(),));
+    }
 }
