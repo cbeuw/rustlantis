@@ -255,10 +255,11 @@ impl PlaceTable {
             Local::RET.to_place_index(self).expect("ret exists"),
             |node| {
                 if self.ty(node).is_ref(&self.tcx) {
-                    let pointee = self.pointee(node).expect("points to something");
-                    if local_allocs.contains(&self.places[pointee].alloc_id) {
-                        has_stack_ref = true;
-                        return VisitAction::ShortCircuit;
+                    if let Some(pointee) = self.pointee(node) {
+                        if local_allocs.contains(&self.places[pointee].alloc_id) {
+                            has_stack_ref = true;
+                            return VisitAction::ShortCircuit;
+                        }
                     }
                     return VisitAction::Stop;
                 }
@@ -289,9 +290,7 @@ impl PlaceTable {
                 VisitAction::Continue
             });
         }
-        for edge in ref_edges {
-            self.remove_edge(edge);
-        }
+        self.remove_edges(&ref_edges);
 
         // Deallocate places
         for pidx in old_frame.locals.right_values() {
@@ -473,11 +472,7 @@ impl PlaceTable {
                 .chain(this.places.edges_directed(place, Direction::Incoming))
                 .filter_map(|e| (e.weight() == &ProjectionElem::Deref).then_some(e.id()))
                 .collect();
-            // We are keeping EdgeIndices across calls to remove_edge. This means that we have to use
-            // StableGraph
-            for edge in refs {
-                this.remove_edge(edge);
-            }
+            this.remove_edges(&refs);
             VisitAction::Continue
         });
     }
@@ -504,11 +499,11 @@ impl PlaceTable {
         }
 
         if dst_node.ty.is_any_ptr(&self.tcx) {
+            if let Some(pointee) = self.pointee(src) {
+                self.set_ref(dst, pointee, Some(src));
+            }
             if let Some(old) = self.ref_edge(dst) {
                 self.remove_edge(old);
-            }
-            if let Some(pointee) = self.pointee(src) {
-                self.set_ref(dst, pointee);
             }
             self.places[dst].offset = self.places[src].offset;
         }
@@ -727,7 +722,12 @@ impl PlaceTable {
     }
 
     /// Creates an edge pointer -[Deref]-> pointee
-    pub fn set_ref(&mut self, pointer: impl ToPlaceIndex, pointee: impl ToPlaceIndex) {
+    pub fn set_ref(
+        &mut self,
+        pointer: impl ToPlaceIndex,
+        pointee: impl ToPlaceIndex,
+        copied_from: Option<PlaceIndex>,
+    ) {
         let pointer = pointer.to_place_index(self).expect("place exists");
         let pointee = pointee.to_place_index(self).expect("place exists");
 
@@ -743,18 +743,8 @@ impl PlaceTable {
             _ => panic!("source must be of pointer type"),
         };
 
-        // Remove any old ref edges
-        if let Some(old) = self.ref_edge(pointer) {
-            self.remove_edge(old);
-        }
-        assert_eq!(
-            self.places
-                .edges_directed(pointer, Direction::Outgoing)
-                .count(),
-            0
-        );
+        let old = self.ref_edge(pointer);
         self.places[pointer].offset = None;
-
         self.update_complexity(pointer, self.places[pointee].complexity);
 
         // Add new ref edge
@@ -762,14 +752,41 @@ impl PlaceTable {
             .places
             .add_edge(pointer, pointee, ProjectionElem::Deref);
 
-        self.update_transitive_subfields(pointee, |this, place| {
-            if let Some(run) = this.places[place].run_ptr {
-                this.memory.add_ref(run, ref_type, edge_id);
-                VisitAction::Stop
+        if let Some(copied_from) = copied_from {
+            let old_edge = if copied_from == pointer {
+                // If we're doing something like x = x, then we cannot call
+                // ref_edge on x as there are two Deref edges coming out of it now.
+                old.expect("copied from pointer has deref")
             } else {
-                VisitAction::Continue
-            }
-        });
+                self.ref_edge(copied_from)
+                    .expect("copied from pointer has deref")
+            };
+            // If we are copying an existing pointer, it may not have borrow entry
+            // across all bytes.
+            self.memory.copy_ref(edge_id, old_edge, ref_type);
+        } else {
+            self.update_transitive_subfields(pointee, |this, place| {
+                if let Some(run) = this.places[place].run_ptr {
+                    this.memory.add_ref(run, ref_type, edge_id);
+                    VisitAction::Stop
+                } else {
+                    VisitAction::Continue
+                }
+            });
+        }
+
+        // We must remove the old one after adding the new one,
+        // as copy_ref relies on it.
+        if let Some(old) = old {
+            self.remove_edge(old);
+        }
+
+        assert_eq!(
+            self.places
+                .edges_directed(pointer, Direction::Outgoing)
+                .count(),
+            1
+        );
     }
 
     pub fn is_place_live(&self, p: impl ToPlaceIndex) -> bool {
@@ -1000,10 +1017,10 @@ impl PlaceTable {
         self.update_transitive_subfields(p, |this, place| {
             if let Some(run) = this.places[place].run_ptr {
                 let invalidated = this.memory.below_first_shared(run);
+                // TODO: don't copy partially invalidated refs
                 for edge in invalidated {
                     let all_gone = this.memory.remove_ref_run_ptr(edge, run);
                     if all_gone {
-                        // TODO invalidate the reference as it cannot be read even if only partially removed
                         this.remove_edge(edge);
                     }
                 }
@@ -1055,19 +1072,31 @@ impl PlaceTable {
         can
     }
 
+    fn remove_edges(&mut self, edges: &[ProjectionIndex]) {
+        for &edge in edges {
+            self.remove_edge(edge);
+        }
+    }
+
     // petgraph::StableGraph does not allow us to hang onto graph indicies that have been
     // removed (they may get reused by irrelevant edges). So we need to clean up everything
     // when removing an edge
     // Also we need to mark reference uninit if the edge is removed (though not raw pointers)
     fn remove_edge(&mut self, e: ProjectionIndex) {
+        self.memory.remove_ref(e);
+
+        // for e in removed {
         let (source, _) = self.places.edge_endpoints(e).expect("edge exists");
         // FIXME: why do we need a live check?
         if self.ty(source).is_ref(&self.tcx) && self.is_place_live(source) {
             let run_ptr = self.places[source].run_ptr.expect("pointer is a scalar");
             self.memory.fill(run_ptr, AbstractByte::Uninit);
         }
-        self.memory.remove_ref(e);
-        self.places.remove_edge(e).expect("edge exists");
+
+        // TODO: no need to do this for raw pointers for cascaded removals
+        let removed = self.places.remove_edge(e).expect("edge exists");
+        assert!(removed.is_deref());
+        // }
     }
 }
 
@@ -1400,9 +1429,9 @@ mod tests {
             tuple,
             &[ProjectionElem::TupleField(FieldIdx::from_usize(0))],
         );
-        pt.set_ref(tuple_0.clone(), int);
+        pt.set_ref(tuple_0.clone(), int, None);
 
-        pt.set_ref(root, tuple);
+        pt.set_ref(root, tuple, None);
 
         let visited: Vec<PlaceIndex> = pt
             .reachable_from_node(root.to_place_index(&pt).unwrap())
@@ -1629,5 +1658,31 @@ mod tests {
 
         // *root_ptr1 is not invalidated
         assert!(pt.can_read_through(ptr1_edge, root.to_place_index(&pt).unwrap(),));
+    }
+
+    #[test]
+    fn reborrow() {
+        let mut tcx = TyCtxt::from_primitives();
+
+        let t_ref = tcx.push(TyKind::Ref(TyCtxt::I32, Mutability::Not));
+
+        let mut pt = PlaceTable::new(Rc::new(tcx));
+
+        let int = Local::new(1);
+        pt.allocate_local(int, TyCtxt::I32);
+
+        // int_ref = &int
+        let int_ref = Local::new(2);
+        pt.allocate_local(int_ref, t_ref);
+        let int_ref_p = int_ref.to_place_index(&pt).unwrap();
+        pt.set_ref(int_ref, int, None);
+
+        // int_ref = &*int_ref
+        pt.set_ref(int_ref, int, Some(int_ref_p));
+
+        pt.place_written(int);
+        assert!(!pt
+            .places
+            .contains_edge(int_ref_p, int.to_place_index(&pt).unwrap()));
     }
 }

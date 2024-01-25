@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt, mem, ops::Range};
+use std::{
+    collections::{HashMap, BTreeSet},
+    fmt, mem,
+    ops::Range,
+};
 
 use abi::size::Size;
 use index_vec::{define_index_type, IndexVec};
@@ -87,18 +91,28 @@ impl Run {
 
     /// Gets all edges including and below edge (and therefore potentially borrowed from it)
     pub fn below(&self, offset: Size, len: Size, edge: ProjectionIndex) -> Vec<ProjectionIndex> {
-        let mut edges = vec![];
+        let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let index = stack.iter().position(|borrow| borrow.edge == edge);
             if let Some(index) = index {
                 edges.extend(stack[index..].iter().map(|borrow| borrow.edge));
             }
         }
-        edges
+        edges.iter().copied().collect()
+    }
+
+    pub fn first_shared(&self, offset: Size, len: Size) -> Option<ProjectionIndex> {
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let first_shared = stack
+                .iter()
+                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
+            return first_shared.map(|index| stack[index].edge);
+        }
+        None
     }
 
     pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<ProjectionIndex> {
-        let mut edges = vec![];
+        let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
                 .iter()
@@ -107,17 +121,34 @@ impl Run {
                 edges.extend(stack[first_shared..].iter().map(|borrow| borrow.edge));
             }
         }
-        edges
+        edges.iter().copied().collect()
     }
 
     pub fn above_first_shared(&self, offset: Size, len: Size) -> Vec<ProjectionIndex> {
-        let mut edges = vec![];
+        let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
                 .iter()
                 .position(|borrow| borrow.borrow_type == BorrowType::Shared);
             if let Some(first_shared) = first_shared {
                 edges.extend(stack[..first_shared].iter().map(|borrow| borrow.edge));
+            }
+        }
+        edges.iter().copied().collect()
+    }
+
+    pub fn remove_all_below(
+        &mut self,
+        offset: Size,
+        len: Size,
+        edge: ProjectionIndex,
+    ) -> Vec<ProjectionIndex> {
+        let mut edges = vec![];
+        for (_, stack) in self.ref_stack.iter_mut(offset, len) {
+            let index = stack.iter().position(|borrow| borrow.edge == edge);
+            if let Some(index) = index {
+                edges.extend(stack[index..].iter().map(|borrow| borrow.edge));
+                stack.truncate(index);
             }
         }
         edges
@@ -356,6 +387,25 @@ impl BasicMemory {
         })
     }
 
+    pub fn copy_ref(
+        &mut self,
+        new: ProjectionIndex,
+        old: ProjectionIndex,
+        // We should be able to get this information ourselves
+        borrow_type: BorrowType,
+    ) {
+        assert_ne!(new, old);
+        for run_ptr in &self.pointers[&old] {
+            self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].add_borrow(
+                run_ptr.run_and_offset.1,
+                run_ptr.size,
+                borrow_type,
+                new,
+            );
+        }
+        self.pointers.insert(new, self.pointers[&old].clone());
+    }
+
     pub fn add_ref(&mut self, run_ptr: RunPointer, borrow_type: BorrowType, edge: ProjectionIndex) {
         self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].add_borrow(
             run_ptr.run_and_offset.1,
@@ -383,6 +433,57 @@ impl BasicMemory {
         }
     }
 
+    /// Remove a range (run_ptr) from the lookup table.
+    fn derange(&mut self, edge: ProjectionIndex, run_ptr: RunPointer) {
+        if let Some(all_run_ptrs) = self.pointers.get(&edge) {
+            // Check if the run_ptr we removed overlaps with ones cached, then remove/split them as necessary
+            let mut updated = SmallVec::new();
+            for stored in all_run_ptrs {
+                if stored.overlap(&run_ptr) {
+                    let left_and_right = stored.bytes_range().subtract(&run_ptr.bytes_range());
+                    for range in left_and_right {
+                        if let Some(range) = range {
+                            updated.push(RunPointer::from_bytes_range(
+                                range,
+                                stored.alloc_id,
+                                stored.run(),
+                            ));
+                        }
+                    }
+                } else {
+                    updated.push(*stored);
+                }
+            }
+
+            let empty = updated.is_empty();
+            if empty {
+                self.pointers.remove(&edge);
+            } else {
+                self.pointers.insert(edge, updated);
+            }
+        }
+    }
+
+    /// Remove all refs including and below from a run. Returns a list of edges with no valid borrows
+    /// left in any run after removal
+    pub fn remove_ref_below(
+        &mut self,
+        edge: ProjectionIndex,
+        run_ptr: RunPointer,
+    ) -> Vec<ProjectionIndex> {
+        let removed = self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
+            .remove_all_below(run_ptr.run_and_offset.1, run_ptr.size, edge);
+
+        let mut all_gone = vec![];
+        for edge in removed {
+            self.derange(edge, run_ptr);
+            if !self.pointers.contains_key(&edge) {
+                all_gone.push(edge);
+            }
+        }
+        return all_gone;
+    }
+
     /// Remove ref for a run ptr. Returns true if the ref is no longer present in any
     /// borrow stack
     pub fn remove_ref_run_ptr(&mut self, edge: ProjectionIndex, run_ptr: RunPointer) -> bool {
@@ -392,33 +493,13 @@ impl BasicMemory {
             edge,
         );
 
-        let all_run_ptrs = &self.pointers[&edge];
-        // Check if the run_ptr we removed overlaps with ones cached, then remove/split them as necessary
-        let mut updated = SmallVec::new();
-        for stored in all_run_ptrs {
-            if stored.overlap(&run_ptr) {
-                let left_and_right = stored.bytes_range().subtract(&run_ptr.bytes_range());
-                for range in left_and_right {
-                    if let Some(range) = range {
-                        updated.push(RunPointer::from_bytes_range(
-                            range,
-                            stored.alloc_id,
-                            stored.run(),
-                        ));
-                    }
-                }
-            } else {
-                updated.push(*stored);
-            }
-        }
+        self.derange(edge, run_ptr);
+        !self.pointers.contains_key(&edge)
+    }
 
-        let empty = updated.is_empty();
-        if empty {
-            self.pointers.remove(&edge);
-        } else {
-            self.pointers.insert(edge, updated);
-        }
-        empty
+    pub fn first_shared(&self, run_ptr: RunPointer) -> Option<ProjectionIndex> {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
+            .first_shared(run_ptr.run_and_offset.1, run_ptr.size)
     }
 
     pub fn below_first_shared(&self, run_ptr: RunPointer) -> Vec<ProjectionIndex> {

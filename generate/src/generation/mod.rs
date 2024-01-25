@@ -1297,7 +1297,7 @@ impl GenerationCtx {
                         Rvalue::AddressOf(_, referent) | Rvalue::Ref(_, referent) => {
                             let referent = referent.to_place_index(&self.pt).unwrap();
                             actions.push(Box::new(move |pt| {
-                                pt.set_ref(lhs, referent);
+                                pt.set_ref(lhs, referent, None);
                             }));
                         }
                         _ => {
