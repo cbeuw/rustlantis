@@ -752,6 +752,7 @@ impl Program {
         println!("fn{f}:_{var0} = {val0:?}\n_{var1} = {val1:?}\n_{var2} = {val2:?}\n_{var3} = {val3:?}");
     }
     "#;
+    // Implements printf based debuggig for primitive types.
     pub const PRINTF_DUMPER: &'static str = r#"
     use std::ffi::{c_char, c_int};
 
@@ -968,6 +969,27 @@ impl Program {
             self.5.printf_debug();
             unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.6.printf_debug();
+            unsafe{printf(")\0".as_ptr() as *const c_char)};
+        }
+    }
+    impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug,F:PrintFDebug,G:PrintFDebug,H:PrintFDebug> PrintFDebug for (A,B,C,D,E,F,G,H){
+        fn printf_debug(&self){
+            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            self.0.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.1.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.2.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.3.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.4.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.5.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.6.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.7.printf_debug();
             unsafe{printf(")\0".as_ptr() as *const c_char)};
         }
     }
