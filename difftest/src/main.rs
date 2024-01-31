@@ -9,7 +9,7 @@ use difftest::{
     backends::{Backend, Cranelift, Miri, OptLevel, GCC, LLVM},
     run_diff_test, BackendName,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 
 fn main() -> ExitCode {
     env_logger::init();

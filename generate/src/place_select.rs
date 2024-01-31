@@ -189,23 +189,20 @@ impl PlaceSelector {
                 return false;
             }
 
-            match self.usage {
-                // writes
-                PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
-                    if ppath
-                        .projection_indices()
-                        .any(|e| !pt.can_write_through(e, ppath.target_index(pt)))
-                    {
-                        return false;
+            // We assume that if path has a deref, then the source is the pointer
+            if ppath.projections(pt).any(|proj| proj.is_deref()) {
+                match self.usage {
+                    // writes
+                    PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
+                        if !pt.can_write_through(ppath.source(), ppath.target_index(pt)) {
+                            return false;
+                        }
                     }
-                }
-                // reads
-                _ => {
-                    if ppath
-                        .projection_indices()
-                        .any(|e| !pt.can_read_through(e, ppath.target_index(pt)))
-                    {
-                        return false;
+                    // reads
+                    _ => {
+                        if !pt.can_read_through(ppath.source(), ppath.target_index(pt)) {
+                            return false;
+                        }
                     }
                 }
             }

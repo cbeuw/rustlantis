@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, BTreeSet},
+    collections::{BTreeSet, HashMap},
     fmt, mem,
     ops::Range,
 };
@@ -13,7 +13,7 @@ use mir::{
 use rangemap::RangeMap;
 use smallvec::SmallVec;
 
-use crate::ptable::ProjectionIndex;
+define_index_type! {pub struct Tag = u32;}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AbstractByte {
@@ -48,7 +48,7 @@ pub enum BorrowType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Borrow {
     borrow_type: BorrowType,
-    edge: ProjectionIndex,
+    tag: Tag,
 }
 
 /// A Run represents a contiguous region of memory free of padding
@@ -69,101 +69,90 @@ impl Run {
         Size::from_bytes(self.bytes.len())
     }
 
-    pub fn add_borrow(
-        &mut self,
-        offset: Size,
-        len: Size,
-        borrow_type: BorrowType,
-        edge: ProjectionIndex,
-    ) {
+    pub fn add_borrow(&mut self, offset: Size, len: Size, borrow_type: BorrowType, tag: Tag) {
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
-            stack.push(Borrow { borrow_type, edge });
+            stack.push(Borrow { borrow_type, tag });
         }
     }
 
-    pub fn remove_borrow(&mut self, offset: Size, len: Size, edge: ProjectionIndex) {
+    pub fn remove_borrow(&mut self, offset: Size, len: Size, tag: Tag) {
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
-            if let Some(i) = stack.iter().position(|b| b.edge == edge) {
+            if let Some(i) = stack.iter().position(|b| b.tag == tag) {
                 stack.remove(i);
             }
         }
     }
 
-    /// Gets all edges including and below edge (and therefore potentially borrowed from it)
-    pub fn below(&self, offset: Size, len: Size, edge: ProjectionIndex) -> Vec<ProjectionIndex> {
+    /// Gets all tag including and below edge (and therefore potentially borrowed from it)
+    pub fn below(&self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
         let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
-            let index = stack.iter().position(|borrow| borrow.edge == edge);
+            let index = stack.iter().position(|borrow| borrow.tag == tag);
             if let Some(index) = index {
-                edges.extend(stack[index..].iter().map(|borrow| borrow.edge));
+                edges.extend(stack[index..].iter().map(|borrow| borrow.tag));
             }
         }
         edges.iter().copied().collect()
     }
 
-    pub fn first_shared(&self, offset: Size, len: Size) -> Option<ProjectionIndex> {
+    pub fn first_shared(&self, offset: Size, len: Size) -> Option<Tag> {
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
                 .iter()
                 .position(|borrow| borrow.borrow_type == BorrowType::Shared);
-            return first_shared.map(|index| stack[index].edge);
+            return first_shared.map(|index| stack[index].tag);
         }
         None
     }
 
-    pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<ProjectionIndex> {
+    pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
         let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
                 .iter()
                 .position(|borrow| borrow.borrow_type == BorrowType::Shared);
             if let Some(first_shared) = first_shared {
-                edges.extend(stack[first_shared..].iter().map(|borrow| borrow.edge));
+                edges.extend(stack[first_shared..].iter().map(|borrow| borrow.tag));
             }
         }
         edges.iter().copied().collect()
     }
 
-    pub fn above_first_shared(&self, offset: Size, len: Size) -> Vec<ProjectionIndex> {
+    pub fn above_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
         let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
                 .iter()
                 .position(|borrow| borrow.borrow_type == BorrowType::Shared);
             if let Some(first_shared) = first_shared {
-                edges.extend(stack[..first_shared].iter().map(|borrow| borrow.edge));
+                edges.extend(stack[..first_shared].iter().map(|borrow| borrow.tag));
             }
         }
         edges.iter().copied().collect()
     }
 
-    pub fn remove_all_below(
-        &mut self,
-        offset: Size,
-        len: Size,
-        edge: ProjectionIndex,
-    ) -> Vec<ProjectionIndex> {
+    pub fn remove_all_below(&mut self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
         let mut edges = vec![];
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
-            let index = stack.iter().position(|borrow| borrow.edge == edge);
+            let index = stack.iter().position(|borrow| borrow.tag == tag);
             if let Some(index) = index {
-                edges.extend(stack[index..].iter().map(|borrow| borrow.edge));
+                edges.extend(stack[index..].iter().map(|borrow| borrow.tag));
                 stack.truncate(index);
             }
         }
         edges
     }
 
-    pub fn can_read_through(&self, offset: Size, len: Size, edge: ProjectionIndex) -> bool {
+    pub fn can_read_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
         //FIXME: performance
         self.ref_stack
             .iter(offset, len)
-            .all(|(_, stack)| stack.iter().find(|borrow| borrow.edge == edge).is_some())
+            .all(|(_, stack)| stack.iter().find(|borrow| borrow.tag == tag).is_some())
     }
 
-    pub fn can_write_through(&self, offset: Size, len: Size, edge: ProjectionIndex) -> bool {
+    pub fn can_write_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
         //FIXME: performance
-        self.above_first_shared(offset, len).contains(&edge)
+        self.above_first_shared(offset, len).contains(&tag)
     }
 }
 
@@ -296,8 +285,8 @@ pub struct BasicMemory {
     allocations: IndexVec<AllocId, Allocation>,
 
     // a lookup table to aid removal from borrow stacks
-    // an edge may cover multiple runs, e.g. &(u32, u32),
-    pointers: HashMap<ProjectionIndex, SmallVec<[RunPointer; 4]>>,
+    // a tag may cover multiple runs, e.g. &(u32, u32),
+    pointers: HashMap<Tag, SmallVec<[RunPointer; 4]>>,
 }
 
 impl BasicMemory {
@@ -387,55 +376,36 @@ impl BasicMemory {
         })
     }
 
-    pub fn copy_ref(
-        &mut self,
-        new: ProjectionIndex,
-        old: ProjectionIndex,
-        // We should be able to get this information ourselves
-        borrow_type: BorrowType,
-    ) {
-        assert_ne!(new, old);
-        for run_ptr in &self.pointers[&old] {
-            self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].add_borrow(
-                run_ptr.run_and_offset.1,
-                run_ptr.size,
-                borrow_type,
-                new,
-            );
-        }
-        self.pointers.insert(new, self.pointers[&old].clone());
-    }
-
-    pub fn add_ref(&mut self, run_ptr: RunPointer, borrow_type: BorrowType, edge: ProjectionIndex) {
+    pub fn add_ref(&mut self, run_ptr: RunPointer, borrow_type: BorrowType, tag: Tag) {
         self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].add_borrow(
             run_ptr.run_and_offset.1,
             run_ptr.size,
             borrow_type,
-            edge,
+            tag,
         );
         self.pointers
-            .entry(edge)
+            .entry(tag)
             .and_modify(|ptrs| ptrs.push(run_ptr))
             .or_insert(SmallVec::from([run_ptr].as_slice()));
     }
 
-    /// Remove ref for all runs
-    pub fn remove_ref(&mut self, edge: ProjectionIndex) {
-        let run_ptrs = self.pointers.remove(&edge);
+    /// Remove tag for all runs
+    pub fn remove_tag(&mut self, tag: Tag) {
+        let run_ptrs = self.pointers.remove(&tag);
         if let Some(run_ptrs) = run_ptrs {
             for run_ptr in run_ptrs {
                 self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].remove_borrow(
                     run_ptr.run_and_offset.1,
                     run_ptr.size,
-                    edge,
+                    tag,
                 );
             }
         }
     }
 
     /// Remove a range (run_ptr) from the lookup table.
-    fn derange(&mut self, edge: ProjectionIndex, run_ptr: RunPointer) {
-        if let Some(all_run_ptrs) = self.pointers.get(&edge) {
+    fn derange(&mut self, tag: Tag, run_ptr: RunPointer) {
+        if let Some(all_run_ptrs) = self.pointers.get(&tag) {
             // Check if the run_ptr we removed overlaps with ones cached, then remove/split them as necessary
             let mut updated = SmallVec::new();
             for stored in all_run_ptrs {
@@ -457,22 +427,18 @@ impl BasicMemory {
 
             let empty = updated.is_empty();
             if empty {
-                self.pointers.remove(&edge);
+                self.pointers.remove(&tag);
             } else {
-                self.pointers.insert(edge, updated);
+                self.pointers.insert(tag, updated);
             }
         }
     }
 
-    /// Remove all refs including and below from a run. Returns a list of edges with no valid borrows
+    /// Remove all tags including and below from a run. Returns a list of edges with no valid borrows
     /// left in any run after removal
-    pub fn remove_ref_below(
-        &mut self,
-        edge: ProjectionIndex,
-        run_ptr: RunPointer,
-    ) -> Vec<ProjectionIndex> {
+    pub fn remove_tags_below(&mut self, tag: Tag, run_ptr: RunPointer) -> Vec<Tag> {
         let removed = self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
-            .remove_all_below(run_ptr.run_and_offset.1, run_ptr.size, edge);
+            .remove_all_below(run_ptr.run_and_offset.1, run_ptr.size, tag);
 
         let mut all_gone = vec![];
         for edge in removed {
@@ -484,42 +450,42 @@ impl BasicMemory {
         return all_gone;
     }
 
-    /// Remove ref for a run ptr. Returns true if the ref is no longer present in any
+    /// Remove tag for a run ptr. Returns true if the ref is no longer present in any
     /// borrow stack
-    pub fn remove_ref_run_ptr(&mut self, edge: ProjectionIndex, run_ptr: RunPointer) -> bool {
+    pub fn remove_tag_run_ptr(&mut self, tag: Tag, run_ptr: RunPointer) -> bool {
         self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].remove_borrow(
             run_ptr.run_and_offset.1,
             run_ptr.size,
-            edge,
+            tag,
         );
 
-        self.derange(edge, run_ptr);
-        !self.pointers.contains_key(&edge)
+        self.derange(tag, run_ptr);
+        !self.pointers.contains_key(&tag)
     }
 
-    pub fn first_shared(&self, run_ptr: RunPointer) -> Option<ProjectionIndex> {
+    pub fn first_shared(&self, run_ptr: RunPointer) -> Option<Tag> {
         self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
             .first_shared(run_ptr.run_and_offset.1, run_ptr.size)
     }
 
-    pub fn below_first_shared(&self, run_ptr: RunPointer) -> Vec<ProjectionIndex> {
+    pub fn below_first_shared(&self, run_ptr: RunPointer) -> Vec<Tag> {
         self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
             .below_first_shared(run_ptr.run_and_offset.1, run_ptr.size)
     }
 
-    pub fn can_read_through(&self, run_ptr: RunPointer, edge: ProjectionIndex) -> bool {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].can_read_through(
+    pub fn can_read_with(&self, run_ptr: RunPointer, tag: Tag) -> bool {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].can_read_with(
             run_ptr.run_and_offset.1,
             run_ptr.size,
-            edge,
+            tag,
         )
     }
 
-    pub fn can_write_through(&self, run_ptr: RunPointer, edge: ProjectionIndex) -> bool {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].can_write_through(
+    pub fn can_write_with(&self, run_ptr: RunPointer, tag: Tag) -> bool {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].can_write_with(
             run_ptr.run_and_offset.1,
             run_ptr.size,
-            edge,
+            tag,
         )
     }
 }

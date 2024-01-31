@@ -1,11 +1,12 @@
 use std::{
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::{BTreeSet, BinaryHeap, HashMap, HashSet},
     iter,
     rc::Rc,
     vec,
 };
 
 use bimap::BiHashMap;
+use index_vec::IndexVec;
 use mir::{
     syntax::{
         Body, FieldIdx, Literal, Local, Mutability, Operand, Place, ProjectionElem, Rvalue, TyId,
@@ -18,7 +19,9 @@ use petgraph::{
 };
 use smallvec::{smallvec, SmallVec};
 
-use crate::mem::{AbstractByte, AllocId, AllocationBuilder, BasicMemory, BorrowType, RunPointer};
+use crate::mem::{
+    AbstractByte, AllocId, AllocationBuilder, BasicMemory, BorrowType, RunPointer, Tag,
+};
 
 type PlaceGraph = StableGraph<PlaceNode, ProjectionElem>;
 pub type PlaceIndex = NodeIndex;
@@ -92,6 +95,7 @@ pub struct PlaceTable {
     /// The callstack
     frames: Vec<Frame>,
     index_candidates: HashMap<usize, SmallVec<[Local; 1]>>,
+    pointer_tags: IndexVec<Tag, BTreeSet<PlaceIndex>>,
 
     places: PlaceGraph,
     memory: BasicMemory,
@@ -110,11 +114,14 @@ pub struct PlaceNode {
     // Remember the value of simple literals
     val: Option<Literal>,
 
-    // Offsetted pointer value
+    // Offsetted raw pointer value
     offset: Option<isize>,
 
     // For enum types, the currently active variant
     active_variant: Option<VariantIdx>,
+
+    // Tags of raw pointer or references
+    tag: Option<Tag>,
 }
 
 pub trait ToPlaceIndex {
@@ -168,6 +175,7 @@ impl PlaceTable {
                 iter::empty(),
             )],
             index_candidates: HashMap::new(),
+            pointer_tags: IndexVec::new(),
             places: StableGraph::default(),
             memory: BasicMemory::new(),
             tcx,
@@ -290,7 +298,9 @@ impl PlaceTable {
                 VisitAction::Continue
             });
         }
-        self.remove_edges(&ref_edges);
+        for edge in ref_edges {
+            self.remove_edge(edge);
+        }
 
         // Deallocate places
         for pidx in old_frame.locals.right_values() {
@@ -331,6 +341,7 @@ impl PlaceTable {
                 val: None,
                 offset: None,
                 active_variant: None,
+                tag: None,
             })
         } else if let Some(size) = BasicMemory::ty_size(ty, tcx) {
             let run_and_offset = alloc_builder.new_run(size);
@@ -346,6 +357,7 @@ impl PlaceTable {
                 val: None,
                 offset: None,
                 active_variant: None,
+                tag: None,
             })
         } else {
             places.add_node(PlaceNode {
@@ -356,6 +368,7 @@ impl PlaceTable {
                 val: None,
                 offset: None,
                 active_variant: None,
+                tag: None,
             })
         };
         match ty.kind(tcx) {
@@ -472,7 +485,9 @@ impl PlaceTable {
                 .chain(this.places.edges_directed(place, Direction::Incoming))
                 .filter_map(|e| (e.weight() == &ProjectionElem::Deref).then_some(e.id()))
                 .collect();
-            this.remove_edges(&refs);
+            for edge in refs {
+                this.remove_edge(edge);
+            }
             VisitAction::Continue
         });
     }
@@ -743,42 +758,32 @@ impl PlaceTable {
             _ => panic!("source must be of pointer type"),
         };
 
-        let old = self.ref_edge(pointer);
+        if let Some(old) = self.ref_edge(pointer) {
+            self.remove_edge(old);
+        }
+
         self.places[pointer].offset = None;
         self.update_complexity(pointer, self.places[pointee].complexity);
 
         // Add new ref edge
-        let edge_id = self
-            .places
+        self.places
             .add_edge(pointer, pointee, ProjectionElem::Deref);
 
         if let Some(copied_from) = copied_from {
-            let old_edge = if copied_from == pointer {
-                // If we're doing something like x = x, then we cannot call
-                // ref_edge on x as there are two Deref edges coming out of it now.
-                old.expect("copied from pointer has deref")
-            } else {
-                self.ref_edge(copied_from)
-                    .expect("copied from pointer has deref")
-            };
-            // If we are copying an existing pointer, it may not have borrow entry
-            // across all bytes.
-            self.memory.copy_ref(edge_id, old_edge, ref_type);
+            let tag = self.places[copied_from].tag.expect("has tag");
+            self.places[pointer].tag = Some(tag);
+            self.pointer_tags[tag].insert(pointer);
         } else {
+            let tag = self.pointer_tags.push(BTreeSet::from([pointer]));
+            self.places[pointer].tag = Some(tag);
             self.update_transitive_subfields(pointee, |this, place| {
                 if let Some(run) = this.places[place].run_ptr {
-                    this.memory.add_ref(run, ref_type, edge_id);
+                    this.memory.add_ref(run, ref_type, tag);
                     VisitAction::Stop
                 } else {
                     VisitAction::Continue
                 }
             });
-        }
-
-        // We must remove the old one after adding the new one,
-        // as copy_ref relies on it.
-        if let Some(old) = old {
-            self.remove_edge(old);
         }
 
         assert_eq!(
@@ -1018,10 +1023,13 @@ impl PlaceTable {
             if let Some(run) = this.places[place].run_ptr {
                 let invalidated = this.memory.below_first_shared(run);
                 // TODO: don't copy partially invalidated refs
-                for edge in invalidated {
-                    let all_gone = this.memory.remove_ref_run_ptr(edge, run);
+                for tag in invalidated {
+                    let all_gone = this.memory.remove_tag_run_ptr(tag, run);
                     if all_gone {
-                        this.remove_edge(edge);
+                        for pointer in this.pointer_tags[tag].clone() {
+                            let edge = this.ref_edge(pointer).expect("has edge");
+                            this.remove_edge(edge);
+                        }
                     }
                 }
                 VisitAction::Stop
@@ -1031,15 +1039,24 @@ impl PlaceTable {
         });
     }
 
-    pub fn can_read_through(&self, e: ProjectionIndex, p: PlaceIndex) -> bool {
-        if !self.places[e].is_deref() {
-            // You can always read through a non-Deref edge
+    pub fn can_read_through(&self, ptr: PlaceIndex, p: PlaceIndex) -> bool {
+        assert_ne!(ptr, p);
+
+        if ptr == p {
             return true;
         }
+        if !self.ty(ptr).is_any_ptr(&self.tcx) {
+            // You can always read through a non-pointer
+            return true;
+        }
+        let Some(tag) = self.places[ptr].tag else {
+            // Has no permission
+            return false;
+        };
         let mut can = true;
         self.visit_transitive_subfields(p, |node| {
             if let Some(run) = self.places[node].run_ptr {
-                if !self.memory.can_read_through(run, e) {
+                if !self.memory.can_read_with(run, tag) {
                     can = false;
                     return VisitAction::ShortCircuit;
                 }
@@ -1051,16 +1068,22 @@ impl PlaceTable {
         can
     }
 
-    /// Checks if a Deref edge can be used to write through its target
-    pub fn can_write_through(&self, e: ProjectionIndex, p: PlaceIndex) -> bool {
-        if !self.places[e].is_deref() {
-            // You can always write through a non-Deref edge
+    /// Checks if a pointer can be used to write through its target
+    pub fn can_write_through(&self, ptr: PlaceIndex, p: PlaceIndex) -> bool {
+        assert_ne!(ptr, p);
+
+        if !self.ty(ptr).is_any_ptr(&self.tcx) {
+            // You can always read through a non-pointer
             return true;
         }
+        let Some(tag) = self.places[ptr].tag else {
+            // Has no permission
+            return false;
+        };
         let mut can = true;
         self.visit_transitive_subfields(p, |node| {
             if let Some(run) = self.places[node].run_ptr {
-                if !self.memory.can_write_through(run, e) {
+                if !self.memory.can_write_with(run, tag) {
                     can = false;
                     return VisitAction::ShortCircuit;
                 }
@@ -1072,31 +1095,19 @@ impl PlaceTable {
         can
     }
 
-    fn remove_edges(&mut self, edges: &[ProjectionIndex]) {
-        for &edge in edges {
-            self.remove_edge(edge);
-        }
-    }
-
-    // petgraph::StableGraph does not allow us to hang onto graph indicies that have been
-    // removed (they may get reused by irrelevant edges). So we need to clean up everything
-    // when removing an edge
-    // Also we need to mark reference uninit if the edge is removed (though not raw pointers)
+    // We need to mark reference uninit if the edge is removed (though not raw pointers)
     fn remove_edge(&mut self, e: ProjectionIndex) {
-        self.memory.remove_ref(e);
-
-        // for e in removed {
         let (source, _) = self.places.edge_endpoints(e).expect("edge exists");
-        // FIXME: why do we need a live check?
-        if self.ty(source).is_ref(&self.tcx) && self.is_place_live(source) {
+        let tag = self.places[source].tag.expect("has tag");
+        let edges = &mut self.pointer_tags[tag];
+        edges.remove(&source);
+        if self.ty(source).is_ref(&self.tcx) {
             let run_ptr = self.places[source].run_ptr.expect("pointer is a scalar");
             self.memory.fill(run_ptr, AbstractByte::Uninit);
         }
 
-        // TODO: no need to do this for raw pointers for cascaded removals
         let removed = self.places.remove_edge(e).expect("edge exists");
         assert!(removed.is_deref());
-        // }
     }
 }
 
@@ -1107,6 +1118,10 @@ pub struct PlacePath {
 }
 
 impl PlacePath {
+    pub fn source(&self) -> NodeIndex {
+        self.source
+    }
+
     pub fn to_place(&self, pt: &PlaceTable) -> Place {
         let projs: SmallVec<[ProjectionElem; 8]> = self
             .path
@@ -1618,46 +1633,46 @@ mod tests {
         let root_ptr1 = Local::new(2);
         pt.allocate_local(root_ptr1, t_ptr);
         pt.set_ref(root_ptr1, root, None);
-        let ptr1_edge = pt.ref_edge(root_ptr1.to_place_index(&pt).unwrap()).unwrap();
+        let root_ptr1_p = root_ptr1.to_place_index(&pt).unwrap();
 
         // root_ref = &root
         let root_ref = Local::new(3);
         pt.allocate_local(root_ref, t_ref);
         pt.set_ref(root_ref, root, None);
-        let ref_edge = pt.ref_edge(root_ref.to_place_index(&pt).unwrap()).unwrap();
+        let root_ref_p = root_ref.to_place_index(&pt).unwrap();
 
         // (*root_ref).0 can be read
-        assert!(pt.can_read_through(ref_edge, root_0));
+        assert!(pt.can_read_through(root_ref_p, root_0));
 
         // (*root_ref).0 cannot be written to
-        assert!(!pt.can_write_through(ref_edge, root_0));
+        assert!(!pt.can_write_through(root_ref_p, root_0));
 
         // root_ptr2 = addr_of!(root)
         let root_ptr2 = Local::new(4);
         pt.allocate_local(root_ptr2, t_ptr);
         pt.set_ref(root_ptr2, root, None);
-        let ptr2_edge = pt.ref_edge(root_ptr2.to_place_index(&pt).unwrap()).unwrap();
+        let root_ptr2_p = root_ptr2.to_place_index(&pt).unwrap();
 
         // (*root_ptr2).0 cannot be written to
-        assert!(!pt.can_write_through(ptr2_edge, root_0));
+        assert!(!pt.can_write_through(root_ptr2_p, root_0));
 
         // Writing through (*root_ptr1).0
         pt.place_written(root_0);
 
         // (*root_ref).0 is invalidated
-        assert!(!pt.can_read_through(ref_edge, root_0));
+        assert!(!pt.can_read_through(root_ref_p, root_0));
 
         // (*root_ptr2).0 is invalidated
-        assert!(!pt.can_read_through(ptr2_edge, root_0));
+        assert!(!pt.can_read_through(root_ptr2_p, root_0));
 
         // (*root_ref).1 is not invalidated
-        assert!(pt.can_read_through(ref_edge, root_1));
+        assert!(pt.can_read_through(root_ref_p, root_1));
 
         // (*root_ptr2).1 is not invalidated
-        assert!(pt.can_read_through(ptr2_edge, root_1));
+        assert!(pt.can_read_through(root_ptr2_p, root_1));
 
         // *root_ptr1 is not invalidated
-        assert!(pt.can_read_through(ptr1_edge, root.to_place_index(&pt).unwrap(),));
+        assert!(pt.can_read_through(root_ptr1_p, root.to_place_index(&pt).unwrap(),));
     }
 
     #[test]
@@ -1676,9 +1691,11 @@ mod tests {
         pt.allocate_local(int_ref, t_ref);
         let int_ref_p = int_ref.to_place_index(&pt).unwrap();
         pt.set_ref(int_ref, int, None);
+        assert_eq!(pt.pointer_tags.first().unwrap().len(), 1);
 
         // int_ref = &*int_ref
         pt.set_ref(int_ref, int, Some(int_ref_p));
+        assert_eq!(pt.pointer_tags.first().unwrap().len(), 1);
 
         pt.place_written(int);
         assert!(!pt
