@@ -935,6 +935,42 @@ impl Program {
             unsafe{printf(")\0".as_ptr() as *const c_char)};
         }
     }
+    impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug,F:PrintFDebug> PrintFDebug for (A,B,C,D,E,F){
+        fn printf_debug(&self){
+            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            self.0.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.1.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.2.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.3.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.4.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.5.printf_debug();
+            unsafe{printf(")\0".as_ptr() as *const c_char)};
+        }
+    }
+    impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug,F:PrintFDebug,G:PrintFDebug> PrintFDebug for (A,B,C,D,E,F,G){
+        fn printf_debug(&self){
+            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            self.0.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.1.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.2.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.3.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.4.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.5.printf_debug();
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            self.6.printf_debug();
+            unsafe{printf(")\0".as_ptr() as *const c_char)};
+        }
+    }
     #[inline(never)]
     fn dump_var(
         f: usize,
