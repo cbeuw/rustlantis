@@ -760,7 +760,7 @@ impl Program {
         fn printf(fmt: *const c_char, ...) -> c_int;
     }
     trait PrintFDebug{
-        fn printf_debug(&self);
+        unsafe fn printf_debug(&self);
     }
     impl<T:PrintFDebug> PrintFDebug for *const T{
         fn printf_debug(&self){
@@ -784,262 +784,320 @@ impl Program {
     }
     impl PrintFDebug for i8{
         fn printf_debug(&self){
-            unsafe{printf("%i\0".as_ptr() as *const c_char,*self as i8 as c_int)};
+            printf("%i\0".as_ptr() as *const c_char,*self as i8 as c_int)};
         }
     }
     impl PrintFDebug for u8{
         fn printf_debug(&self){
-            unsafe{printf("%u\0".as_ptr() as *const c_char,*self as u8 as c_int)};
+            printf("%u\0".as_ptr() as *const c_char,*self as u8 as c_int)};
         }
     } 
     impl PrintFDebug for i16{
         fn printf_debug(&self){
-            unsafe{printf("%i\0".as_ptr() as *const c_char,*self as i16 as c_int)};
+            printf("%i\0".as_ptr() as *const c_char,*self as i16 as c_int)};
         }
     }
     impl PrintFDebug for u16{
         fn printf_debug(&self){
-            unsafe{printf("%u\0".as_ptr() as *const c_char,*self as u16 as c_int)};
+            printf("%u\0".as_ptr() as *const c_char,*self as u16 as c_int)};
         }
     } 
     impl PrintFDebug for i32{
         fn printf_debug(&self){
-            unsafe{printf("%i\0".as_ptr() as *const c_char,*self)};
+            printf("%i\0".as_ptr() as *const c_char,*self)};
         }
     }
     impl PrintFDebug for f32{
         fn printf_debug(&self){
-            unsafe{printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double)};
+            printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double)};
         }
     }
     impl PrintFDebug for f64{
         fn printf_debug(&self){
-            unsafe{printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double)};
+            printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double)};
         }
     }
     impl<T:PrintFDebug,const N:usize> PrintFDebug for [T;N]{
         fn printf_debug(&self){
-            unsafe{printf("[\0".as_ptr() as *const c_char)};
+            printf("[\0".as_ptr() as *const c_char);
             for b in self{
                 b.printf_debug();
-                unsafe{printf(",\0".as_ptr() as *const c_char)};
+                printf(",\0".as_ptr() as *const c_char);
             }
-            unsafe{printf("]\0".as_ptr() as *const c_char)};
+            printf("]\0".as_ptr() as *const c_char);
         }
     }
     impl PrintFDebug for u32{
         fn printf_debug(&self){
-            unsafe{printf("%u\0".as_ptr() as *const c_char,*self)};
+            printf("%u\0".as_ptr() as *const c_char,*self)};
         }
     } 
     impl PrintFDebug for char{
         fn printf_debug(&self){
-            unsafe{printf("%u\0".as_ptr() as *const c_char,*self as u64)};
+            printf("%u\0".as_ptr() as *const c_char,*self as u64);
         }
     } 
     impl PrintFDebug for i64{
         fn printf_debug(&self){
-            unsafe{printf("%li\0".as_ptr() as *const c_char,*self)};
+            printf("%li\0".as_ptr() as *const c_char,*self);
         }
     }
     impl PrintFDebug for u64{
         fn printf_debug(&self){
-            unsafe{printf("%lu\0".as_ptr() as *const c_char,*self)};
+            printf("%lu\0".as_ptr() as *const c_char,*self);
         }
     } 
     impl PrintFDebug for i128{
         fn printf_debug(&self){
-            unsafe{printf("%lu%lu\0".as_ptr() as *const c_char,*self as i64, (*self as u128 >> 64) as i64)};
+            printf("%lu%lu\0".as_ptr() as *const c_char,*self as i64, (*self as u128 >> 64) as i64);
         }
     } 
     impl PrintFDebug for u128{
         fn printf_debug(&self){
-            unsafe{printf("%lu%lu\0".as_ptr() as *const c_char,*self as u64, (*self >> 64) as u64)};
+            printf("%lu%lu\0".as_ptr() as *const c_char,*self as u64, (*self >> 64) as u64);
         }
     } 
     impl PrintFDebug for isize{
         fn printf_debug(&self){
-            unsafe{printf("%li\0".as_ptr() as *const c_char,*self as isize)};
+            printf("%li\0".as_ptr() as *const c_char,*self as isize);
         }
     }
     impl PrintFDebug for usize{
         fn printf_debug(&self){
-            unsafe{printf("%lu\0".as_ptr() as *const c_char,*self as usize)};
+            printf("%lu\0".as_ptr() as *const c_char,*self as usize);
         }
     } 
     impl PrintFDebug for bool{
         fn printf_debug(&self){
             if *self{
-                unsafe{printf("true\0".as_ptr() as *const c_char)};
+                printf("true\0".as_ptr() as *const c_char);
             }
             else{
-                unsafe{printf("false\0".as_ptr() as *const c_char)};
+                printf("false\0".as_ptr() as *const c_char);
             }
         }
     } 
     impl PrintFDebug for (){
         fn printf_debug(&self){
-            unsafe{printf("()\0".as_ptr() as *const c_char)};
+            printf("()\0".as_ptr() as *const c_char);
         }
     } 
     impl<A:PrintFDebug> PrintFDebug for (A,){
         fn printf_debug(&self){
-            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            printf("(\0".as_ptr() as *const c_char);
             self.0.printf_debug();
-            unsafe{printf(",)\0".as_ptr() as *const c_char)};
+            printf(",)\0".as_ptr() as *const c_char);
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug> PrintFDebug for (A,B){
         fn printf_debug(&self){
-            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            printf("(\0".as_ptr() as *const c_char);
             self.0.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.1.printf_debug();
-            unsafe{printf(")\0".as_ptr() as *const c_char)};
+            printf(")\0".as_ptr() as *const c_char);
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug> PrintFDebug for (A,B,C){
         fn printf_debug(&self){
-            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            printf("(\0".as_ptr() as *const c_char);
             self.0.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.1.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.2.printf_debug();
-            unsafe{printf(")\0".as_ptr() as *const c_char)};
+            printf(")\0".as_ptr() as *const c_char);
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug> PrintFDebug for (A,B,C,D){
         fn printf_debug(&self){
-            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            printf("(\0".as_ptr() as *const c_char);
             self.0.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.1.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.2.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.3.printf_debug();
-            unsafe{printf(")\0".as_ptr() as *const c_char)};
+            printf(")\0".as_ptr() as *const c_char);
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug> PrintFDebug for (A,B,C,D,E){
         fn printf_debug(&self){
-            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            printf("(\0".as_ptr() as *const c_char);
             self.0.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.1.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.2.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.3.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.4.printf_debug();
-            unsafe{printf(")\0".as_ptr() as *const c_char)};
+            printf(")\0".as_ptr() as *const c_char);
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug,F:PrintFDebug> PrintFDebug for (A,B,C,D,E,F){
         fn printf_debug(&self){
-            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            printf("(\0".as_ptr() as *const c_char);
             self.0.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.1.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.2.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.3.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.4.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.5.printf_debug();
-            unsafe{printf(")\0".as_ptr() as *const c_char)};
+            printf(")\0".as_ptr() as *const c_char);
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug,F:PrintFDebug,G:PrintFDebug> PrintFDebug for (A,B,C,D,E,F,G){
         fn printf_debug(&self){
-            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            printf("(\0".as_ptr() as *const c_char);
             self.0.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.1.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.2.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.3.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.4.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.5.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.6.printf_debug();
-            unsafe{printf(")\0".as_ptr() as *const c_char)};
+            printf(")\0".as_ptr() as *const c_char);
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug,F:PrintFDebug,G:PrintFDebug,H:PrintFDebug> PrintFDebug for (A,B,C,D,E,F,G,H){
         fn printf_debug(&self){
-            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            printf("(\0".as_ptr() as *const c_char);
             self.0.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.1.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.2.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.3.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.4.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.5.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.6.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.7.printf_debug();
-            unsafe{printf(")\0".as_ptr() as *const c_char)};
+            printf(")\0".as_ptr() as *const c_char);
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug,F:PrintFDebug,G:PrintFDebug,H:PrintFDebug,I:PrintFDebug> PrintFDebug for (A,B,C,D,E,F,G,H,I){
         fn printf_debug(&self){
-            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            printf("(\0".as_ptr() as *const c_char);
             self.0.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.1.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.2.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.3.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.4.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.5.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.6.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.7.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.8.printf_debug();
-            unsafe{printf(")\0".as_ptr() as *const c_char)};
+            printf(")\0".as_ptr() as *const c_char);
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug,F:PrintFDebug,G:PrintFDebug,H:PrintFDebug,I:PrintFDebug,J:PrintFDebug> PrintFDebug for (A,B,C,D,E,F,G,H,I,J){
         fn printf_debug(&self){
-            unsafe{printf("(\0".as_ptr() as *const c_char)};
+            printf("(\0".as_ptr() as *const c_char);
             self.0.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.1.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.2.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.3.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.4.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.5.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.6.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.7.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.8.printf_debug();
-            unsafe{printf(",\0".as_ptr() as *const c_char)};
+            printf(",\0".as_ptr() as *const c_char);
             self.9.printf_debug();
-            unsafe{printf(")\0".as_ptr() as *const c_char)};
+            printf(")\0".as_ptr() as *const c_char);
+        }
+    }
+    impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug,F:PrintFDebug,G:PrintFDebug,H:PrintFDebug,I:PrintFDebug,J:PrintFDebug,K:PrintFDebug> PrintFDebug for (A,B,C,D,E,F,G,H,I,J,K){
+        fn printf_debug(&self){
+            printf("(\0".as_ptr() as *const c_char);
+            self.0.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.1.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.2.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.3.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.4.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.5.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.6.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.7.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.8.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.9.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.10.printf_debug();
+            printf(")\0".as_ptr() as *const c_char);
+        }
+    }
+    impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug,F:PrintFDebug,G:PrintFDebug,H:PrintFDebug,I:PrintFDebug,J:PrintFDebug,K:PrintFDebug> PrintFDebug for (A,B,C,D,E,F,G,H,I,J,K,L){
+        fn printf_debug(&self){
+            printf("(\0".as_ptr() as *const c_char);
+            self.0.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.1.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.2.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.3.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.4.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.5.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.6.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.7.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.8.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.9.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.10.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.11.printf_debug();
+            printf(",\0".as_ptr() as *const c_char);
+            self.12.printf_debug();
+            printf(")\0".as_ptr() as *const c_char);
         }
     }
     #[inline(never)]
@@ -1050,15 +1108,17 @@ impl Program {
         var2: usize, val2: impl PrintFDebug,
         var3: usize, val3: impl PrintFDebug,
     ) {
-        unsafe{printf("fn%u:_%u = \0".as_ptr() as *const c_char,f,var0)};
-        val0.printf_debug();
-        unsafe{printf("\n_%u = \0".as_ptr() as *const c_char,var1)};
-        val1.printf_debug();
-        unsafe{printf("\n_%u = \0".as_ptr() as *const c_char,f,var2)};
-        val2.printf_debug();
-        unsafe{printf("\n_%u = \0".as_ptr() as *const c_char,var3)};
-        val3.printf_debug();
-        unsafe{printf("\n\0".as_ptr() as *const c_char,var3)};
+        unsafe{
+            printf("fn%u:_%u = \0".as_ptr() as *const c_char,f,var0)};
+            val0.printf_debug();
+            printf("\n_%u = \0".as_ptr() as *const c_char,var1)};
+            val1.printf_debug();
+            printf("\n_%u = \0".as_ptr() as *const c_char,f,var2)};
+            val2.printf_debug();
+            printf("\n_%u = \0".as_ptr() as *const c_char,var3)};
+            val3.printf_debug();
+            printf("\n\0".as_ptr() as *const c_char,var3)};
+        }
     }
     "#;
     // Fake "intrinsic"
