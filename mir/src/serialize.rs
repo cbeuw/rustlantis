@@ -1,4 +1,4 @@
-use crate::{syntax::*, tyctxt::TyCtxt};
+use crate::{syntax::*, tyctxt::TyCtxt, VarDumper};
 
 pub trait Serialize {
     fn serialize(&self, tcx: &TyCtxt) -> String;
@@ -316,16 +316,11 @@ impl Serialize for Body {
 impl Serialize for Program {
     fn serialize(&self, tcx: &TyCtxt) -> String {
         let mut program = Program::HEADER.to_string();
-        if crate::ENABLE_PRINTF_DEBUG{
-            program += Program::PRINTF_DUMPER;
-        }
-        else{
-            if self.use_debug_dumper {
-                program += Program::DEBUG_DUMPER;
-            } else {
-                program += Program::DUMPER;
-            }
-        }
+        program += match self.var_dumper{
+            VarDumper::HashDumper=>Program::DUMPER,
+            VarDumper::StdVarDumper=>Program::DEBUG_DUMPER,
+            VarDumper::PrintfVarDumper=>Program::PRINTF_DUMPER,
+        };
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
             let args_list: String = body
                 .args_iter()
@@ -364,7 +359,7 @@ impl Serialize for Program {
             .expect("program has functions")
             .identifier();
 
-        let hash_printer = if self.use_debug_dumper {
+        let hash_printer = if self.var_dumper != VarDumper::HashDumper {
             ""
         } else {
             r#"

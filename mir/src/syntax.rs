@@ -3,13 +3,13 @@ use std::num::TryFromIntError;
 use index_vec::{define_index_type, IndexVec};
 use smallvec::SmallVec;
 
-use crate::tyctxt::TyCtxt;
+use crate::{tyctxt::TyCtxt, VarDumper};
 
 #[derive(Clone)]
 pub struct Program {
     pub functions: IndexVec<Function, Body>,
     pub entry_args: Vec<Literal>,
-    pub use_debug_dumper: bool,
+    pub var_dumper: VarDumper,
 }
 
 pub type LocalDecls = IndexVec<Local, LocalDecl>;
@@ -757,10 +757,29 @@ impl Program {
 
     extern "C" {
         fn printf(fmt: *const c_char, ...) -> c_int;
-        fn puts(str:*const c_char);
     }
     trait PrintFDebug{
         fn printf_debug(&self);
+    }
+    impl<T:PrintFDebug> PrintFDebug for *const T{
+        fn printf_debug(&self){
+            unsafe{(**self).printf_debug()};
+        }
+    }
+    impl<T:PrintFDebug> PrintFDebug for *mut T{
+        fn printf_debug(&self){
+            unsafe{(**self).printf_debug()};
+        }
+    }
+    impl<T:PrintFDebug> PrintFDebug for &T{
+        fn printf_debug(&self){
+            (**self).printf_debug();
+        }
+    }
+    impl<T:PrintFDebug> PrintFDebug for &mut T{
+        fn printf_debug(&self){
+            (**self).printf_debug();
+        }
     }
     impl PrintFDebug for i8{
         fn printf_debug(&self){
@@ -787,13 +806,23 @@ impl Program {
             unsafe{printf("%i\0".as_ptr() as *const c_char,*self)};
         }
     }
+    impl PrintFDebug for f32{
+        fn printf_debug(&self){
+            unsafe{printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double)};
+        }
+    }
+    impl PrintFDebug for f64{
+        fn printf_debug(&self){
+            unsafe{printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double)};
+        }
+    }
     impl<T:PrintFDebug,const N:usize> PrintFDebug for [T;N]{
         fn printf_debug(&self){
-            unsafe{puts("[\0".as_ptr() as *const c_char)};
+            unsafe{printf("[\0".as_ptr() as *const c_char)};
             for b in self{
                 b.printf_debug();
             }
-            unsafe{puts("]\0".as_ptr() as *const c_char)};
+            unsafe{printf("]\0".as_ptr() as *const c_char)};
         }
     }
     impl PrintFDebug for u32{
@@ -839,71 +868,71 @@ impl Program {
     impl PrintFDebug for bool{
         fn printf_debug(&self){
             if *self{
-                unsafe{puts("true\0".as_ptr() as *const c_char)};
+                unsafe{printf("true\0".as_ptr() as *const c_char)};
             }
             else{
-                unsafe{puts("false\0".as_ptr() as *const c_char)};
+                unsafe{printf("false\0".as_ptr() as *const c_char)};
             }
         }
     } 
     impl PrintFDebug for (){
         fn printf_debug(&self){
-            unsafe{puts("()\0".as_ptr() as *const c_char)};
+            unsafe{printf("()\0".as_ptr() as *const c_char)};
         }
     } 
     impl<A:PrintFDebug> PrintFDebug for (A,){
         fn printf_debug(&self){
-            unsafe{puts("(\0".as_ptr() as *const c_char)};
+            unsafe{printf("(\0".as_ptr() as *const c_char)};
             self.0.printf_debug();
-            unsafe{puts(",)\0".as_ptr() as *const c_char)};
+            unsafe{printf(",)\0".as_ptr() as *const c_char)};
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug> PrintFDebug for (A,B){
         fn printf_debug(&self){
-            unsafe{puts("(\0".as_ptr() as *const c_char)};
+            unsafe{printf("(\0".as_ptr() as *const c_char)};
             self.0.printf_debug();
-            unsafe{puts(",\0".as_ptr() as *const c_char)};
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.1.printf_debug();
-            unsafe{puts(")\0".as_ptr() as *const c_char)};
+            unsafe{printf(")\0".as_ptr() as *const c_char)};
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug> PrintFDebug for (A,B,C){
         fn printf_debug(&self){
-            unsafe{puts("(\0".as_ptr() as *const c_char)};
+            unsafe{printf("(\0".as_ptr() as *const c_char)};
             self.0.printf_debug();
-            unsafe{puts(",\0".as_ptr() as *const c_char)};
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.1.printf_debug();
-            unsafe{puts(",\0".as_ptr() as *const c_char)};
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.2.printf_debug();
-            unsafe{puts(")\0".as_ptr() as *const c_char)};
+            unsafe{printf(")\0".as_ptr() as *const c_char)};
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug> PrintFDebug for (A,B,C,D){
         fn printf_debug(&self){
-            unsafe{puts("(\0".as_ptr() as *const c_char)};
+            unsafe{printf("(\0".as_ptr() as *const c_char)};
             self.0.printf_debug();
-            unsafe{puts(",\0".as_ptr() as *const c_char)};
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.1.printf_debug();
-            unsafe{puts(",\0".as_ptr() as *const c_char)};
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.2.printf_debug();
-            unsafe{puts(",\0".as_ptr() as *const c_char)};
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.3.printf_debug();
-            unsafe{puts(")\0".as_ptr() as *const c_char)};
+            unsafe{printf(")\0".as_ptr() as *const c_char)};
         }
     }
     impl<A:PrintFDebug,B:PrintFDebug,C:PrintFDebug,D:PrintFDebug,E:PrintFDebug> PrintFDebug for (A,B,C,D,E){
         fn printf_debug(&self){
-            unsafe{puts("(\0".as_ptr() as *const c_char)};
+            unsafe{printf("(\0".as_ptr() as *const c_char)};
             self.0.printf_debug();
-            unsafe{puts(",\0".as_ptr() as *const c_char)};
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.1.printf_debug();
-            unsafe{puts(",\0".as_ptr() as *const c_char)};
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.2.printf_debug();
-            unsafe{puts(",\0".as_ptr() as *const c_char)};
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.3.printf_debug();
-            unsafe{puts(",\0".as_ptr() as *const c_char)};
+            unsafe{printf(",\0".as_ptr() as *const c_char)};
             self.4.printf_debug();
-            unsafe{puts(")\0".as_ptr() as *const c_char)};
+            unsafe{printf(")\0".as_ptr() as *const c_char)};
         }
     }
     #[inline(never)]
@@ -930,11 +959,11 @@ impl Program {
     pub const DUMPER_ARITY: usize = 4;
 
     // A new, empty function
-    pub fn new(debug: bool) -> Self {
+    pub fn new(debug: VarDumper) -> Self {
         Self {
             functions: IndexVec::default(),
             entry_args: vec![],
-            use_debug_dumper: debug,
+            var_dumper: debug,
         }
     }
 

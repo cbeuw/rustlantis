@@ -13,6 +13,7 @@ use mir::syntax::{
     SwitchTargets, Terminator, TyId, TyKind, UnOp, VariantIdx,
 };
 use mir::tyctxt::TyCtxt;
+use mir::VarDumper;
 use rand::seq::SliceRandom;
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
 use rand_distr::{Distribution, WeightedError, WeightedIndex};
@@ -921,7 +922,7 @@ impl GenerationCtx {
         for vars in dumpped.chunks(Program::DUMPER_ARITY) {
             let new_bb = self.add_new_bb();
 
-            let args = if self.program.use_debug_dumper {
+            let args = if self.program.var_dumper == VarDumper::StdVarDumper || self.program.var_dumper == VarDumper::PrintfVarDumper{
                 let mut args = Vec::with_capacity(1 + Program::DUMPER_ARITY * 2);
                 args.push(Operand::Constant(
                     self.cursor.function.index().try_into().unwrap(),
@@ -1166,7 +1167,7 @@ impl GenerationCtx {
         }
     }
 
-    pub fn new(seed: u64, debug_dump: bool) -> Self {
+    pub fn new(seed: u64, debug_dump: VarDumper) -> Self {
         let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(seed)));
         let tcx = Rc::new(seed_tys(&mut *rng.borrow_mut()));
         let ty_weights = TySelect::new(&tcx);

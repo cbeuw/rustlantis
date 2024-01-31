@@ -3,8 +3,7 @@ use std::{collections::HashMap, slice};
 use index_vec::IndexVec;
 
 use crate::{
-    serialize::Serialize,
-    syntax::{Adt, TyId, TyKind},
+    serialize::Serialize, syntax::{Adt, TyId, TyKind}, VarDumper
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -115,18 +114,16 @@ impl TyCtxt {
         self.tys.len()
     }
 
-    pub fn serialize(&self) -> String {
+    pub fn serialize(&self,dumper:VarDumper) -> String {
         let mut str = String::new();
         for (id, adt) in self.tys.iter_enumerated().filter(|(_, kind)| kind.is_adt()) {
             let TyKind::Adt(adt) = adt else {
                 panic!("not an adt");
             };
-            if !crate::ENABLE_PRINTF_DEBUG{
-                str += &self.adt_meta[&id].derive_attrs();
-            }
-            else{
-                str += &adt_impl_printf_debug(adt,id,self);
-            }
+            str += &match dumper{
+                VarDumper::HashDumper | VarDumper::StdVarDumper => self.adt_meta[&id].derive_attrs(),
+                VarDumper::PrintfVarDumper => adt_impl_printf_debug(adt,id),
+            };
             if adt.is_enum() {
                 let variants: String = adt
                     .variants
@@ -149,18 +146,38 @@ impl TyCtxt {
         str
     }
 }
-pub fn adt_impl_printf_debug(adt:&Adt,id:TyId,ctx:&TyCtxt)->String{
+pub fn adt_impl_printf_debug(adt:&Adt,id:TyId)->String{
     if adt.is_enum() {
         //TODO: support enum formating!
-        let res = format!("impl PrintFDebug for {name}{{\n\tfn printf_debug(&self){{}}}}",name = id.type_name());
+        let name = id.type_name();
+        let mut res = format!("impl PrintFDebug for {name}{{\n\tfn printf_debug(&self){{");
+        res.push_str(&format!("unsafe{{printf(\"{name}::\\0\".as_ptr()  as *const c_char)}};"));
+        res.push_str("match self{\n");
+        for (variant_idx,variant) in adt.variants.iter().enumerate(){
+            res.push_str(&format!("\tSelf::Variant{variant_idx}{{",));
+            for (field_id,_) in variant.fields.iter().enumerate(){
+                res.push_str(&format!("fld{field_id},"));
+            }
+            res.push_str("}=>{\n");
+            res.push_str(&format!("unsafe{{printf(\"Variant{variant_idx}{{\".as_ptr() as *const c_char)}};\n"));
+            for (field_id,_) in variant.fields.iter().enumerate(){
+                res.push_str(&format!("\t\tunsafe{{printf(\"fld{field_id}:\".as_ptr() as *const c_char)}};\n"));
+                res.push_str(&format!("\t\tfld{field_id}.printf_debug();\n"));
+                res.push_str("unsafe{printf(\",\".as_ptr() as *const c_char)};\n");
+            }
+            res.push_str("},\n")
+        }
+        res.push_str("\t\t}\n");
+        res.push_str("unsafe{printf(\"}\".as_ptr() as *const c_char)};\n");
+        res.push_str("\t}\n}");
         res
     }
     else{
-        let mut res = format!("impl PrintFDebug for {name}{{\n\tfn printf_debug(&self){{\n\tunsafe{{puts(\"{name}{{\0\".as_ptr()  as *const c_char)}};",name = id.type_name());
+        let mut res = format!("impl PrintFDebug for {name}{{\n\tfn printf_debug(&self){{\n\tunsafe{{printf(\"{name}{{\0\".as_ptr()  as *const c_char)}};",name = id.type_name());
         for (field_id,_) in adt.variants[0].fields.iter().enumerate(){
-            format!("\n\tputs(\"fld{field_id}:\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();");
+            format!("\n\tprintf(\"fld{field_id}:\\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();");
         }
-        res.push_str("\n\tunsafe{puts(\"}\".as_ptr() as *const c_char)};}\n}");
+        res.push_str("\n\tunsafe{printf(\"}\".as_ptr() as *const c_char)};}\n}");
         res
     }
         

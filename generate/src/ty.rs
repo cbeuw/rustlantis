@@ -85,7 +85,9 @@ impl TySelect {
                 .unwrap();
             }
             trace!("Typing context with weights:\n{s}");
-            trace!("{}", tcx.serialize());
+            // FractalFir: serialization requires info about which dumper(printf-based one or not) is used. I pass `StdVarDumper` here to preserve 
+            // previous behaviour.  
+            trace!("{}", tcx.serialize(mir::VarDumper::StdVarDumper));
         }
 
         WeightedIndex::new(tcx.iter_enumerated().map(|(tyid, _)| weights[&tyid]))
