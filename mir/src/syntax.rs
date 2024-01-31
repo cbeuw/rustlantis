@@ -822,6 +822,7 @@ impl Program {
             unsafe{printf("[\0".as_ptr() as *const c_char)};
             for b in self{
                 b.printf_debug();
+                unsafe{printf(",\0".as_ptr() as *const c_char)};
             }
             unsafe{printf("]\0".as_ptr() as *const c_char)};
         }
