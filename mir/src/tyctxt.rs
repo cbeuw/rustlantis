@@ -121,7 +121,12 @@ impl TyCtxt {
             let TyKind::Adt(adt) = adt else {
                 panic!("not an adt");
             };
-            str += &self.adt_meta[&id].derive_attrs();
+            if !crate::ENABLE_PRINTF_DEBUG{
+                str += &self.adt_meta[&id].derive_attrs();
+            }
+            else{
+                str += &adt_impl_printf_debug(adt,id,self);
+            }
             if adt.is_enum() {
                 let variants: String = adt
                     .variants
@@ -144,3 +149,20 @@ impl TyCtxt {
         str
     }
 }
+pub fn adt_impl_printf_debug(adt:&Adt,id:TyId,ctx:&TyCtxt)->String{
+    if adt.is_enum() {
+        //TODO: support enum formating!
+        let res = format!("impl PrintFDebug for {name}{{\n\tfn printf_debug(&self){{}}}}",name = id.type_name());
+        res
+    }
+    else{
+        let mut res = format!("impl PrintFDebug for {name}{{\n\tfn printf_debug(&self){{\n\tunsafe{{puts(\"{name}{{\0\".as_ptr()  as *const c_char)}};",name = id.type_name());
+        for (field_id,_) in adt.variants[0].fields.iter().enumerate(){
+            format!("\n\tputs(\"fld{field_id}:\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();");
+        }
+        res.push_str("\n\tunsafe{puts(\"}\".as_ptr() as *const c_char)};}\n}");
+        res
+    }
+        
+}
+

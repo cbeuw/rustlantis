@@ -316,10 +316,15 @@ impl Serialize for Body {
 impl Serialize for Program {
     fn serialize(&self, tcx: &TyCtxt) -> String {
         let mut program = Program::HEADER.to_string();
-        if self.use_debug_dumper {
-            program += Program::DEBUG_DUMPER;
-        } else {
-            program += Program::DUMPER;
+        if crate::ENABLE_PRINTF_DEBUG{
+            program += Program::PRINTF_DUMPER;
+        }
+        else{
+            if self.use_debug_dumper {
+                program += Program::DEBUG_DUMPER;
+            } else {
+                program += Program::DUMPER;
+            }
         }
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
             let args_list: String = body
