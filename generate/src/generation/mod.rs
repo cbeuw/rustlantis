@@ -174,7 +174,7 @@ impl GenerationCtx {
                     let l = self.choose_operand(&[lhs_ty], lhs)?;
                     let (ppath, weights) = PlaceSelector::for_non_zero(self.tcx.clone())
                         .of_ty(lhs_ty)
-                        .except(&lhs)
+                        .except(lhs)
                         .into_weighted(&self.pt)
                         .ok_or(SelectionError::Exhausted)?;
                     let r = self.make_choice_weighted(ppath.into_iter(), weights, |ppath| {
@@ -968,7 +968,7 @@ impl GenerationCtx {
             program: self.program.clone(),
             pt: self.pt.clone(),
             return_stack: self.return_stack.clone(),
-            cursor: self.cursor.clone(),
+            cursor: self.cursor,
         });
     }
 

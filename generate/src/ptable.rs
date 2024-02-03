@@ -958,11 +958,7 @@ impl PlaceTable {
         let p = p.to_place_index(self).expect("place exists");
         assert!(self.places[p].ty.is_raw_ptr(&self.tcx));
 
-        match self.places[p].offset {
-            None => false,
-            Some(0) => false,
-            _ => true,
-        }
+        !matches!(self.places[p].offset, None | Some(0))
     }
 
     pub fn get_offset(&self, p: impl ToPlaceIndex) -> Option<isize> {
@@ -1018,7 +1014,7 @@ impl PlaceTable {
     /// To be called when a place is written to. Invalidates (removes) all references and raw pointers after the first
     /// shared reference on the stack, and mark references uninit
     pub fn place_written(&mut self, p: impl ToPlaceIndex) {
-        let p = p.to_place_index(&self).expect("place exists");
+        let p = p.to_place_index(self).expect("place exists");
         self.update_transitive_subfields(p, |this, place| {
             if let Some(run) = this.places[place].run_ptr {
                 let invalidated = this.memory.below_first_shared(run);
@@ -1139,10 +1135,6 @@ impl PlacePath {
             pt.current_frame().get_by_index(self.source).unwrap(),
             &projs,
         )
-    }
-
-    pub fn projection_indices<'pt>(&'pt self) -> impl Iterator<Item = ProjectionIndex> + 'pt {
-        self.path.iter().copied()
     }
 
     pub fn projections<'pt>(

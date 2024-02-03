@@ -83,28 +83,6 @@ impl Run {
         }
     }
 
-    /// Gets all tag including and below edge (and therefore potentially borrowed from it)
-    pub fn below(&self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
-        let mut edges = BTreeSet::new();
-        for (_, stack) in self.ref_stack.iter(offset, len) {
-            let index = stack.iter().position(|borrow| borrow.tag == tag);
-            if let Some(index) = index {
-                edges.extend(stack[index..].iter().map(|borrow| borrow.tag));
-            }
-        }
-        edges.iter().copied().collect()
-    }
-
-    pub fn first_shared(&self, offset: Size, len: Size) -> Option<Tag> {
-        for (_, stack) in self.ref_stack.iter(offset, len) {
-            let first_shared = stack
-                .iter()
-                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
-            return first_shared.map(|index| stack[index].tag);
-        }
-        None
-    }
-
     pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
         let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
@@ -147,7 +125,7 @@ impl Run {
         //FIXME: performance
         self.ref_stack
             .iter(offset, len)
-            .all(|(_, stack)| stack.iter().find(|borrow| borrow.tag == tag).is_some())
+            .all(|(_, stack)| stack.iter().any(|borrow| borrow.tag == tag))
     }
 
     pub fn can_write_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
@@ -276,7 +254,7 @@ impl RunPointer {
         if !self.run_and_offset.same_run(&other.run_and_offset) {
             return false;
         }
-        return self.bytes_range().overlap(&other.bytes_range());
+        self.bytes_range().overlap(&other.bytes_range())
     }
 }
 
@@ -447,7 +425,7 @@ impl BasicMemory {
                 all_gone.push(edge);
             }
         }
-        return all_gone;
+        all_gone
     }
 
     /// Remove tag for a run ptr. Returns true if the ref is no longer present in any
@@ -461,11 +439,6 @@ impl BasicMemory {
 
         self.derange(tag, run_ptr);
         !self.pointers.contains_key(&tag)
-    }
-
-    pub fn first_shared(&self, run_ptr: RunPointer) -> Option<Tag> {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
-            .first_shared(run_ptr.run_and_offset.1, run_ptr.size)
     }
 
     pub fn below_first_shared(&self, run_ptr: RunPointer) -> Vec<Tag> {
