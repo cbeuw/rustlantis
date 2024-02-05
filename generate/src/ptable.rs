@@ -659,7 +659,9 @@ impl PlaceTable {
     }
 
     pub fn mark_place_moved(&mut self, p: impl ToPlaceIndex) {
+        let p = p.to_place_index(&self).expect("place exists");
         self.mark_place_uninit(p);
+        self.place_written(p);
     }
 
     pub fn mark_place_uninit(&mut self, p: impl ToPlaceIndex) {
