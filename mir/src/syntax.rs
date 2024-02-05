@@ -764,12 +764,12 @@ impl Program {
     }
     impl<T:PrintFDebug> PrintFDebug for *const T{
         fn printf_debug(&self){
-            unsafe{(**self).printf_debug()};
+            unsafe{(**self).printf_debug();
         }
     }
     impl<T:PrintFDebug> PrintFDebug for *mut T{
         fn printf_debug(&self){
-            unsafe{(**self).printf_debug()};
+            unsafe{(**self).printf_debug();
         }
     }
     impl<T:PrintFDebug> PrintFDebug for &T{
@@ -784,37 +784,37 @@ impl Program {
     }
     impl PrintFDebug for i8{
         fn printf_debug(&self){
-            printf("%i\0".as_ptr() as *const c_char,*self as i8 as c_int)};
+            printf("%i\0".as_ptr() as *const c_char,*self as i8 as c_int);
         }
     }
     impl PrintFDebug for u8{
         fn printf_debug(&self){
-            printf("%u\0".as_ptr() as *const c_char,*self as u8 as c_int)};
+            printf("%u\0".as_ptr() as *const c_char,*self as u8 as c_int);
         }
     } 
     impl PrintFDebug for i16{
         fn printf_debug(&self){
-            printf("%i\0".as_ptr() as *const c_char,*self as i16 as c_int)};
+            printf("%i\0".as_ptr() as *const c_char,*self as i16 as c_int);
         }
     }
     impl PrintFDebug for u16{
         fn printf_debug(&self){
-            printf("%u\0".as_ptr() as *const c_char,*self as u16 as c_int)};
+            printf("%u\0".as_ptr() as *const c_char,*self as u16 as c_int);
         }
     } 
     impl PrintFDebug for i32{
         fn printf_debug(&self){
-            printf("%i\0".as_ptr() as *const c_char,*self)};
+            printf("%i\0".as_ptr() as *const c_char,*self);
         }
     }
     impl PrintFDebug for f32{
         fn printf_debug(&self){
-            printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double)};
+            printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double);
         }
     }
     impl PrintFDebug for f64{
         fn printf_debug(&self){
-            printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double)};
+            printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double);
         }
     }
     impl<T:PrintFDebug,const N:usize> PrintFDebug for [T;N]{
@@ -829,7 +829,7 @@ impl Program {
     }
     impl PrintFDebug for u32{
         fn printf_debug(&self){
-            printf("%u\0".as_ptr() as *const c_char,*self)};
+            printf("%u\0".as_ptr() as *const c_char,*self);
         }
     } 
     impl PrintFDebug for char{
@@ -1109,15 +1109,15 @@ impl Program {
         var3: usize, val3: impl PrintFDebug,
     ) {
         unsafe{
-            printf("fn%u:_%u = \0".as_ptr() as *const c_char,f,var0)};
+            printf("fn%u:_%u = \0".as_ptr() as *const c_char,f,var0);
             val0.printf_debug();
-            printf("\n_%u = \0".as_ptr() as *const c_char,var1)};
+            printf("\n_%u = \0".as_ptr() as *const c_char,var1);
             val1.printf_debug();
-            printf("\n_%u = \0".as_ptr() as *const c_char,f,var2)};
+            printf("\n_%u = \0".as_ptr() as *const c_char,f,var2);
             val2.printf_debug();
-            printf("\n_%u = \0".as_ptr() as *const c_char,var3)};
+            printf("\n_%u = \0".as_ptr() as *const c_char,var3);
             val3.printf_debug();
-            printf("\n\0".as_ptr() as *const c_char,var3)};
+            printf("\n\0".as_ptr() as *const c_char,var3);
         }
     }
     "#;
