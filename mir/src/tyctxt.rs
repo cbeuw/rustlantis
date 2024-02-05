@@ -153,7 +153,7 @@ pub fn adt_impl_printf_debug(adt:&Adt,id:TyId)->String{
     let res = if adt.is_enum() {
         // Formats an enum
         let name = id.type_name();
-        let mut res = format!("impl PrintFDebug for {name}{{\n\tfn printf_debug(&self){{");
+        let mut res = format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{");
         res.push_str(&format!("unsafe{{printf(\"{name}::\\0\".as_ptr()  as *const c_char)}};"));
         res.push_str("match self{\n");
         // Iterate through variants cratete a match statement
@@ -180,7 +180,7 @@ pub fn adt_impl_printf_debug(adt:&Adt,id:TyId)->String{
     }
     else{
         // Formats a struct
-        let mut res = format!("impl PrintFDebug for {name}{{\n\tfn printf_debug(&self){{\n\tunsafe{{printf(\"{name}{{\0\".as_ptr()  as *const c_char)}};",name = id.type_name());
+        let mut res = format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{printf(\"{name}{{\0\".as_ptr()  as *const c_char)}};",name = id.type_name());
          // Iterate trough fields to print values of fields of stuct
         for (field_id,_) in adt.variants[0].fields.iter().enumerate(){
             format!("\n\tprintf(\"fld{field_id}:\\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();");
