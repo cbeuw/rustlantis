@@ -32,7 +32,7 @@ impl TySelect {
         let p_floats = 0.1;
         let p_ints = 0.1;
         let p_isize = 0.1;
-        let p_pointers = 0.2;
+        let p_pointers = 0.3;
 
         // Types with special treatment as we want to increase their weighting
         let mut weights: HashMap<TyId, f32> = HashMap::new();
@@ -103,7 +103,7 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
     let mut tcx: TyCtxt = TyCtxt::from_primitives();
 
     // Generate composite structural types
-    for _ in 0..=32 {
+    for _ in 0..=64 {
         let new_ty = match rng.gen_range(0..=3) {
             0 => TyKind::Tuple({
                 let dist = Poisson::<f32>::new(2.7).unwrap();
@@ -150,7 +150,7 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
     }
 
     // TODO: recursive types
-    for _ in 0..=16 {
+    for _ in 0..=8 {
         let variant_count = rng.gen_range(1..=ADT_MAX_VARIANTS);
 
         let variants = (0..variant_count).map(|_| {

@@ -41,6 +41,7 @@ const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 2;
 const LIT_ARG_WEIGHT_FACTOR: Weight = 2;
 const PTR_ARG_WEIGHT_FACTOR: Weight = 2;
+const REF_ARG_WEIGHT_FACTOR: Weight = 9999;
 const OFFSETTED_PTR_WEIGHT_FACTOR: Weight = 10;
 const ROUNDTRIPPED_PTR_WEIGHT_FACTOR: Weight = 100;
 
@@ -223,7 +224,10 @@ impl PlaceSelector {
                             let mut weight = pt.get_complexity(place);
                             let node = ppath.target_node(pt);
                             let index = ppath.target_index(pt);
-                            if node.ty.contains(&tcx, |tcx, ty| ty.is_any_ptr(tcx)) {
+                            if node.ty.contains(&tcx, |tcx, ty| ty.is_ref(tcx)) {
+                                weight *= REF_ARG_WEIGHT_FACTOR;
+                            }
+                            if node.ty.contains(&tcx, |tcx, ty| ty.is_raw_ptr(tcx)) {
                                 weight *= PTR_ARG_WEIGHT_FACTOR;
                             }
                             if pt.known_val(index).is_some() {
