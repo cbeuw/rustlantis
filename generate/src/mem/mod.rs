@@ -83,7 +83,7 @@ impl Run {
         }
     }
 
-    pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
+    pub fn above_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
         let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
@@ -96,7 +96,7 @@ impl Run {
         edges.iter().copied().collect()
     }
 
-    pub fn above_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
+    pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
         let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
@@ -109,7 +109,7 @@ impl Run {
         edges.iter().copied().collect()
     }
 
-    pub fn remove_all_below(&mut self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
+    pub fn remove_all_above(&mut self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
         let mut edges = vec![];
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
             let index = stack.iter().position(|borrow| borrow.tag == tag);
@@ -130,7 +130,7 @@ impl Run {
 
     pub fn can_write_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
         //FIXME: performance
-        self.above_first_shared(offset, len).contains(&tag)
+        self.below_first_shared(offset, len).contains(&tag)
     }
 }
 
@@ -412,11 +412,11 @@ impl BasicMemory {
         }
     }
 
-    /// Remove all tags including and below from a run. Returns a list of edges with no valid borrows
+    /// Remove all tags including and above from a run. Returns a list of edges with no valid borrows
     /// left in any run after removal
-    pub fn remove_tags_below(&mut self, tag: Tag, run_ptr: RunPointer) -> Vec<Tag> {
+    pub fn remove_tags_above(&mut self, tag: Tag, run_ptr: RunPointer) -> Vec<Tag> {
         let removed = self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
-            .remove_all_below(run_ptr.run_and_offset.1, run_ptr.size, tag);
+            .remove_all_above(run_ptr.run_and_offset.1, run_ptr.size, tag);
 
         let mut all_gone = vec![];
         for edge in removed {
@@ -441,9 +441,9 @@ impl BasicMemory {
         !self.pointers.contains_key(&tag)
     }
 
-    pub fn below_first_shared(&self, run_ptr: RunPointer) -> Vec<Tag> {
+    pub fn above_first_shared(&self, run_ptr: RunPointer) -> Vec<Tag> {
         self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
-            .below_first_shared(run_ptr.run_and_offset.1, run_ptr.size)
+            .above_first_shared(run_ptr.run_and_offset.1, run_ptr.size)
     }
 
     pub fn can_read_with(&self, run_ptr: RunPointer, tag: Tag) -> bool {

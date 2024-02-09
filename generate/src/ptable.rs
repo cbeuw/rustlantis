@@ -1019,7 +1019,7 @@ impl PlaceTable {
         let p = p.to_place_index(self).expect("place exists");
         self.update_transitive_subfields(p, |this, place| {
             if let Some(run) = this.places[place].run_ptr {
-                let invalidated = this.memory.below_first_shared(run);
+                let invalidated = this.memory.above_first_shared(run);
                 // TODO: don't copy partially invalidated refs
                 for tag in invalidated {
                     let all_gone = this.memory.remove_tag_run_ptr(tag, run);
