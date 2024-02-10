@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{rc::Rc, vec};
 
 use abi::size::Size;
 use mir::{
@@ -26,7 +26,7 @@ enum PlaceUsage {
 
 #[derive(Clone)]
 pub struct PlaceSelector {
-    tys: Vec<TyId>,
+    tys: Option<Vec<TyId>>,
     exclusions: Vec<Place>,
     size: Option<Size>,
     allow_uninit: bool,
@@ -56,7 +56,7 @@ impl PlaceSelector {
 
     pub fn for_operand(tcx: Rc<TyCtxt>) -> Self {
         Self {
-            tys: vec![],
+            tys: None,
             size: None,
             usage: PlaceUsage::Operand,
             exclusions: vec![],
@@ -109,14 +109,12 @@ impl PlaceSelector {
     }
 
     pub fn of_ty(self, ty: TyId) -> Self {
-        let mut tys = self.tys;
-        tys.push(ty);
+        let tys = Some(vec![ty]);
         Self { tys, ..self }
     }
 
     pub fn of_tys(self, types: &[TyId]) -> Self {
-        let mut tys = self.tys;
-        tys.extend(types.iter().cloned());
+        let tys = Some(Vec::from(types));
         Self { tys, ..self }
     }
 
@@ -156,7 +154,9 @@ impl PlaceSelector {
             };
 
             // Well-typedness
-            if !self.tys.is_empty() && !self.tys.contains(&pt.ty(index)) {
+            if let Some(tys) = &self.tys
+                && !tys.contains(&pt.ty(index))
+            {
                 return false;
             }
 
