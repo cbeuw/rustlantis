@@ -424,17 +424,25 @@ impl TyId {
         // TODO: hash Adts maybe
         self.kind(tcx).is_structural()
             && self.determ_printable(tcx)
-            && !self.contains(tcx, |_, ty| ty == TyCtxt::F32 || ty == TyCtxt::F64)
+            && !self.contains(tcx, |_, ty| {
+                ty == TyCtxt::F32 || ty == TyCtxt::F64 || ty.kind(tcx).is_adt()
+            })
             && self != TyCtxt::UNIT
     }
 
     pub fn is_copy(self, tcx: &TyCtxt) -> bool {
         let kind = self.kind(tcx);
-        if kind.is_structural() {
-            let has_ref = self.contains(tcx, |tcx, ty| matches!(ty.kind(tcx), TyKind::Ref(..)));
-            !has_ref
-        } else {
-            tcx.meta(self).copy
+        match kind {
+            TyKind::Unit
+            | TyKind::Bool
+            | TyKind::Char
+            | TyKind::Int(_)
+            | TyKind::Uint(_)
+            | TyKind::Float(_) => true,
+            TyKind::RawPtr(_, _) | TyKind::Ref(_, _) => false,
+            TyKind::Tuple(tys) => tys.iter().all(|ty| ty.is_copy(tcx)),
+            TyKind::Array(ty, _) => ty.is_copy(tcx),
+            TyKind::Adt(_) => tcx.meta(self).copy,
         }
     }
 }

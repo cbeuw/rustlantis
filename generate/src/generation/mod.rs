@@ -35,6 +35,8 @@ const MAX_BB_COUNT: usize = 15;
 const MAX_BB_COUNT_HARD: usize = 60;
 /// Max. number of functions in the program Call generator stops being a possible candidate
 const MAX_FN_COUNT: usize = 20;
+/// Max. number of arguments a function can have
+const MAX_ARGS_COUNT: usize = 12;
 /// Expected proportion of variables to be dumped
 const VAR_DUMP_CHANCE: f32 = 0.5;
 
@@ -733,7 +735,7 @@ impl GenerationCtx {
                 Result::Ok(ppath.to_place(&self.pt))
             })?;
 
-        let args_count: i32 = self.rng.get_mut().gen_range(2..=16);
+        let args_count = self.rng.get_mut().gen_range(0..=MAX_ARGS_COUNT);
         let mut selector = PlaceSelector::for_argument(self.tcx.clone()).except(&return_place);
         let mut args = vec![];
         for _ in 0..args_count {
@@ -1218,7 +1220,7 @@ impl GenerationCtx {
 
     fn generate_fn0(&mut self) {
         self.save_ctx();
-        let args_count = self.rng.get_mut().gen_range(2..=16);
+        let args_count = self.rng.get_mut().gen_range(0..=MAX_ARGS_COUNT);
         let arg_tys: Vec<TyId> = self
             .tcx
             .indices()
