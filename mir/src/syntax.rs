@@ -536,6 +536,7 @@ impl PartialEq for TyKind {
             (Self::Uint(l0), Self::Uint(r0)) => l0 == r0,
             (Self::Float(l0), Self::Float(r0)) => l0 == r0,
             (Self::RawPtr(l0, l1), Self::RawPtr(r0, r1)) => l0 == r0 && l1 == r1,
+            (Self::Ref(l0, l1), Self::Ref(r0, r1)) => l0 == r0 && l1 == r1,
             (Self::Tuple(l0), Self::Tuple(r0)) => l0 == r0,
             (Self::Array(l0, l1), Self::Array(r0, r1)) => l0 == r0 && l1 == r1,
             (Self::Adt(..), Self::Adt(..)) => false,

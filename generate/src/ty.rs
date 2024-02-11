@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    fmt::Write,
-    iter::{self, repeat},
-};
+use std::{collections::HashMap, fmt::Write, iter};
 
 use index_vec::IndexVec;
 use log::{log_enabled, trace};
