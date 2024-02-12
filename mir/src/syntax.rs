@@ -849,12 +849,12 @@ impl Program {
     } 
     impl PrintFDebug for i128{
         unsafe fn printf_debug(&self){
-            printf("%lu%lu\0".as_ptr() as *const c_char,*self as i64, (*self as u128 >> 64) as i64);
+            u128::printf_debug(&(*self as u128));
         }
     } 
     impl PrintFDebug for u128{
         unsafe fn printf_debug(&self){
-            printf("%lu%lu\0".as_ptr() as *const c_char,*self as u64, (*self >> 64) as u64);
+            printf("%lx%lx\0".as_ptr() as *const c_char, (*self >> 64) as u64,*self as u64);
         }
     } 
     impl PrintFDebug for isize{
