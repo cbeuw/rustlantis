@@ -1111,11 +1111,11 @@ impl Program {
             val0.printf_debug();
             printf("\n_%u = \0".as_ptr() as *const c_char,var1);
             val1.printf_debug();
-            printf("\n_%u = \0".as_ptr() as *const c_char,f,var2);
+            printf("\n_%u = \0".as_ptr() as *const c_char,var2);
             val2.printf_debug();
             printf("\n_%u = \0".as_ptr() as *const c_char,var3);
             val3.printf_debug();
-            printf("\n\0".as_ptr() as *const c_char,var3);
+            printf("\n\0".as_ptr() as *const c_char);
         }
     }
     "#;
