@@ -1221,6 +1221,8 @@ impl PlaceTable {
 pub struct PlacePath {
     source: NodeIndex,
     path: Path,
+
+    target: NodeIndex,
 }
 
 impl PlacePath {
@@ -1269,24 +1271,8 @@ impl PlacePath {
             == Local::RET
     }
 
-    pub fn target_index(&self, pt: &PlaceTable) -> PlaceIndex {
-        if let Some(last_edge) = self.path.last() {
-            pt.places
-                .edge_endpoints(*last_edge)
-                .expect("edge in graph")
-                .1
-        } else {
-            self.source
-        }
-    }
-
-    pub fn target_node<'pt>(&self, pt: &'pt PlaceTable) -> &'pt PlaceNode {
-        let target_idx = self.target_index(pt);
-        &pt.places[target_idx]
-    }
-
-    pub fn is_local(&self) -> bool {
-        self.path.is_empty()
+    pub fn target_index(&self) -> PlaceIndex {
+        self.target
     }
 }
 
@@ -1347,6 +1333,7 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
             return Some(PlacePath {
                 source: self.root,
                 path: smallvec![],
+                target: self.root,
             });
         }
         if let Some((edge, depth)) = self.to_visit.pop() {
@@ -1379,6 +1366,7 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
             Some(PlacePath {
                 source: self.root,
                 path: self.path.clone(),
+                target,
             })
         } else {
             None
@@ -1490,7 +1478,7 @@ mod tests {
 
         let visited: Vec<TyId> = pt
             .reachable_from_node(local.to_place_index(&pt).unwrap())
-            .map(|ppath| ppath.target_node(&pt).ty)
+            .map(|ppath| pt.ty(ppath.target_index()))
             .collect();
         let root = pt.get_node(&Place::from_local(local)).unwrap();
         let root_ty = pt.places[root].ty;
@@ -1552,7 +1540,7 @@ mod tests {
 
         let visited: Vec<PlaceIndex> = pt
             .reachable_from_node(root.to_place_index(&pt).unwrap())
-            .map(|ppath| ppath.target_index(&pt))
+            .map(|ppath| ppath.target_index())
             .collect();
 
         // int is not reachable because it is behind a Field projection

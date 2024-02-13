@@ -92,7 +92,7 @@ impl GenerationCtx {
                 .into_weighted(&self.pt)
                 .ok_or(SelectionError::Exhausted)?;
             self.make_choice_weighted(ppath.into_iter(), weights, |ppath| {
-                if ppath.target_node(&self.pt).ty.is_copy(&self.tcx) {
+                if self.pt.ty(ppath.target_index()).is_copy(&self.tcx) {
                     Ok(Operand::Copy(ppath.to_place(&self.pt)))
                 } else {
                     Ok(Operand::Move(ppath.to_place(&self.pt)))
@@ -536,7 +536,7 @@ impl GenerationCtx {
                 place.serialize_place(&self.tcx),
             );
 
-            let TyKind::Adt(adt) = self.tcx.kind(self.pt.ty(ppath.target_index(&self.pt))) else {
+            let TyKind::Adt(adt) = self.tcx.kind(self.pt.ty(ppath.target_index())) else {
                 panic!("not an enum type")
             };
 
@@ -676,7 +676,7 @@ impl GenerationCtx {
             self.make_choice_weighted(places.into_iter(), weights, |ppath| {
                 let val = self
                     .pt
-                    .known_val(ppath.target_index(&self.pt))
+                    .known_val(ppath.target_index())
                     .expect("has_value");
                 Ok((ppath.to_place(&self.pt), *val))
             })?;
@@ -745,9 +745,9 @@ impl GenerationCtx {
                 .into_weighted(&self.pt)
                 .ok_or(SelectionError::Exhausted)?;
             let arg = self.make_choice_weighted(places.into_iter(), weights, |ppath| {
-                let ty = &ppath.target_node(&self.pt).ty;
                 let place = ppath.to_place(&self.pt);
-                let pidx = ppath.target_index(&self.pt);
+                let pidx = ppath.target_index();
+                let ty = self.pt.ty(pidx);
 
                 let refs = self.pt.refs_in(pidx);
                 for r in refs {

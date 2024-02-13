@@ -169,7 +169,14 @@ impl PlaceSelector {
             .map(|place| place.to_place_index(pt).expect("place exists"))
             .collect();
         pt.reachable_nodes().filter(move |ppath| {
-            let index = ppath.target_index(pt);
+            let index = ppath.target_index();
+
+            // Well-typedness
+            if let Some(tys) = &self.tys
+                && !tys.contains(&pt.ty(index))
+            {
+                return false;
+            }
 
             // Liveness
             if !pt.is_place_live(index) {
@@ -180,13 +187,6 @@ impl PlaceSelector {
             if !self.allow_uninit && !pt.is_place_init(index) {
                 return false;
             };
-
-            // Well-typedness
-            if let Some(tys) = &self.tys
-                && !tys.contains(&pt.ty(index))
-            {
-                return false;
-            }
 
             // Known val
             if self.usage == PlaceUsage::KnownVal && pt.known_val(index).is_none() {
@@ -272,26 +272,26 @@ impl PlaceSelector {
         let (places, weights): (Vec<PlacePath>, Vec<Weight>) =
             self.into_iter_path(pt)
                 .map(|ppath| {
-                    let place = ppath.target_index(pt);
+                    let place = ppath.target_index();
                     let mut weight = match usage {
                         PlaceUsage::Argument => {
                             let mut weight = pt.get_complexity(place);
-                            let node = ppath.target_node(pt);
-                            let index = ppath.target_index(pt);
-                            if node.ty.contains(&tcx, |tcx, ty| ty.is_ref(tcx)) {
+                            let index = ppath.target_index();
+                            let ty = pt.ty(index);
+                            if ty.contains(&tcx, |tcx, ty| ty.is_ref(tcx)) {
                                 weight *= REF_ARG_WEIGHT_FACTOR;
                             }
-                            if node.ty.contains(&tcx, |tcx, ty| ty.is_raw_ptr(tcx)) {
+                            if ty.contains(&tcx, |tcx, ty| ty.is_raw_ptr(tcx)) {
                                 weight *= PTR_ARG_WEIGHT_FACTOR;
                             }
                             if pt.known_val(index).is_some() {
                                 weight *= LIT_ARG_WEIGHT_FACTOR;
                             }
                             // Encourage isize for pointer offset
-                            if node.ty.contains(&tcx, |_, ty| ty == TyCtxt::ISIZE) {
+                            if ty.contains(&tcx, |_, ty| ty == TyCtxt::ISIZE) {
                                 weight *= LIT_ARG_WEIGHT_FACTOR;
                             }
-                            if node.ty.is_raw_ptr(&tcx) && pt.offseted(index) {
+                            if ty.is_raw_ptr(&tcx) && pt.offseted(index) {
                                 weight *= OFFSETTED_PTR_WEIGHT_FACTOR;
                             }
                             weight
@@ -305,7 +305,7 @@ impl PlaceSelector {
                             if ppath.is_return_proj(pt) {
                                 weight *= RET_LHS_WEIGH_FACTOR;
                             }
-                            let target = ppath.target_index(pt);
+                            let target = ppath.target_index();
                             if pt.ty(target).is_raw_ptr(&tcx) && pt.get_offset(target).is_some() {
                                 weight = 0;
                             }
