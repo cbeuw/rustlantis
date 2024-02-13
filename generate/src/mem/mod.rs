@@ -49,6 +49,7 @@ pub enum BorrowType {
 pub struct Borrow {
     borrow_type: BorrowType,
     tag: Tag,
+    protected: bool,
 }
 
 /// A Run represents a contiguous region of memory free of padding
@@ -71,14 +72,27 @@ impl Run {
 
     pub fn add_borrow(&mut self, offset: Size, len: Size, borrow_type: BorrowType, tag: Tag) {
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
-            stack.push(Borrow { borrow_type, tag });
+            stack.push(Borrow {
+                borrow_type,
+                tag,
+                protected: false,
+            });
         }
     }
 
     pub fn remove_borrow(&mut self, offset: Size, len: Size, tag: Tag) {
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
             if let Some(i) = stack.iter().position(|b| b.tag == tag) {
-                stack.remove(i);
+                let removed = stack.remove(i);
+                assert!(!removed.protected);
+            }
+        }
+    }
+
+    pub fn protect(&mut self, offset: Size, len: Size, tag: Tag) {
+        for (_, stack) in self.ref_stack.iter_mut(offset, len) {
+            if let Some(i) = stack.iter().position(|b| b.tag == tag) {
+                stack[i].protected = true;
             }
         }
     }
@@ -130,7 +144,25 @@ impl Run {
 
     pub fn can_write_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
         //FIXME: performance
-        self.below_first_shared(offset, len).contains(&tag)
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let first_shared = stack
+                .iter()
+                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
+            let mut tag_search_limit = stack.len();
+            if let Some(first_shared) = first_shared {
+                tag_search_limit = first_shared;
+                // nothing above first shared (which will be popped off)
+                // is protected
+                if stack[first_shared..].iter().any(|borrow| borrow.protected) {
+                    return false;
+                }
+            }
+            // tag is below first shared
+            if !stack[..tag_search_limit].iter().any(|borrow| borrow.tag == tag) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -242,6 +274,14 @@ impl RunPointer {
         self.run_and_offset.0
     }
 
+    pub fn offset(&self) -> Size {
+        self.run_and_offset.1
+    }
+
+    pub fn len(&self) -> Size {
+        self.size
+    }
+
     pub fn bytes_range(&self) -> Range<usize> {
         self.run_and_offset.1.bytes_usize()
             ..self.run_and_offset.1.bytes_usize() + self.size.bytes_usize()
@@ -303,8 +343,7 @@ impl BasicMemory {
             self.allocations[run_ptr.alloc_id].live,
             "can't access dead bytes"
         );
-        &self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].bytes
-            [run_ptr.bytes_range()]
+        &self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].bytes[run_ptr.bytes_range()]
     }
 
     pub fn fill(&mut self, run_ptr: RunPointer, val: AbstractByte) {
@@ -316,8 +355,7 @@ impl BasicMemory {
             self.allocations[run_ptr.alloc_id].live,
             "can't access dead bytes"
         );
-        &mut self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].bytes
-            [run_ptr.bytes_range()]
+        &mut self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].bytes[run_ptr.bytes_range()]
     }
 
     pub fn copy(&mut self, dst: RunPointer, src: RunPointer) {
@@ -355,8 +393,8 @@ impl BasicMemory {
     }
 
     pub fn add_ref(&mut self, run_ptr: RunPointer, borrow_type: BorrowType, tag: Tag) {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].add_borrow(
-            run_ptr.run_and_offset.1,
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].add_borrow(
+            run_ptr.offset(),
             run_ptr.size,
             borrow_type,
             tag,
@@ -372,8 +410,8 @@ impl BasicMemory {
         let run_ptrs = self.pointers.remove(&tag);
         if let Some(run_ptrs) = run_ptrs {
             for run_ptr in run_ptrs {
-                self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].remove_borrow(
-                    run_ptr.run_and_offset.1,
+                self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].remove_borrow(
+                    run_ptr.offset(),
                     run_ptr.size,
                     tag,
                 );
@@ -415,8 +453,11 @@ impl BasicMemory {
     /// Remove all tags including and above from a run. Returns a list of edges with no valid borrows
     /// left in any run after removal
     pub fn remove_tags_above(&mut self, tag: Tag, run_ptr: RunPointer) -> Vec<Tag> {
-        let removed = self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
-            .remove_all_above(run_ptr.run_and_offset.1, run_ptr.size, tag);
+        let removed = self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].remove_all_above(
+            run_ptr.offset(),
+            run_ptr.size,
+            tag,
+        );
 
         let mut all_gone = vec![];
         for edge in removed {
@@ -431,8 +472,8 @@ impl BasicMemory {
     /// Remove tag for a run ptr. Returns true if the ref is no longer present in any
     /// borrow stack
     pub fn remove_tag_run_ptr(&mut self, tag: Tag, run_ptr: RunPointer) -> bool {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].remove_borrow(
-            run_ptr.run_and_offset.1,
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].remove_borrow(
+            run_ptr.offset(),
             run_ptr.size,
             tag,
         );
@@ -442,21 +483,29 @@ impl BasicMemory {
     }
 
     pub fn above_first_shared(&self, run_ptr: RunPointer) -> Vec<Tag> {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
-            .above_first_shared(run_ptr.run_and_offset.1, run_ptr.size)
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()]
+            .above_first_shared(run_ptr.offset(), run_ptr.size)
+    }
+
+    pub fn mark_protected(&mut self, run_ptr: RunPointer, tag: Tag) {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].protect(
+            run_ptr.offset(),
+            run_ptr.size,
+            tag,
+        )
     }
 
     pub fn can_read_with(&self, run_ptr: RunPointer, tag: Tag) -> bool {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].can_read_with(
-            run_ptr.run_and_offset.1,
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].can_read_with(
+            run_ptr.offset(),
             run_ptr.size,
             tag,
         )
     }
 
     pub fn can_write_with(&self, run_ptr: RunPointer, tag: Tag) -> bool {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].can_write_with(
-            run_ptr.run_and_offset.1,
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].can_write_with(
+            run_ptr.offset(),
             run_ptr.size,
             tag,
         )

@@ -235,7 +235,7 @@ pub enum Literal {
     Float(f64, FloatTy),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Operand {
     Copy(Place),
     // define!("mir_move", fn Move<T>(place: T) -> T);
@@ -251,6 +251,13 @@ impl Operand {
         match self {
             Operand::Copy(place) | Operand::Move(place) => place.ty(local_decls, tcx),
             Operand::Constant(lit) => lit.ty(),
+        }
+    }
+
+    pub fn place(&self) -> Option<&Place> {
+        match self {
+            Operand::Copy(place) | Operand::Move(place) => Some(place),
+            Operand::Constant(..) => None,
         }
     }
 }

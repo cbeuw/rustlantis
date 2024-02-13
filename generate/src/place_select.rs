@@ -12,7 +12,7 @@ use crate::{
     ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PlaceUsage {
     Operand,
     LHS,
@@ -28,6 +28,8 @@ enum PlaceUsage {
 pub struct PlaceSelector {
     tys: Option<Vec<TyId>>,
     exclusions: Vec<Place>,
+    moved: Vec<PlaceIndex>,
+    refed: Vec<PlaceIndex>,
     size: Option<Size>,
     allow_uninit: bool,
     usage: PlaceUsage,
@@ -62,6 +64,8 @@ impl PlaceSelector {
             exclusions: vec![],
             allow_uninit: false,
             tcx,
+            moved: vec![],
+            refed: vec![],
         }
     }
 
@@ -132,6 +136,20 @@ impl PlaceSelector {
         Self { exclusions, ..self }
     }
 
+    pub fn having_moved(self, place: PlaceIndex) -> Self {
+        assert_eq!(self.usage, PlaceUsage::Argument);
+        let mut moved = self.moved;
+        moved.push(place.clone());
+        Self { moved, ..self }
+    }
+
+    pub fn having_refed(self, target: PlaceIndex) -> Self {
+        assert_eq!(self.usage, PlaceUsage::Argument);
+        let mut refed = self.refed;
+        refed.push(target.clone());
+        Self { refed, ..self }
+    }
+
     fn into_iter_path(self, pt: &PlaceTable) -> impl Iterator<Item = PlacePath> + Clone + '_ {
         let exclusion_indicies: Vec<PlaceIndex> = self
             .exclusions
@@ -139,6 +157,16 @@ impl PlaceSelector {
             .map(|place| place.to_place_index(pt).expect("excluded place exists"))
             .chain(pt.return_dest_stack()) // Don't touch anything that overlaps with any RET in the stack
             .chain(pt.moved_in_args_stack()) // Don't touch anything that overlaps with moved in args in the stack
+            .collect();
+        let moved: Vec<PlaceIndex> = self
+            .moved
+            .iter()
+            .map(|place| place.to_place_index(pt).expect("place exists"))
+            .collect();
+        let refed: Vec<PlaceIndex> = self
+            .refed
+            .iter()
+            .map(|place| place.to_place_index(pt).expect("place exists"))
             .collect();
         pt.reachable_nodes().filter(move |ppath| {
             let index = ppath.target_index(pt);
@@ -195,13 +223,39 @@ impl PlaceSelector {
                 match self.usage {
                     // writes
                     PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
-                        if !pt.can_write_through(ppath.source(), ppath.target_index(pt)) {
+                        if !pt.can_write_through(ppath.source(), index) {
                             return false;
                         }
                     }
                     // reads
                     _ => {
-                        if !pt.can_read_through(ppath.source(), ppath.target_index(pt)) {
+                        if !pt.can_read_through(ppath.source(), index) {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            if self.usage == PlaceUsage::Argument {
+                if moved.iter().any(|excl| pt.overlap(index, excl)) {
+                    return false;
+                }
+                // If this contains a ref, then it cannot point to an already-picked moved arg
+                for m in &moved {
+                    if pt.contains_ref_to(index, *m) {
+                        return false;
+                    }
+                }
+
+                if !pt.ty(index).is_copy(&self.tcx) {
+                    // If this is a type that must be moved, then we must be able to write through
+                    // the chosen projection,
+                    if !pt.can_write_through(ppath.source(), index) {
+                        return false;
+                    }
+                    // and it must not be referenced by an already-picked reference
+                    for r in &refed {
+                        if pt.contains_ref_to(*r, index) {
                             return false;
                         }
                     }

@@ -736,7 +736,8 @@ impl GenerationCtx {
             })?;
 
         let args_count = self.rng.get_mut().gen_range(0..=MAX_ARGS_COUNT);
-        let mut selector = PlaceSelector::for_argument(self.tcx.clone()).except(&return_place);
+        let mut selector = PlaceSelector::for_argument(self.tcx.clone())
+            .having_moved(return_place.to_place_index(&self.pt).unwrap());
         let mut args = vec![];
         for _ in 0..args_count {
             let (places, weights) = selector
@@ -746,10 +747,27 @@ impl GenerationCtx {
             let arg = self.make_choice_weighted(places.into_iter(), weights, |ppath| {
                 let ty = &ppath.target_node(&self.pt).ty;
                 let place = ppath.to_place(&self.pt);
-                if ty.is_copy(&self.tcx) {
+                let pidx = ppath.target_index(&self.pt);
+
+                let refs = self.pt.refs_in(pidx);
+                for r in refs {
+                    selector = selector.clone().having_refed(r);
+                }
+
+                // If already chosen arguments contain a reference to this, then
+                // this must be copy. Non-copy type referenced by already chosen
+                // arguments are filtered out by PlaceSelector.
+                if args
+                    .iter()
+                    .filter_map(Operand::place)
+                    .any(|p| self.pt.contains_ref_to(p, pidx))
+                {
+                    assert!(ty.is_copy(&self.tcx));
+                    Ok(Operand::Copy(place))
+                } else if ty.is_copy(&self.tcx) {
                     Ok(Operand::Copy(place))
                 } else {
-                    selector = selector.clone().except(&place);
+                    selector = selector.clone().having_moved(pidx);
                     Ok(Operand::Move(place))
                 }
             })?;

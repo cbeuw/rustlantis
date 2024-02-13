@@ -201,6 +201,63 @@ impl PlaceTable {
         });
     }
 
+    /// Returns whether the selection of function call arguments will not cause
+    /// UB. Must be called while we are still in the Caller
+    pub fn arguments_ok(&self, args: &[Operand], return_dest: &Place) -> bool {
+        // Check if the move of any places would invalidate any reference
+        let mut ok = true;
+
+        let mut invalidated: HashSet<Tag> = HashSet::new();
+        // Find all tags that will be invalidated
+        for arg in args
+            .iter()
+            .filter_map(|arg| {
+                if let Operand::Move(p) = arg {
+                    Some(p)
+                } else {
+                    None
+                }
+            })
+            .chain([return_dest])
+        {
+            self.visit_transitive_subfields(
+                arg.to_place_index(self).expect("place exists"),
+                |pid| {
+                    let node = &self.places[pid];
+                    if let Some(run_ptr) = node.run_ptr {
+                        invalidated.extend(self.memory.above_first_shared(run_ptr));
+                        VisitAction::Stop
+                    } else {
+                        VisitAction::Continue
+                    }
+                },
+            );
+        }
+        // Find if any references uses an invalidated tag
+        for arg in args {
+            match arg {
+                Operand::Copy(p) | Operand::Move(p) => {
+                    self.visit_transitive_subfields(
+                        p.to_place_index(self).expect("place exists"),
+                        |pid| {
+                            let node = &self.places[pid];
+                            if node.ty.is_ref(&self.tcx) {
+                                let tag = node.tag.expect("has tag");
+                                if invalidated.contains(&tag) {
+                                    ok = false;
+                                    return VisitAction::ShortCircuit;
+                                }
+                            }
+                            VisitAction::Continue
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+        ok
+    }
+
     pub fn enter_fn(&mut self, body: &Body, args: &[Operand], return_dest: &Place) {
         // Get the PlaceIndices before frame switch
 
@@ -233,9 +290,15 @@ impl PlaceTable {
                     PlaceOperand::Copy(source_pidx) | PlaceOperand::Move(source_pidx) => {
                         debug_assert!(
                             self.is_place_init(source_pidx),
-                            "function arguments must be init"
+                            "function arguments must be init: arg {local:?} source {source_pidx:?}"
                         );
                         self.copy_place(pidx, source_pidx);
+                        self.update_transitive_subfields(pidx, |this, node| {
+                            if this.ty(node).is_ref(&this.tcx) {
+                                this.mark_ref_protected(node);
+                            }
+                            VisitAction::Continue
+                        })
                     }
                     PlaceOperand::Constant(lit) => self.assign_literal(pidx, Some(*lit)),
                 }
@@ -658,6 +721,14 @@ impl PlaceTable {
         }
     }
 
+    fn mark_ref_protected(&mut self, p: impl ToPlaceIndex) {
+        let p = p.to_place_index(&self).expect("place exists");
+        assert!(self.ty(p).is_ref(&self.tcx));
+        let run = self.places[p].run_ptr.expect("has run");
+        self.memory
+            .mark_protected(run, self.places[p].tag.expect("has tag"));
+    }
+
     pub fn mark_place_moved(&mut self, p: impl ToPlaceIndex) {
         let p = p.to_place_index(&self).expect("place exists");
         self.mark_place_uninit(p);
@@ -706,6 +777,33 @@ impl PlaceTable {
                 VisitAction::Continue
             }
         });
+    }
+
+    /// Returns all subfields that are reference type in a Place
+    pub fn refs_in(&self, p: impl ToPlaceIndex) -> Vec<PlaceIndex> {
+        self.subfields(p)
+            .iter()
+            .filter(|pidx| self.ty(pidx).is_ref(&self.tcx))
+            .copied()
+            .collect()
+    }
+
+    /// Whether a place contains a reference to a place and its subfields
+    pub fn contains_ref_to(&self, r: impl ToPlaceIndex, dest: PlaceIndex) -> bool {
+        let r = r.to_place_index(self).expect("place exists");
+        let mut contains = false;
+        self.visit_transitive_subfields(r.to_place_index(self).expect("place exists"), |pid| {
+            if self.ty(pid).is_ref(&self.tcx) {
+                if let Some(pointee) = self.pointee(pid)
+                    && self.overlap(pointee, dest)
+                {
+                    contains = true;
+                    return VisitAction::ShortCircuit;
+                }
+            }
+            VisitAction::Continue
+        });
+        contains
     }
 
     /// Returns all pointers to a pointee, and the ref edge
@@ -857,6 +955,16 @@ impl PlaceTable {
         local_iter.flat_map(|&pidx| self.reachable_from_node(pidx))
     }
 
+    /// Returns all transitive subfields of a place
+    fn subfields(&self, p: impl ToPlaceIndex) -> Vec<PlaceIndex> {
+        let mut subs: Vec<PlaceIndex> = vec![];
+        self.visit_transitive_subfields(p.to_place_index(self).expect("place exists"), |sub| {
+            subs.push(sub);
+            VisitAction::Continue
+        });
+        subs
+    }
+
     /// Whether two places overlap or alias
     pub fn overlap(&self, a: impl ToPlaceIndex, b: impl ToPlaceIndex) -> bool {
         let a = a.to_place_index(self).expect("place exists");
@@ -870,17 +978,9 @@ impl PlaceTable {
             return false;
         }
 
-        let mut a_sub: Vec<PlaceIndex> = vec![];
-        self.visit_transitive_subfields(a, |sub| {
-            a_sub.push(sub);
-            VisitAction::Continue
-        });
+        let a_sub: Vec<PlaceIndex> = self.subfields(a);
 
-        let mut b_sub: Vec<PlaceIndex> = vec![];
-        self.visit_transitive_subfields(b, |sub| {
-            b_sub.push(sub);
-            VisitAction::Continue
-        });
+        let b_sub: Vec<PlaceIndex> = self.subfields(b);
 
         // TODO: should I use a hashmap here?
         for a_node in a_sub {
@@ -1013,6 +1113,12 @@ impl PlaceTable {
         self.places.node_count()
     }
 
+    /// Whether writing to a place will invalidate a tag
+    fn will_write_invalidate(&self, dest: RunPointer, tag: Tag) -> bool {
+        let invalidated = self.memory.above_first_shared(dest);
+        return invalidated.contains(&tag);
+    }
+
     /// To be called when a place is written to. Invalidates (removes) all references and raw pointers after the first
     /// shared reference on the stack, and mark references uninit
     pub fn place_written(&mut self, p: impl ToPlaceIndex) {
@@ -1068,10 +1174,12 @@ impl PlaceTable {
 
     /// Checks if a pointer can be used to write through its target
     pub fn can_write_through(&self, ptr: PlaceIndex, p: PlaceIndex) -> bool {
-        assert_ne!(ptr, p);
-
+        // assert_ne!(ptr, p);
+        if ptr == p {
+            return true;
+        }
         if !self.ty(ptr).is_any_ptr(&self.tcx) {
-            // You can always read through a non-pointer
+            // You can always write through a non-pointer
             return true;
         }
         let Some(tag) = self.places[ptr].tag else {
