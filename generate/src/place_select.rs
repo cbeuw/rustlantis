@@ -48,10 +48,10 @@ const OFFSETTED_PTR_WEIGHT_FACTOR: Weight = 10;
 const ROUNDTRIPPED_PTR_WEIGHT_FACTOR: Weight = 100;
 
 impl PlaceSelector {
-    pub fn for_pointee(tcx: Rc<TyCtxt>) -> Self {
+    pub fn for_pointee(tcx: Rc<TyCtxt>, allow_uninit: bool) -> Self {
         Self {
             usage: PlaceUsage::Pointee,
-            allow_uninit: true,
+            allow_uninit,
             ..Self::for_operand(tcx)
         }
     }
@@ -188,6 +188,11 @@ impl PlaceSelector {
                 return false;
             };
 
+            // Ref validity
+            if self.usage != PlaceUsage::LHS && !pt.contains_only_valid_ref(index) {
+                return false;
+            }
+
             // Known val
             if self.usage == PlaceUsage::KnownVal && pt.known_val(index).is_none() {
                 return false;
@@ -227,6 +232,14 @@ impl PlaceSelector {
                             return false;
                         }
                     }
+                    // reads that will be done as moves
+                    PlaceUsage::Operand | PlaceUsage::Argument
+                        if !pt.ty(index).is_copy(&self.tcx) =>
+                    {
+                        if !pt.can_write_through(ppath.source(), index) {
+                            return false;
+                        }
+                    }
                     // reads
                     _ => {
                         if !pt.can_read_through(ppath.source(), index) {
@@ -236,6 +249,7 @@ impl PlaceSelector {
                 }
             }
 
+            // Function arguments
             if self.usage == PlaceUsage::Argument {
                 if moved.iter().any(|excl| pt.overlap(index, excl)) {
                     return false;
@@ -248,12 +262,7 @@ impl PlaceSelector {
                 }
 
                 if !pt.ty(index).is_copy(&self.tcx) {
-                    // If this is a type that must be moved, then we must be able to write through
-                    // the chosen projection,
-                    if !pt.can_write_through(ppath.source(), index) {
-                        return false;
-                    }
-                    // and it must not be referenced by an already-picked reference
+                    // If this is a type that must be moved, then it must not be referenced by an already-picked reference
                     for r in &refed {
                         if pt.contains_ref_to(*r, index) {
                             return false;

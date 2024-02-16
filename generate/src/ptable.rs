@@ -293,12 +293,9 @@ impl PlaceTable {
                             "function arguments must be init: arg {local:?} source {source_pidx:?}"
                         );
                         self.copy_place(pidx, source_pidx);
-                        self.update_transitive_subfields(pidx, |this, node| {
-                            if this.ty(node).is_ref(&this.tcx) {
-                                this.mark_ref_protected(node);
-                            }
-                            VisitAction::Continue
-                        })
+                        for r in self.refs_in(pidx) {
+                            self.mark_ref_protected(r);
+                        }
                     }
                     PlaceOperand::Constant(lit) => self.assign_literal(pidx, Some(*lit)),
                 }
@@ -320,15 +317,20 @@ impl PlaceTable {
             .iter()
             .map(|local| self.places[*local].alloc_id)
             .collect();
-        let mut has_stack_ref = false;
+        let mut has_invalid_ref = false;
         // Check if it contains any references that will be invalidated upon return
         self.visit_transitive_subfields(
             Local::RET.to_place_index(self).expect("ret exists"),
             |node| {
                 if self.ty(node).is_ref(&self.tcx) {
+                    if !self.is_ref_valid(node) {
+                        has_invalid_ref = true;
+                        return VisitAction::ShortCircuit;
+                    }
                     if let Some(pointee) = self.pointee(node) {
                         if local_allocs.contains(&self.places[pointee].alloc_id) {
-                            has_stack_ref = true;
+                            // Will dangle after return
+                            has_invalid_ref = true;
                             return VisitAction::ShortCircuit;
                         }
                     }
@@ -337,7 +339,7 @@ impl PlaceTable {
                 VisitAction::Continue
             },
         );
-        !has_stack_ref
+        !has_invalid_ref
     }
 
     pub fn exit_fn(&mut self) {
@@ -746,14 +748,6 @@ impl PlaceTable {
             self.remove_edge(old);
         }
 
-        // If this place is pointed to by a reference, we must remove the Deref edge
-        // so the reference is invalidated
-        for (pointer, ref_edge) in self.pointers_to(pidx) {
-            if self.ty(pointer).is_ref(&self.tcx) {
-                self.remove_edge(ref_edge);
-            }
-        }
-
         self.update_transitive_subfields(pidx, |this, place| {
             this.places[place].active_variant = None;
             let node = &this.places[place];
@@ -764,6 +758,28 @@ impl PlaceTable {
                 VisitAction::Continue
             }
         });
+    }
+
+    /// Whether a reference value is legal to produce
+    fn is_ref_valid(&self, r: PlaceIndex) -> bool {
+        assert!(self.ty(r).is_ref(&self.tcx));
+        let Some(target) = self.pointee(r) else {
+            return false;
+        };
+        self.is_place_init(target)
+    }
+
+    /// Whether all refs contained in a place are all valid
+    pub fn contains_only_valid_ref(&self, p: PlaceIndex) -> bool {
+        let mut has_invalid = false;
+        self.visit_transitive_subfields(p, |node| {
+            if self.ty(node).is_ref(&self.tcx) && !self.is_ref_valid(node) {
+                has_invalid = true;
+                return VisitAction::ShortCircuit;
+            }
+            VisitAction::Continue
+        });
+        !has_invalid
     }
 
     pub fn mark_place_init(&mut self, p: impl ToPlaceIndex) {
@@ -857,6 +873,10 @@ impl PlaceTable {
             TyKind::Ref(_, Mutability::Not) => BorrowType::Shared,
             _ => panic!("source must be of pointer type"),
         };
+
+        if matches!(ref_type, BorrowType::Shared | BorrowType::Exclusive) {
+            assert!(self.is_place_init(pointee));
+        }
 
         if let Some(old) = self.ref_edge(pointer) {
             self.remove_edge(old);
@@ -1128,13 +1148,7 @@ impl PlaceTable {
                 let invalidated = this.memory.above_first_shared(run);
                 // TODO: don't copy partially invalidated refs
                 for tag in invalidated {
-                    let all_gone = this.memory.remove_tag_run_ptr(tag, run);
-                    if all_gone {
-                        for pointer in this.pointer_tags[tag].clone() {
-                            let edge = this.ref_edge(pointer).expect("has edge");
-                            this.remove_edge(edge);
-                        }
-                    }
+                    this.memory.remove_tag_run_ptr(tag, run);
                 }
                 VisitAction::Stop
             } else {
@@ -1207,10 +1221,6 @@ impl PlaceTable {
         let tag = self.places[source].tag.expect("has tag");
         let edges = &mut self.pointer_tags[tag];
         edges.remove(&source);
-        if self.ty(source).is_ref(&self.tcx) {
-            let run_ptr = self.places[source].run_ptr.expect("pointer is a scalar");
-            self.memory.fill(run_ptr, AbstractByte::Uninit);
-        }
 
         let removed = self.places.remove_edge(e).expect("edge exists");
         assert!(removed.is_deref());

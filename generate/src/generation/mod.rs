@@ -353,7 +353,7 @@ impl GenerationCtx {
             TyKind::RawPtr(ty, mutability) => (ty, mutability),
             _ => return Err(SelectionError::Exhausted),
         };
-        let (candidates, weights) = PlaceSelector::for_pointee(self.tcx.clone())
+        let (candidates, weights) = PlaceSelector::for_pointee(self.tcx.clone(), true)
             .of_ty(*source_ty)
             .except(lhs)
             .into_weighted(&self.pt)
@@ -369,7 +369,7 @@ impl GenerationCtx {
             TyKind::Ref(ty, mutability) => (ty, mutability),
             _ => return Err(SelectionError::Exhausted),
         };
-        let (candidates, weights) = PlaceSelector::for_pointee(self.tcx.clone())
+        let (candidates, weights) = PlaceSelector::for_pointee(self.tcx.clone(), false)
             .of_ty(*source_ty)
             .except(lhs)
             .into_weighted(&self.pt)
@@ -735,6 +735,7 @@ impl GenerationCtx {
                 Result::Ok(ppath.to_place(&self.pt))
             })?;
 
+        // TODO: if return place has a ref, don't generate 0 argument as this can never be valid
         let args_count = self.rng.get_mut().gen_range(0..=MAX_ARGS_COUNT);
         let mut selector = PlaceSelector::for_argument(self.tcx.clone())
             .having_moved(return_place.to_place_index(&self.pt).unwrap());

@@ -136,14 +136,12 @@ impl Run {
     }
 
     pub fn can_read_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
-        //FIXME: performance
         self.ref_stack
             .iter(offset, len)
             .all(|(_, stack)| stack.iter().any(|borrow| borrow.tag == tag))
     }
 
     pub fn can_write_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
-        //FIXME: performance
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
                 .iter()
@@ -157,8 +155,12 @@ impl Run {
                     return false;
                 }
             }
-            // tag is below first shared
-            if !stack[..tag_search_limit].iter().any(|borrow| borrow.tag == tag) {
+            // and the tag exists below first shared (or anywhere, if there is no shared)
+            if stack[..tag_search_limit]
+                .iter()
+                .find(|borrow| borrow.tag == tag)
+                .is_none()
+            {
                 return false;
             }
         }
