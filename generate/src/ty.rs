@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Write};
+use std::{collections::HashMap, fmt::Write, iter};
 
 use index_vec::IndexVec;
 use log::{log_enabled, trace};
@@ -7,13 +7,24 @@ use mir::{
     syntax::{Adt, IntTy, Mutability, TyId, TyKind, VariantDef},
     tyctxt::{AdtMeta, TyCtxt},
 };
-use rand::{seq::IteratorRandom, Rng};
+use rand::{
+    seq::{IteratorRandom, SliceRandom},
+    Rng,
+};
 use rand_distr::{Distribution, Poisson, WeightedIndex};
 
-const TUPLE_MAX_LEN: usize = 12;
+/// Max. arity of tuple
+const TUPLE_MAX_LEN: usize = 4;
+/// Max. len of array
 pub const ARRAY_MAX_LEN: usize = 8;
+/// Max. number of fields in a struct or enum variant
 const STRUCT_MAX_FIELDS: usize = 8;
+/// Max. number of variants in an enum
 const ADT_MAX_VARIANTS: usize = 4;
+/// Number of composite structural types
+const COMPOSITE_COUNT: usize = 64;
+/// Number of ADTs
+const ADT_COUNT: usize = 8;
 
 #[derive(Clone)]
 pub struct TySelect {
@@ -32,7 +43,7 @@ impl TySelect {
         let p_floats = 0.1;
         let p_ints = 0.1;
         let p_isize = 0.1;
-        let p_pointers = 0.2;
+        let p_pointers = 0.3;
 
         // Types with special treatment as we want to increase their weighting
         let mut weights: HashMap<TyId, f32> = HashMap::new();
@@ -100,62 +111,58 @@ impl TySelect {
             .expect("tyctxt isn't empty")
     }
 }
-pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
-    // Seed with primitives
-    let mut tcx: TyCtxt = TyCtxt::from_primitives();
 
-    // Generate composite structural types
-    for _ in 0..=32 {
-        let new_ty = match rng.gen_range(0..=3) {
-            0 => TyKind::Tuple({
-                let dist = Poisson::<f32>::new(2.7).unwrap();
-                let length = dist.sample(rng).clamp(1., TUPLE_MAX_LEN as f32) as usize;
-                (0..length)
-                    .map(|_| {
-                        tcx.indices()
-                            .filter(|ty| *ty != TyCtxt::UNIT)
-                            .choose(rng)
-                            .unwrap()
-                    })
-                    .collect()
-            }),
-            1 => TyKind::RawPtr(
-                tcx.indices()
-                    .filter(|ty| *ty != TyCtxt::UNIT)
-                    .choose(rng)
-                    .unwrap(),
-                if rng.gen_bool(0.5) {
-                    Mutability::Mut
-                } else {
-                    Mutability::Not
-                },
-            ),
-            2 => TyKind::Ref(
-                tcx.indices()
-                    .filter(|ty| *ty != TyCtxt::UNIT)
-                    .choose(rng)
-                    .unwrap(),
-                Mutability::Not,
-            ),
-            3 => TyKind::Array(
-                tcx.iter_enumerated()
-                    .filter_map(|(ty, kind)| (ty != TyCtxt::UNIT && kind.is_scalar()).then_some(ty))
-                    .choose(rng)
-                    .unwrap(),
-                rng.gen_range(1..=ARRAY_MAX_LEN),
-            ),
-            _ => unreachable!(),
-        };
-        if !tcx.iter().any(|ty| *ty == new_ty) {
-            tcx.push(new_ty);
-        }
+fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
+    let new_ty = match rng.gen_range(0..=3) {
+        0 => TyKind::Tuple({
+            let dist = Poisson::<f32>::new(2.7).unwrap();
+            let length = dist.sample(rng).clamp(1., TUPLE_MAX_LEN as f32) as usize;
+            (0..length)
+                .map(|_| {
+                    tcx.indices()
+                        .filter(|ty| *ty != TyCtxt::UNIT)
+                        .choose(rng)
+                        .unwrap()
+                })
+                .collect()
+        }),
+        1 => TyKind::RawPtr(
+            tcx.indices()
+                .filter(|ty| *ty != TyCtxt::UNIT)
+                .choose(rng)
+                .unwrap(),
+            if rng.gen_bool(0.5) {
+                Mutability::Mut
+            } else {
+                Mutability::Not
+            },
+        ),
+        2 => TyKind::Ref(
+            tcx.indices()
+                .filter(|ty| *ty != TyCtxt::UNIT)
+                .choose(rng)
+                .unwrap(),
+            Mutability::Not,
+        ),
+        3 => TyKind::Array(
+            tcx.iter_enumerated()
+                .filter_map(|(ty, kind)| (ty != TyCtxt::UNIT && kind.is_scalar()).then_some(ty))
+                .choose(rng)
+                .unwrap(),
+            rng.gen_range(1..=ARRAY_MAX_LEN),
+        ),
+        _ => unreachable!(),
+    };
+    if !tcx.iter().any(|ty| *ty == new_ty) {
+        tcx.push(new_ty);
     }
+}
 
+fn new_adt(tcx: &mut TyCtxt, rng: &mut impl Rng) {
     // TODO: recursive types
-    for _ in 0..=16 {
-        let variant_count = rng.gen_range(1..=ADT_MAX_VARIANTS);
+    let variant_count = rng.gen_range(1..=ADT_MAX_VARIANTS);
 
-        let variants = (0..variant_count).map(|_| {
+    let variants = (0..variant_count).map(|_| {
             let field_count = rng.gen_range(1..=STRUCT_MAX_FIELDS);
             let field_tys = tcx
                 .indices()
@@ -165,19 +172,41 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
                 fields: IndexVec::from_iter(field_tys.into_iter()),
             }
         });
-        let adt = Adt {
-            variants: IndexVec::from_iter(variants),
-        };
+    let adt = Adt {
+        variants: IndexVec::from_iter(variants),
+    };
 
-        let copy = if adt.copy_derivable(&tcx) {
-            rng.gen_bool(0.5)
-        } else {
-            false
-        };
+    let copy = if adt.copy_derivable(&tcx) {
+        rng.gen_bool(0.5)
+    } else {
+        false
+    };
 
-        let meta = AdtMeta { copy };
+    let meta = AdtMeta { copy };
 
-        tcx.push_adt(adt, meta);
+    tcx.push_adt(adt, meta);
+}
+
+pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
+    // Seed with primitives
+    let mut tcx: TyCtxt = TyCtxt::from_primitives();
+
+    #[derive(Clone, Copy)]
+    enum Kind {
+        Adt,
+        Structural,
+    }
+
+    let mut choices: Vec<Kind> = iter::repeat(Kind::Structural)
+        .take(COMPOSITE_COUNT)
+        .chain(iter::repeat(Kind::Adt).take(ADT_COUNT))
+        .collect();
+    choices.shuffle(rng);
+    for choice in choices {
+        match choice {
+            Kind::Adt => new_adt(&mut tcx, rng),
+            Kind::Structural => new_composite(&mut tcx, rng),
+        }
     }
     tcx
 }

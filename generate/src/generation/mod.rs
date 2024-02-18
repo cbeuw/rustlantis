@@ -36,6 +36,8 @@ const MAX_BB_COUNT: usize = 15;
 const MAX_BB_COUNT_HARD: usize = 60;
 /// Max. number of functions in the program Call generator stops being a possible candidate
 const MAX_FN_COUNT: usize = 20;
+/// Max. number of arguments a function can have
+const MAX_ARGS_COUNT: usize = 12;
 /// Expected proportion of variables to be dumped
 const VAR_DUMP_CHANCE: f32 = 0.5;
 
@@ -91,7 +93,7 @@ impl GenerationCtx {
                 .into_weighted(&self.pt)
                 .ok_or(SelectionError::Exhausted)?;
             self.make_choice_weighted(ppath.into_iter(), weights, |ppath| {
-                if ppath.target_node(&self.pt).ty.is_copy(&self.tcx) {
+                if self.pt.ty(ppath.target_index()).is_copy(&self.tcx) {
                     Ok(Operand::Copy(ppath.to_place(&self.pt)))
                 } else {
                     Ok(Operand::Move(ppath.to_place(&self.pt)))
@@ -175,7 +177,7 @@ impl GenerationCtx {
                     let l = self.choose_operand(&[lhs_ty], lhs)?;
                     let (ppath, weights) = PlaceSelector::for_non_zero(self.tcx.clone())
                         .of_ty(lhs_ty)
-                        .except(&lhs)
+                        .except(lhs)
                         .into_weighted(&self.pt)
                         .ok_or(SelectionError::Exhausted)?;
                     let r = self.make_choice_weighted(ppath.into_iter(), weights, |ppath| {
@@ -535,7 +537,7 @@ impl GenerationCtx {
                 place.serialize_place(&self.tcx),
             );
 
-            let TyKind::Adt(adt) = self.tcx.kind(self.pt.ty(ppath.target_index(&self.pt))) else {
+            let TyKind::Adt(adt) = self.tcx.kind(self.pt.ty(ppath.target_index())) else {
                 panic!("not an enum type")
             };
 
@@ -675,7 +677,7 @@ impl GenerationCtx {
             self.make_choice_weighted(places.into_iter(), weights, |ppath| {
                 let val = self
                     .pt
-                    .known_val(ppath.target_index(&self.pt))
+                    .known_val(ppath.target_index())
                     .expect("has_value");
                 Ok((ppath.to_place(&self.pt), *val))
             })?;
@@ -734,8 +736,9 @@ impl GenerationCtx {
                 Result::Ok(ppath.to_place(&self.pt))
             })?;
 
-        let args_count: i32 = self.rng.get_mut().gen_range(2..=16);
-        let mut selector = PlaceSelector::for_argument(self.tcx.clone()).except(&return_place);
+        let args_count = self.rng.get_mut().gen_range(0..=MAX_ARGS_COUNT);
+        let mut selector = PlaceSelector::for_argument(self.tcx.clone())
+            .having_moved(return_place.to_place_index(&self.pt).unwrap());
         let mut args = vec![];
         for _ in 0..args_count {
             let (places, weights) = selector
@@ -743,12 +746,29 @@ impl GenerationCtx {
                 .into_weighted(&self.pt)
                 .ok_or(SelectionError::Exhausted)?;
             let arg = self.make_choice_weighted(places.into_iter(), weights, |ppath| {
-                let ty = &ppath.target_node(&self.pt).ty;
                 let place = ppath.to_place(&self.pt);
-                if ty.is_copy(&self.tcx) {
+                let pidx = ppath.target_index();
+                let ty = self.pt.ty(pidx);
+
+                let refs = self.pt.refs_in(pidx);
+                for r in refs {
+                    selector = selector.clone().having_refed(r);
+                }
+
+                // If already chosen arguments contain a reference to this, then
+                // this must be copy. Non-copy type referenced by already chosen
+                // arguments are filtered out by PlaceSelector.
+                if args
+                    .iter()
+                    .filter_map(Operand::place)
+                    .any(|p| self.pt.contains_ref_to(p, pidx))
+                {
+                    assert!(ty.is_copy(&self.tcx));
+                    Ok(Operand::Copy(place))
+                } else if ty.is_copy(&self.tcx) {
                     Ok(Operand::Copy(place))
                 } else {
-                    selector = selector.clone().except(&place);
+                    selector = selector.clone().having_moved(pidx);
                     Ok(Operand::Move(place))
                 }
             })?;
@@ -969,7 +989,7 @@ impl GenerationCtx {
             program: self.program.clone(),
             pt: self.pt.clone(),
             return_stack: self.return_stack.clone(),
-            cursor: self.cursor.clone(),
+            cursor: self.cursor,
         });
     }
 
@@ -1219,7 +1239,7 @@ impl GenerationCtx {
 
     fn generate_fn0(&mut self) {
         self.save_ctx();
-        let args_count = self.rng.get_mut().gen_range(2..=16);
+        let args_count = self.rng.get_mut().gen_range(0..=MAX_ARGS_COUNT);
         let arg_tys: Vec<TyId> = self
             .tcx
             .indices()
@@ -1298,7 +1318,7 @@ impl GenerationCtx {
                         Rvalue::AddressOf(_, referent) | Rvalue::Ref(_, referent) => {
                             let referent = referent.to_place_index(&self.pt).unwrap();
                             actions.push(Box::new(move |pt| {
-                                pt.set_ref(lhs, referent);
+                                pt.set_ref(lhs, referent, None);
                             }));
                         }
                         _ => {

@@ -9,7 +9,7 @@ use difftest::{
     backends::{Backend, Cranelift, Miri, OptLevel, GCC, LLVM},
     run_diff_test, BackendName,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 
 fn main() -> ExitCode {
     env_logger::init();
@@ -91,13 +91,13 @@ fn main() -> ExitCode {
     if results.all_same() && results.all_success() {
         info!("{} is all the same", source.as_os_str().to_string_lossy());
         debug!("{}", results);
-        return ExitCode::SUCCESS;
+        ExitCode::SUCCESS
     } else {
         let results = results.to_string();
         error!(
             "{} didn't pass:\n{results}",
             source.as_os_str().to_string_lossy(),
         );
-        return ExitCode::FAILURE;
+        ExitCode::FAILURE
     }
 }

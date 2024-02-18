@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt, mem, ops::Range};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt, mem,
+    ops::Range,
+};
 
 use abi::size::Size;
 use index_vec::{define_index_type, IndexVec};
@@ -9,7 +13,7 @@ use mir::{
 use rangemap::RangeMap;
 use smallvec::SmallVec;
 
-use crate::ptable::ProjectionIndex;
+define_index_type! {pub struct Tag = u32;}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AbstractByte {
@@ -44,7 +48,8 @@ pub enum BorrowType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Borrow {
     borrow_type: BorrowType,
-    edge: ProjectionIndex,
+    tag: Tag,
+    protected: bool,
 }
 
 /// A Run represents a contiguous region of memory free of padding
@@ -65,54 +70,99 @@ impl Run {
         Size::from_bytes(self.bytes.len())
     }
 
-    pub fn add_borrow(
-        &mut self,
-        offset: Size,
-        len: Size,
-        borrow_type: BorrowType,
-        edge: ProjectionIndex,
-    ) {
+    pub fn add_borrow(&mut self, offset: Size, len: Size, borrow_type: BorrowType, tag: Tag) {
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
-            stack.push(Borrow { borrow_type, edge });
+            stack.push(Borrow {
+                borrow_type,
+                tag,
+                protected: false,
+            });
         }
     }
 
-    pub fn remove_borrow(&mut self, offset: Size, len: Size, edge: ProjectionIndex) {
+    pub fn remove_borrow(&mut self, offset: Size, len: Size, tag: Tag) {
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
-            if let Some(i) = stack.iter().position(|b| b.edge == edge) {
-                stack.remove(i);
+            if let Some(i) = stack.iter().position(|b| b.tag == tag) {
+                let removed = stack.remove(i);
+                assert!(!removed.protected);
             }
         }
     }
 
-    /// Gets all edges including and below edge (and therefore potentially borrowed from it)
-    pub fn below(&self, offset: Size, len: Size, edge: ProjectionIndex) -> Vec<ProjectionIndex> {
-        let mut edges = vec![];
-        for (_, stack) in self.ref_stack.iter(offset, len) {
-            let index = stack.iter().position(|borrow| borrow.edge == edge);
-            if let Some(index) = index {
-                edges.extend(stack[index..].iter().map(|borrow| borrow.edge));
+    pub fn protect(&mut self, offset: Size, len: Size, tag: Tag) {
+        for (_, stack) in self.ref_stack.iter_mut(offset, len) {
+            if let Some(i) = stack.iter().position(|b| b.tag == tag) {
+                stack[i].protected = true;
             }
         }
-        edges
     }
 
-    pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<ProjectionIndex> {
-        let mut edges = vec![];
+    pub fn above_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
+        let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
                 .iter()
                 .position(|borrow| borrow.borrow_type == BorrowType::Shared);
             if let Some(first_shared) = first_shared {
-                edges.extend(stack[first_shared..].iter().map(|borrow| borrow.edge));
+                edges.extend(stack[first_shared..].iter().map(|borrow| borrow.tag));
+            }
+        }
+        edges.iter().copied().collect()
+    }
+
+    pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
+        let mut edges = BTreeSet::new();
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let first_shared = stack
+                .iter()
+                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
+            if let Some(first_shared) = first_shared {
+                edges.extend(stack[..first_shared].iter().map(|borrow| borrow.tag));
+            }
+        }
+        edges.iter().copied().collect()
+    }
+
+    pub fn remove_all_above(&mut self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
+        let mut edges = vec![];
+        for (_, stack) in self.ref_stack.iter_mut(offset, len) {
+            let index = stack.iter().position(|borrow| borrow.tag == tag);
+            if let Some(index) = index {
+                edges.extend(stack[index..].iter().map(|borrow| borrow.tag));
+                stack.truncate(index);
             }
         }
         edges
     }
 
-    pub fn can_write_through(&self, offset: Size, len: Size, edge: ProjectionIndex) -> bool {
+    pub fn can_read_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
         //FIXME: performance
-        !self.below_first_shared(offset, len).contains(&edge)
+        self.ref_stack
+            .iter(offset, len)
+            .all(|(_, stack)| stack.iter().any(|borrow| borrow.tag == tag))
+    }
+
+    pub fn can_write_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
+        //FIXME: performance
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let first_shared = stack
+                .iter()
+                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
+            let mut tag_search_limit = stack.len();
+            if let Some(first_shared) = first_shared {
+                tag_search_limit = first_shared;
+                // nothing above first shared (which will be popped off)
+                // is protected
+                if stack[first_shared..].iter().any(|borrow| borrow.protected) {
+                    return false;
+                }
+            }
+            // tag is below first shared
+            if !stack[..tag_search_limit].iter().any(|borrow| borrow.tag == tag) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -177,6 +227,31 @@ impl AllocationBuilder {
     }
 }
 
+trait RangeExt: Sized {
+    fn overlap(&self, other: &Self) -> bool;
+    fn subtract(&self, other: &Self) -> [Option<Self>; 2];
+}
+
+impl RangeExt for Range<usize> {
+    fn overlap(&self, other: &Self) -> bool {
+        self.start <= other.end && other.start <= self.end
+    }
+    fn subtract(&self, other: &Self) -> [Option<Self>; 2] {
+        assert!(self.overlap(other));
+        let left = if self.start < other.start {
+            Some(self.start..other.start)
+        } else {
+            None
+        };
+        let right = if other.end < self.end {
+            Some(other.end..self.end)
+        } else {
+            None
+        };
+        [left, right]
+    }
+}
+
 define_index_type! {pub struct AllocId = u32;}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,9 +262,39 @@ pub struct RunPointer {
 }
 
 impl RunPointer {
+    pub fn from_bytes_range(range: Range<usize>, alloc_id: AllocId, run: RunId) -> Self {
+        RunPointer {
+            alloc_id,
+            run_and_offset: RunAndOffset(run, Size::from_bytes(range.start)),
+            size: Size::from_bytes(range.count()),
+        }
+    }
+
+    pub fn run(&self) -> RunId {
+        self.run_and_offset.0
+    }
+
+    pub fn offset(&self) -> Size {
+        self.run_and_offset.1
+    }
+
+    pub fn len(&self) -> Size {
+        self.size
+    }
+
     pub fn bytes_range(&self) -> Range<usize> {
         self.run_and_offset.1.bytes_usize()
             ..self.run_and_offset.1.bytes_usize() + self.size.bytes_usize()
+    }
+
+    pub fn overlap(&self, other: &Self) -> bool {
+        if self.alloc_id != other.alloc_id {
+            return false;
+        }
+        if !self.run_and_offset.same_run(&other.run_and_offset) {
+            return false;
+        }
+        self.bytes_range().overlap(&other.bytes_range())
     }
 }
 
@@ -198,8 +303,8 @@ pub struct BasicMemory {
     allocations: IndexVec<AllocId, Allocation>,
 
     // a lookup table to aid removal from borrow stacks
-    // an edge may cover multiple runs, e.g. &(u32, u32),
-    pointers: HashMap<ProjectionIndex, SmallVec<[RunPointer; 4]>>,
+    // a tag may cover multiple runs, e.g. &(u32, u32),
+    pointers: HashMap<Tag, SmallVec<[RunPointer; 4]>>,
 }
 
 impl BasicMemory {
@@ -238,8 +343,7 @@ impl BasicMemory {
             self.allocations[run_ptr.alloc_id].live,
             "can't access dead bytes"
         );
-        &self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].bytes
-            [run_ptr.bytes_range()]
+        &self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].bytes[run_ptr.bytes_range()]
     }
 
     pub fn fill(&mut self, run_ptr: RunPointer, val: AbstractByte) {
@@ -251,8 +355,7 @@ impl BasicMemory {
             self.allocations[run_ptr.alloc_id].live,
             "can't access dead bytes"
         );
-        &mut self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].bytes
-            [run_ptr.bytes_range()]
+        &mut self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].bytes[run_ptr.bytes_range()]
     }
 
     pub fn copy(&mut self, dst: RunPointer, src: RunPointer) {
@@ -289,42 +392,122 @@ impl BasicMemory {
         })
     }
 
-    pub fn add_ref(&mut self, run_ptr: RunPointer, borrow_type: BorrowType, edge: ProjectionIndex) {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].add_borrow(
-            run_ptr.run_and_offset.1,
+    pub fn add_ref(&mut self, run_ptr: RunPointer, borrow_type: BorrowType, tag: Tag) {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].add_borrow(
+            run_ptr.offset(),
             run_ptr.size,
             borrow_type,
-            edge,
+            tag,
         );
         self.pointers
-            .entry(edge)
+            .entry(tag)
             .and_modify(|ptrs| ptrs.push(run_ptr))
             .or_insert(SmallVec::from([run_ptr].as_slice()));
     }
 
-    pub fn remove_ref(&mut self, edge: ProjectionIndex) {
-        let run_ptrs = self.pointers.remove(&edge);
+    /// Remove tag for all runs
+    pub fn remove_tag(&mut self, tag: Tag) {
+        let run_ptrs = self.pointers.remove(&tag);
         if let Some(run_ptrs) = run_ptrs {
             for run_ptr in run_ptrs {
-                self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].remove_borrow(
-                    run_ptr.run_and_offset.1,
+                self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].remove_borrow(
+                    run_ptr.offset(),
                     run_ptr.size,
-                    edge,
+                    tag,
                 );
             }
         }
     }
 
-    pub fn below_first_shared(&self, run_ptr: RunPointer) -> Vec<ProjectionIndex> {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0]
-            .below_first_shared(run_ptr.run_and_offset.1, run_ptr.size)
+    /// Remove a range (run_ptr) from the lookup table.
+    fn derange(&mut self, tag: Tag, run_ptr: RunPointer) {
+        if let Some(all_run_ptrs) = self.pointers.get(&tag) {
+            // Check if the run_ptr we removed overlaps with ones cached, then remove/split them as necessary
+            let mut updated = SmallVec::new();
+            for stored in all_run_ptrs {
+                if stored.overlap(&run_ptr) {
+                    let left_and_right = stored.bytes_range().subtract(&run_ptr.bytes_range());
+                    for range in left_and_right {
+                        if let Some(range) = range {
+                            updated.push(RunPointer::from_bytes_range(
+                                range,
+                                stored.alloc_id,
+                                stored.run(),
+                            ));
+                        }
+                    }
+                } else {
+                    updated.push(*stored);
+                }
+            }
+
+            let empty = updated.is_empty();
+            if empty {
+                self.pointers.remove(&tag);
+            } else {
+                self.pointers.insert(tag, updated);
+            }
+        }
     }
 
-    pub fn can_write_through(&self, run_ptr: RunPointer, edge: ProjectionIndex) -> bool {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run_and_offset.0].can_write_through(
-            run_ptr.run_and_offset.1,
+    /// Remove all tags including and above from a run. Returns a list of edges with no valid borrows
+    /// left in any run after removal
+    pub fn remove_tags_above(&mut self, tag: Tag, run_ptr: RunPointer) -> Vec<Tag> {
+        let removed = self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].remove_all_above(
+            run_ptr.offset(),
             run_ptr.size,
-            edge,
+            tag,
+        );
+
+        let mut all_gone = vec![];
+        for edge in removed {
+            self.derange(edge, run_ptr);
+            if !self.pointers.contains_key(&edge) {
+                all_gone.push(edge);
+            }
+        }
+        all_gone
+    }
+
+    /// Remove tag for a run ptr. Returns true if the ref is no longer present in any
+    /// borrow stack
+    pub fn remove_tag_run_ptr(&mut self, tag: Tag, run_ptr: RunPointer) -> bool {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].remove_borrow(
+            run_ptr.offset(),
+            run_ptr.size,
+            tag,
+        );
+
+        self.derange(tag, run_ptr);
+        !self.pointers.contains_key(&tag)
+    }
+
+    pub fn above_first_shared(&self, run_ptr: RunPointer) -> Vec<Tag> {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()]
+            .above_first_shared(run_ptr.offset(), run_ptr.size)
+    }
+
+    pub fn mark_protected(&mut self, run_ptr: RunPointer, tag: Tag) {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].protect(
+            run_ptr.offset(),
+            run_ptr.size,
+            tag,
+        )
+    }
+
+    pub fn can_read_with(&self, run_ptr: RunPointer, tag: Tag) -> bool {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].can_read_with(
+            run_ptr.offset(),
+            run_ptr.size,
+            tag,
+        )
+    }
+
+    pub fn can_write_with(&self, run_ptr: RunPointer, tag: Tag) -> bool {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].can_write_with(
+            run_ptr.offset(),
+            run_ptr.size,
+            tag,
         )
     }
 }

@@ -235,7 +235,7 @@ pub enum Literal {
     Float(f64, FloatTy),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Operand {
     Copy(Place),
     // define!("mir_move", fn Move<T>(place: T) -> T);
@@ -251,6 +251,13 @@ impl Operand {
         match self {
             Operand::Copy(place) | Operand::Move(place) => place.ty(local_decls, tcx),
             Operand::Constant(lit) => lit.ty(),
+        }
+    }
+
+    pub fn place(&self) -> Option<&Place> {
+        match self {
+            Operand::Copy(place) | Operand::Move(place) => Some(place),
+            Operand::Constant(..) => None,
         }
     }
 }
@@ -346,33 +353,32 @@ impl TyId {
         match projs {
             [] => self,
             [head, tail @ ..] => {
-                let projected =
-                    match head {
-                        ProjectionElem::Deref => match self.kind(tcx) {
-                            TyKind::RawPtr(pointee, ..) | TyKind::Ref(pointee, ..) => *pointee,
-                            _ => panic!("not a reference"),
-                        },
-                        ProjectionElem::TupleField(idx) => {
-                            self.tuple_elems(tcx).expect("is a tuple")[idx.index()]
+                let projected = match head {
+                    ProjectionElem::Deref => match self.kind(tcx) {
+                        TyKind::RawPtr(pointee, ..) | TyKind::Ref(pointee, ..) => *pointee,
+                        _ => panic!("not a reference"),
+                    },
+                    ProjectionElem::TupleField(idx) => {
+                        self.tuple_elems(tcx).expect("is a tuple")[idx.index()]
+                    }
+                    ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } => {
+                        match self.kind(tcx) {
+                            TyKind::Array(ty, ..) => *ty,
+                            _ => panic!("not an array"),
                         }
-                        ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } => {
-                            match self.kind(tcx) {
-                                TyKind::Array(ty, ..) => *ty,
-                                _ => panic!("not an array"),
-                            }
+                    }
+                    ProjectionElem::Field(fid) => match self.kind(tcx) {
+                        TyKind::Adt(adt) => {
+                            let fields = &adt.variants.first().expect("adt is a struct").fields;
+                            fields[*fid]
                         }
-                        ProjectionElem::Field(fid) => match self.kind(tcx) {
-                            TyKind::Adt(adt) => {
-                                let fields = &adt.variants.first().expect("adt is a struct").fields;
-                                fields[*fid]
-                            }
-                            _ => panic!("not an adt"),
-                        },
-                        ProjectionElem::DowncastField(vid, fid, _) => match self.kind(tcx) {
-                            TyKind::Adt(adt) => adt.variants[*vid].fields[*fid],
-                            _ => panic!("not an adt"),
-                        },
-                    };
+                        _ => panic!("not an adt"),
+                    },
+                    ProjectionElem::DowncastField(vid, fid, _) => match self.kind(tcx) {
+                        TyKind::Adt(adt) => adt.variants[*vid].fields[*fid],
+                        _ => panic!("not an adt"),
+                    },
+                };
                 projected.projected_ty(tcx, tail)
             }
         }
@@ -425,17 +431,25 @@ impl TyId {
         // TODO: hash Adts maybe
         self.kind(tcx).is_structural()
             && self.determ_printable(tcx)
-            && !self.contains(tcx, |_, ty| ty == TyCtxt::F32 || ty == TyCtxt::F64)
+            && !self.contains(tcx, |_, ty| {
+                ty == TyCtxt::F32 || ty == TyCtxt::F64 || ty.kind(tcx).is_adt()
+            })
             && self != TyCtxt::UNIT
     }
 
     pub fn is_copy(self, tcx: &TyCtxt) -> bool {
         let kind = self.kind(tcx);
-        if kind.is_structural() {
-            let has_ref = self.contains(tcx, |tcx, ty| matches!(ty.kind(tcx), TyKind::Ref(..)));
-            !has_ref
-        } else {
-            tcx.meta(self).copy
+        match kind {
+            TyKind::Unit
+            | TyKind::Bool
+            | TyKind::Char
+            | TyKind::Int(_)
+            | TyKind::Uint(_)
+            | TyKind::Float(_) => true,
+            TyKind::RawPtr(_, _) | TyKind::Ref(_, _) => false,
+            TyKind::Tuple(tys) => tys.iter().all(|ty| ty.is_copy(tcx)),
+            TyKind::Array(ty, _) => ty.is_copy(tcx),
+            TyKind::Adt(_) => tcx.meta(self).copy,
         }
     }
 }
@@ -475,25 +489,23 @@ impl TyKind {
     pub const F32: Self = TyKind::Float(FloatTy::F32);
     pub const F64: Self = TyKind::Float(FloatTy::F64);
 
-    pub const INTS: [Self; 6] =
-        [
-            Self::ISIZE,
-            Self::I8,
-            Self::I16,
-            Self::I32,
-            Self::I64,
-            Self::I128,
-        ];
+    pub const INTS: [Self; 6] = [
+        Self::ISIZE,
+        Self::I8,
+        Self::I16,
+        Self::I32,
+        Self::I64,
+        Self::I128,
+    ];
 
-    pub const UINTS: [Self; 6] =
-        [
-            Self::USIZE,
-            Self::U8,
-            Self::U16,
-            Self::U32,
-            Self::U64,
-            Self::U128,
-        ];
+    pub const UINTS: [Self; 6] = [
+        Self::USIZE,
+        Self::U8,
+        Self::U16,
+        Self::U32,
+        Self::U64,
+        Self::U128,
+    ];
 
     pub const FLOATS: [Self; 2] = [Self::F32, Self::F64];
 
@@ -509,22 +521,16 @@ impl TyKind {
     }
 
     pub fn is_structural(&self) -> bool {
-        match self {
-            &TyKind::Adt(..) => false,
-            _ => true,
-        }
+        !matches!(self, TyKind::Adt(..))
     }
 
     pub fn is_adt(&self) -> bool {
-        match self {
-            &TyKind::Adt(..) => true,
-            _ => false,
-        }
+        matches!(self, TyKind::Adt(..))
     }
 
     pub fn is_enum(&self) -> bool {
         match self {
-            &TyKind::Adt(ref adt) => adt.is_enum(),
+            TyKind::Adt(adt) => adt.is_enum(),
             _ => false,
         }
     }
@@ -537,6 +543,7 @@ impl PartialEq for TyKind {
             (Self::Uint(l0), Self::Uint(r0)) => l0 == r0,
             (Self::Float(l0), Self::Float(r0)) => l0 == r0,
             (Self::RawPtr(l0, l1), Self::RawPtr(r0, r1)) => l0 == r0 && l1 == r1,
+            (Self::Ref(l0, l1), Self::Ref(r0, r1)) => l0 == r0 && l1 == r1,
             (Self::Tuple(l0), Self::Tuple(r0)) => l0 == r0,
             (Self::Array(l0, l1), Self::Array(r0, r1)) => l0 == r0 && l1 == r1,
             (Self::Adt(..), Self::Adt(..)) => false,
@@ -1200,21 +1207,21 @@ impl Body {
     }
 
     /// Returns an iterator over function arguments
-    pub fn args_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
+    pub fn args_iter(&self) -> impl ExactSizeIterator<Item = Local> {
         (1..self.arg_count + 1).map(Local::new)
     }
 
-    pub fn args_decl_iter(&self) -> impl Iterator<Item = (Local, &LocalDecl)> + ExactSizeIterator {
+    pub fn args_decl_iter(&self) -> impl ExactSizeIterator<Item = (Local, &LocalDecl)> {
         self.args_iter()
             .map(|local| (local, &self.local_decls[local]))
     }
 
     /// Returns an iterator over locals defined in the function body
-    pub fn vars_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
+    pub fn vars_iter(&self) -> impl ExactSizeIterator<Item = Local> {
         (self.arg_count + 1..self.local_decls.len()).map(Local::new)
     }
 
-    pub fn vars_decl_iter(&self) -> impl Iterator<Item = (Local, &LocalDecl)> + ExactSizeIterator {
+    pub fn vars_decl_iter(&self) -> impl ExactSizeIterator<Item = (Local, &LocalDecl)> {
         self.vars_iter()
             .map(|local| (local, &self.local_decls[local]))
     }

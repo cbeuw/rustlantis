@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{rc::Rc, vec};
 
 use abi::size::Size;
 use mir::{
@@ -12,7 +12,7 @@ use crate::{
     ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PlaceUsage {
     Operand,
     LHS,
@@ -26,8 +26,10 @@ enum PlaceUsage {
 
 #[derive(Clone)]
 pub struct PlaceSelector {
-    tys: Vec<TyId>,
+    tys: Option<Vec<TyId>>,
     exclusions: Vec<Place>,
+    moved: Vec<PlaceIndex>,
+    refed: Vec<PlaceIndex>,
     size: Option<Size>,
     allow_uninit: bool,
     usage: PlaceUsage,
@@ -41,6 +43,7 @@ const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 2;
 const LIT_ARG_WEIGHT_FACTOR: Weight = 2;
 const PTR_ARG_WEIGHT_FACTOR: Weight = 2;
+const REF_ARG_WEIGHT_FACTOR: Weight = 9999;
 const OFFSETTED_PTR_WEIGHT_FACTOR: Weight = 10;
 const ROUNDTRIPPED_PTR_WEIGHT_FACTOR: Weight = 100;
 
@@ -55,12 +58,14 @@ impl PlaceSelector {
 
     pub fn for_operand(tcx: Rc<TyCtxt>) -> Self {
         Self {
-            tys: vec![],
+            tys: None,
             size: None,
             usage: PlaceUsage::Operand,
             exclusions: vec![],
             allow_uninit: false,
             tcx,
+            moved: vec![],
+            refed: vec![],
         }
     }
 
@@ -108,14 +113,12 @@ impl PlaceSelector {
     }
 
     pub fn of_ty(self, ty: TyId) -> Self {
-        let mut tys = self.tys;
-        tys.push(ty);
+        let tys = Some(vec![ty]);
         Self { tys, ..self }
     }
 
     pub fn of_tys(self, types: &[TyId]) -> Self {
-        let mut tys = self.tys;
-        tys.extend(types.iter().cloned());
+        let tys = Some(Vec::from(types));
         Self { tys, ..self }
     }
 
@@ -133,6 +136,20 @@ impl PlaceSelector {
         Self { exclusions, ..self }
     }
 
+    pub fn having_moved(self, place: PlaceIndex) -> Self {
+        assert_eq!(self.usage, PlaceUsage::Argument);
+        let mut moved = self.moved;
+        moved.push(place.clone());
+        Self { moved, ..self }
+    }
+
+    pub fn having_refed(self, target: PlaceIndex) -> Self {
+        assert_eq!(self.usage, PlaceUsage::Argument);
+        let mut refed = self.refed;
+        refed.push(target.clone());
+        Self { refed, ..self }
+    }
+
     fn into_iter_path(self, pt: &PlaceTable) -> impl Iterator<Item = PlacePath> + Clone + '_ {
         let exclusion_indicies: Vec<PlaceIndex> = self
             .exclusions
@@ -141,8 +158,25 @@ impl PlaceSelector {
             .chain(pt.return_dest_stack()) // Don't touch anything that overlaps with any RET in the stack
             .chain(pt.moved_in_args_stack()) // Don't touch anything that overlaps with moved in args in the stack
             .collect();
+        let moved: Vec<PlaceIndex> = self
+            .moved
+            .iter()
+            .map(|place| place.to_place_index(pt).expect("place exists"))
+            .collect();
+        let refed: Vec<PlaceIndex> = self
+            .refed
+            .iter()
+            .map(|place| place.to_place_index(pt).expect("place exists"))
+            .collect();
         pt.reachable_nodes().filter(move |ppath| {
-            let index = ppath.target_index(pt);
+            let index = ppath.target_index();
+
+            // Well-typedness
+            if let Some(tys) = &self.tys
+                && !tys.contains(&pt.ty(index))
+            {
+                return false;
+            }
 
             // Liveness
             if !pt.is_place_live(index) {
@@ -153,11 +187,6 @@ impl PlaceSelector {
             if !self.allow_uninit && !pt.is_place_init(index) {
                 return false;
             };
-
-            // Well-typedness
-            if !self.tys.is_empty() && !self.tys.contains(&pt.ty(index)) {
-                return false;
-            }
 
             // Known val
             if self.usage == PlaceUsage::KnownVal && pt.known_val(index).is_none() {
@@ -189,11 +218,48 @@ impl PlaceSelector {
                 return false;
             }
 
-            // Do not write through shared reference and any ref potentially derived from it
-            if (self.usage == PlaceUsage::LHS || self.usage == PlaceUsage::SetDiscriminant)
-                && ppath.projection_indices().any(|e| !pt.can_write_through(e))
-            {
-                return false;
+            // We assume that if path has a deref, then the source is the pointer
+            if ppath.projections(pt).any(|proj| proj.is_deref()) {
+                match self.usage {
+                    // writes
+                    PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
+                        if !pt.can_write_through(ppath.source(), index) {
+                            return false;
+                        }
+                    }
+                    // reads
+                    _ => {
+                        if !pt.can_read_through(ppath.source(), index) {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            if self.usage == PlaceUsage::Argument {
+                if moved.iter().any(|excl| pt.overlap(index, excl)) {
+                    return false;
+                }
+                // If this contains a ref, then it cannot point to an already-picked moved arg
+                for m in &moved {
+                    if pt.contains_ref_to(index, *m) {
+                        return false;
+                    }
+                }
+
+                if !pt.ty(index).is_copy(&self.tcx) {
+                    // If this is a type that must be moved, then we must be able to write through
+                    // the chosen projection,
+                    if !pt.can_write_through(ppath.source(), index) {
+                        return false;
+                    }
+                    // and it must not be referenced by an already-picked reference
+                    for r in &refed {
+                        if pt.contains_ref_to(*r, index) {
+                            return false;
+                        }
+                    }
+                }
             }
 
             true
@@ -203,65 +269,67 @@ impl PlaceSelector {
     pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
         let usage = self.usage;
         let tcx = self.tcx.clone();
-        let (places, weights): (Vec<PlacePath>, Vec<Weight>) = self
-            .into_iter_path(pt)
-            .map(|ppath| {
-                let place = ppath.target_index(pt);
-                let mut weight = match usage {
-                    PlaceUsage::Argument => {
-                        let mut weight = pt.get_complexity(place);
-                        let node = ppath.target_node(pt);
-                        let index = ppath.target_index(pt);
-                        if node.ty.contains(&tcx, |tcx, ty| ty.is_any_ptr(tcx)) {
-                            weight *= PTR_ARG_WEIGHT_FACTOR;
+        let (places, weights): (Vec<PlacePath>, Vec<Weight>) =
+            self.into_iter_path(pt)
+                .map(|ppath| {
+                    let place = ppath.target_index();
+                    let mut weight = match usage {
+                        PlaceUsage::Argument => {
+                            let mut weight = pt.get_complexity(place);
+                            let index = ppath.target_index();
+                            let ty = pt.ty(index);
+                            if ty.contains(&tcx, |tcx, ty| ty.is_ref(tcx)) {
+                                weight *= REF_ARG_WEIGHT_FACTOR;
+                            }
+                            if ty.contains(&tcx, |tcx, ty| ty.is_raw_ptr(tcx)) {
+                                weight *= PTR_ARG_WEIGHT_FACTOR;
+                            }
+                            if pt.known_val(index).is_some() {
+                                weight *= LIT_ARG_WEIGHT_FACTOR;
+                            }
+                            // Encourage isize for pointer offset
+                            if ty.contains(&tcx, |_, ty| ty == TyCtxt::ISIZE) {
+                                weight *= LIT_ARG_WEIGHT_FACTOR;
+                            }
+                            if ty.is_raw_ptr(&tcx) && pt.offseted(index) {
+                                weight *= OFFSETTED_PTR_WEIGHT_FACTOR;
+                            }
+                            weight
                         }
-                        if pt.known_val(index).is_some() {
-                            weight *= LIT_ARG_WEIGHT_FACTOR;
+                        PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
+                            let mut weight = if !pt.is_place_init(place) {
+                                UNINIT_WEIGHT_FACTOR
+                            } else {
+                                1
+                            };
+                            if ppath.is_return_proj(pt) {
+                                weight *= RET_LHS_WEIGH_FACTOR;
+                            }
+                            let target = ppath.target_index();
+                            if pt.ty(target).is_raw_ptr(&tcx) && pt.get_offset(target).is_some() {
+                                weight = 0;
+                            }
+                            weight
                         }
-                        // Encourage isize for pointer offset
-                        if node.ty.contains(&tcx, |_, ty| ty == TyCtxt::ISIZE) {
-                            weight *= LIT_ARG_WEIGHT_FACTOR;
-                        }
-                        if node.ty.is_raw_ptr(&tcx) && pt.offseted(index) {
-                            weight *= OFFSETTED_PTR_WEIGHT_FACTOR;
-                        }
-                        weight
+                        PlaceUsage::Operand => pt.get_complexity(place),
+                        PlaceUsage::Pointee => 1,
+                        PlaceUsage::KnownVal | PlaceUsage::NonZero => pt.get_complexity(place),
+                        PlaceUsage::Offsetee => 1,
+                    };
+
+                    if ppath.projections(pt).any(|proj| proj.is_deref()) {
+                        weight *= DEREF_WEIGHT_FACTOR;
                     }
-                    PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
-                        let mut weight = if !pt.is_place_init(place) {
-                            UNINIT_WEIGHT_FACTOR
-                        } else {
-                            1
-                        };
-                        if ppath.is_return_proj(pt) {
-                            weight *= RET_LHS_WEIGH_FACTOR;
-                        }
-                        let target = ppath.target_index(pt);
-                        if pt.ty(target).is_raw_ptr(&tcx) && pt.get_offset(target).is_some() {
-                            weight = 0;
-                        }
-                        weight
+
+                    if ppath.nodes(pt).any(|place| {
+                        pt.ty(place).is_raw_ptr(&tcx) && pt.has_offset_roundtripped(place)
+                    }) {
+                        weight *= ROUNDTRIPPED_PTR_WEIGHT_FACTOR;
                     }
-                    PlaceUsage::Operand => pt.get_complexity(place),
-                    PlaceUsage::Pointee => 1,
-                    PlaceUsage::KnownVal | PlaceUsage::NonZero => pt.get_complexity(place),
-                    PlaceUsage::Offsetee => 1,
-                };
 
-                if ppath.projections(pt).any(|proj| proj.is_deref()) {
-                    weight *= DEREF_WEIGHT_FACTOR;
-                }
-
-                if ppath
-                    .nodes(pt)
-                    .any(|place| pt.ty(place).is_raw_ptr(&tcx) && pt.has_offset_roundtripped(place))
-                {
-                    weight *= ROUNDTRIPPED_PTR_WEIGHT_FACTOR;
-                }
-
-                (ppath, weight)
-            })
-            .unzip();
+                    (ppath, weight)
+                })
+                .unzip();
         if let Ok(weighted_index) = WeightedIndex::new(weights) {
             Some((places, weighted_index))
         } else {
