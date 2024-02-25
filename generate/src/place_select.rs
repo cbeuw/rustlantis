@@ -43,7 +43,7 @@ const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 2;
 const LIT_ARG_WEIGHT_FACTOR: Weight = 2;
 const PTR_ARG_WEIGHT_FACTOR: Weight = 2;
-const REF_ARG_WEIGHT_FACTOR: Weight = 9999;
+const REF_ARG_WEIGHT_FACTOR: Weight = 2;
 const OFFSETTED_PTR_WEIGHT_FACTOR: Weight = 10;
 const ROUNDTRIPPED_PTR_WEIGHT_FACTOR: Weight = 100;
 
