@@ -225,7 +225,7 @@ impl PlaceTable {
                 |pid| {
                     let node = &self.places[pid];
                     if let Some(run_ptr) = node.run_ptr {
-                        invalidated.extend(self.memory.above_first_shared(run_ptr));
+                        invalidated.extend(self.memory.above_first_ref(run_ptr));
                         VisitAction::Stop
                     } else {
                         VisitAction::Continue
@@ -1135,17 +1135,17 @@ impl PlaceTable {
 
     /// Whether writing to a place will invalidate a tag
     fn will_write_invalidate(&self, dest: RunPointer, tag: Tag) -> bool {
-        let invalidated = self.memory.above_first_shared(dest);
+        let invalidated = self.memory.above_first_ref(dest);
         return invalidated.contains(&tag);
     }
 
     /// To be called when a place is written to. Invalidates (removes) all references and raw pointers after the first
-    /// shared reference on the stack, and mark references uninit
+    /// reference on the stack
     pub fn place_written(&mut self, p: impl ToPlaceIndex) {
         let p = p.to_place_index(self).expect("place exists");
         self.update_transitive_subfields(p, |this, place| {
             if let Some(run) = this.places[place].run_ptr {
-                let invalidated = this.memory.above_first_shared(run);
+                let invalidated = this.memory.above_first_ref(run);
                 // TODO: don't copy partially invalidated refs
                 for tag in invalidated {
                     this.memory.remove_tag_run_ptr(tag, run);

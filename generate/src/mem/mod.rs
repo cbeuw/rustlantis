@@ -97,12 +97,15 @@ impl Run {
         }
     }
 
-    pub fn above_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
+    pub fn above_first_ref(&self, offset: Size, len: Size) -> Vec<Tag> {
         let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
-            let first_shared = stack
-                .iter()
-                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
+            let first_shared = stack.iter().position(|borrow| {
+                matches!(
+                    borrow.borrow_type,
+                    BorrowType::Shared | BorrowType::Exclusive
+                )
+            });
             if let Some(first_shared) = first_shared {
                 edges.extend(stack[first_shared..].iter().map(|borrow| borrow.tag));
             }
@@ -135,13 +138,38 @@ impl Run {
         edges
     }
 
+    /// Checks if a tag is below the last exclusive reference
+    fn is_below_last_mut(&self, offset: Size, len: Size, tag: Tag) -> bool {
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let last_mut = stack
+                .iter()
+                .rposition(|borrow| borrow.borrow_type == BorrowType::Exclusive);
+            if let Some(pos) = last_mut {
+                if stack[..pos]
+                    .iter()
+                    .find(|borrow| borrow.tag == tag)
+                    .is_some()
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn can_read_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
+        if self.is_below_last_mut(offset, len, tag) {
+            return false;
+        }
         self.ref_stack
             .iter(offset, len)
             .all(|(_, stack)| stack.iter().any(|borrow| borrow.tag == tag))
     }
 
     pub fn can_write_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
+        if self.is_below_last_mut(offset, len, tag) {
+            return false;
+        }
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
                 .iter()
@@ -484,9 +512,9 @@ impl BasicMemory {
         !self.pointers.contains_key(&tag)
     }
 
-    pub fn above_first_shared(&self, run_ptr: RunPointer) -> Vec<Tag> {
+    pub fn above_first_ref(&self, run_ptr: RunPointer) -> Vec<Tag> {
         self.allocations[run_ptr.alloc_id].runs[run_ptr.run()]
-            .above_first_shared(run_ptr.offset(), run_ptr.size)
+            .above_first_ref(run_ptr.offset(), run_ptr.size)
     }
 
     pub fn mark_protected(&mut self, run_ptr: RunPointer, tag: Tag) {

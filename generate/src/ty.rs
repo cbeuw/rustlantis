@@ -140,7 +140,11 @@ fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
                 .filter(|ty| *ty != TyCtxt::UNIT)
                 .choose(rng)
                 .unwrap(),
-            Mutability::Not,
+            if rng.gen_bool(0.5) {
+                Mutability::Mut
+            } else {
+                Mutability::Not
+            },
         ),
         3 => TyKind::Array(
             tcx.iter_enumerated()
