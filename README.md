@@ -105,6 +105,7 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 - `GVN` merges moved function arguments: https://github.com/rust-lang/rust/issues/120613
 - `GVNPass` forgets to remove poison generating flags: https://github.com/llvm/llvm-project/issues/82884
 - Misoptimization of imul + ireduce: https://github.com/rust-lang/rustc_codegen_cranelift/issues/1460 & https://github.com/bytecodealliance/wasmtime/issues/7999
+- `InstCombine` calculates wrong `insertelement` instructions: https://github.com/rust-lang/rust/issues/121996 & https://github.com/llvm/llvm-project/issues/84025
 
 ### Previously known bugs
 - Const eval gives `x % x` wrong sign when `x` is a negative float: https://github.com/rust-lang/rust/issues/109567 (first reported https://github.com/rust-lang/rust/issues/102403)
