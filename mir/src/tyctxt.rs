@@ -3,8 +3,7 @@ use std::{collections::HashMap, slice};
 use index_vec::IndexVec;
 
 use crate::{
-    serialize::Serialize,
-    syntax::{Adt, TyId, TyKind},
+    serialize::Serialize, syntax::{Adt, TyId, TyKind}, VarDumper
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -115,13 +114,17 @@ impl TyCtxt {
         self.tys.len()
     }
 
-    pub fn serialize(&self) -> String {
+    pub fn serialize(&self,dumper:VarDumper) -> String {
         let mut str = String::new();
         for (id, adt) in self.tys.iter_enumerated().filter(|(_, kind)| kind.is_adt()) {
             let TyKind::Adt(adt) = adt else {
                 panic!("not an adt");
             };
-            str += &self.adt_meta[&id].derive_attrs();
+            // `Debug` derive is ommited for printf-based dumping. An  implemntation of the PrintFDebug trait is emmited instead.
+            str += &match dumper{
+                VarDumper::HashDumper | VarDumper::StdVarDumper => self.adt_meta[&id].derive_attrs(),
+                VarDumper::PrintfVarDumper => adt_impl_printf_debug(adt,id),
+            };
             if adt.is_enum() {
                 let variants: String = adt
                     .variants
@@ -144,3 +147,48 @@ impl TyCtxt {
         str
     }
 }
+// Implements the PrintFDebug trait for an ADT.
+// This trait is used to dump variables using `printf`
+pub fn adt_impl_printf_debug(adt:&Adt,id:TyId)->String{
+    let res = if adt.is_enum() {
+        // Formats an enum
+        let name = id.type_name();
+        let mut res = format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{");
+        res.push_str(&format!("unsafe{{printf(\"{name}::\\0\".as_ptr()  as *const c_char)}};"));
+        res.push_str("match self{\n");
+        // Iterate through variants cratete a match statement
+        for (variant_idx,variant) in adt.variants.iter().enumerate(){
+            res.push_str(&format!("\tSelf::Variant{variant_idx}{{",));
+            // Iterate trough fields to generate match patterns
+            for (field_id,_) in variant.fields.iter().enumerate(){
+                res.push_str(&format!("fld{field_id},"));
+            }
+            res.push_str("}=>{\n");
+            res.push_str(&format!("unsafe{{printf(\"Variant{variant_idx}{{\".as_ptr() as *const c_char)}};\n"));
+            // Iterate trough fields to print values of fields of variant
+            for (field_id,_) in variant.fields.iter().enumerate(){
+                res.push_str(&format!("\t\tunsafe{{printf(\"fld{field_id}:\".as_ptr() as *const c_char)}};\n"));
+                res.push_str(&format!("\t\tfld{field_id}.printf_debug();\n"));
+                res.push_str("unsafe{printf(\",\".as_ptr() as *const c_char)};\n");
+            }
+            res.push_str("},\n")
+        }
+        res.push_str("\t\t}\n");
+        res.push_str("unsafe{printf(\"}\".as_ptr() as *const c_char)};\n");
+        res.push_str("\t}\n}");
+        res
+    }
+    else{
+        // Formats a struct
+        let mut res = format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{printf(\"{name}{{\0\".as_ptr()  as *const c_char)}};",name = id.type_name());
+         // Iterate trough fields to print values of fields of stuct
+        for (field_id,_) in adt.variants[0].fields.iter().enumerate(){
+            format!("\n\tprintf(\"fld{field_id}:\\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();");
+        }
+        res.push_str("\n\tunsafe{printf(\"}\".as_ptr() as *const c_char)};}\n}");
+        res
+    };
+    format!("{res}\n#[derive(Copy,Clone)]")
+        
+}
+
