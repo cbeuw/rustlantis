@@ -40,10 +40,10 @@ pub type Weight = usize;
 
 const RET_LHS_WEIGH_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
-const DEREF_WEIGHT_FACTOR: Weight = 2;
+const DEREF_WEIGHT_FACTOR: Weight = 20;
 const LIT_ARG_WEIGHT_FACTOR: Weight = 2;
-const PTR_ARG_WEIGHT_FACTOR: Weight = 2;
-const REF_ARG_WEIGHT_FACTOR: Weight = 2;
+const PTR_ARG_WEIGHT_FACTOR: Weight = 20;
+const REF_ARG_WEIGHT_FACTOR: Weight = 20;
 const OFFSETTED_PTR_WEIGHT_FACTOR: Weight = 10;
 const ROUNDTRIPPED_PTR_WEIGHT_FACTOR: Weight = 100;
 
@@ -284,7 +284,7 @@ impl PlaceSelector {
                     let place = ppath.target_index();
                     let mut weight = match usage {
                         PlaceUsage::Argument => {
-                            let mut weight = pt.get_complexity(place);
+                            let mut weight = 1;
                             let index = ppath.target_index();
                             let ty = pt.ty(index);
                             if ty.contains(&tcx, |tcx, ty| ty.is_ref(tcx)) {

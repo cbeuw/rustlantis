@@ -50,7 +50,7 @@ impl TySelect {
         let mut p_sum: f32 = 0.;
         let num_ptrs = tcx
             .iter_enumerated()
-            .filter(|(ty, _)| ty.contains(tcx, |tcx, ty| ty.is_any_ptr(tcx)))
+            .filter(|(ty, _)| ty.is_any_ptr(tcx))
             .count();
 
         // All the types without special weighting
@@ -65,7 +65,7 @@ impl TySelect {
                 TyKind::Int(..) => Some(p_ints / TyKind::INTS.len() as f32),
                 TyKind::Uint(..) => Some(p_ints / TyKind::INTS.len() as f32),
                 TyKind::Float(..) => Some(p_floats / TyKind::FLOATS.len() as f32),
-                _ if idx.contains(tcx, |tcx, ty| ty.is_any_ptr(tcx)) => {
+                TyKind::RawPtr(..) | TyKind::Ref(..) => {
                     Some(p_pointers / num_ptrs as f32)
                 }
                 _ => None,

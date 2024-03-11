@@ -433,11 +433,11 @@ impl GenerationCtx {
         let choices_and_weights: Vec<(fn(&GenerationCtx, &Place) -> Result<Rvalue>, usize)> = vec![
             (Self::generate_use, 1),
             (Self::generate_unary_op, 1),
-            (Self::generate_binary_op, 1),
-            (Self::generate_checked_binary_op, 1),
+            (Self::generate_binary_op, 2),
+            (Self::generate_checked_binary_op, 2),
             (Self::generate_cast, 1),
-            (Self::generate_address_of, 1),
-            (Self::generate_ref, 1),
+            (Self::generate_address_of, 4),
+            (Self::generate_ref, 4),
             (Self::generate_aggregate, 2),
         ];
 
