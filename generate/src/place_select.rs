@@ -16,6 +16,7 @@ use crate::{
 enum PlaceUsage {
     Operand,
     LHS,
+    RET,
     SetDiscriminant,
     Pointee,
     Argument,
@@ -73,6 +74,13 @@ impl PlaceSelector {
         Self {
             usage: PlaceUsage::SetDiscriminant,
             ..Self::for_operand(tcx)
+        }
+    }
+
+    pub fn for_return_place(tcx: Rc<TyCtxt>) -> Self {
+        Self {
+            usage: PlaceUsage::RET,
+            ..Self::for_lhs(tcx)
         }
     }
 
@@ -210,6 +218,11 @@ impl PlaceSelector {
                 }
             }
 
+            // Avoid having ref in return type
+            if self.usage == PlaceUsage::RET && pt.ty(index).contains(&self.tcx, |tcx, ty| ty.is_ref(tcx)) {
+                return false;
+            }
+
             // Not excluded
             if exclusion_indicies
                 .iter()
@@ -227,7 +240,7 @@ impl PlaceSelector {
             if ppath.projections(pt).any(|proj| proj.is_deref()) {
                 match self.usage {
                     // writes
-                    PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
+                    PlaceUsage::LHS | PlaceUsage::SetDiscriminant | PlaceUsage::RET => {
                         if !pt.can_write_through(ppath.source(), index) {
                             return false;
                         }
@@ -305,7 +318,7 @@ impl PlaceSelector {
                             }
                             weight
                         }
-                        PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
+                        PlaceUsage::LHS | PlaceUsage::SetDiscriminant | PlaceUsage::RET => {
                             let mut weight = if !pt.is_place_init(place) {
                                 UNINIT_WEIGHT_FACTOR
                             } else {

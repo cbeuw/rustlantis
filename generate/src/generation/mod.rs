@@ -726,7 +726,7 @@ impl GenerationCtx {
 
     fn generate_call(&mut self) -> Result<()> {
         trace!("generating a Call terminator to {:?}", self.cursor);
-        let (return_places, weights) = PlaceSelector::for_lhs(self.tcx.clone())
+        let (return_places, weights) = PlaceSelector::for_return_place(self.tcx.clone())
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
