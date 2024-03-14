@@ -28,6 +28,8 @@ pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
 
+pub const MAX_COMPLEXITY: usize = 100;
+
 #[derive(Clone)]
 struct Frame {
     locals: BiHashMap<Local, PlaceIndex>,
@@ -687,7 +689,7 @@ impl PlaceTable {
 
     pub fn update_complexity(&mut self, target: impl ToPlaceIndex, new_flow: usize) {
         let target = target.to_place_index(self).expect("place exists");
-        let new_flow = new_flow.min(100);
+        let new_flow = new_flow.min(MAX_COMPLEXITY);
 
         // Subplaces' complexity is overwritten as target's new complexity
         self.update_transitive_subfields(target, |this, place| {

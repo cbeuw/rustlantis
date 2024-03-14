@@ -9,7 +9,7 @@ use rand_distr::WeightedIndex;
 
 use crate::{
     mem::BasicMemory,
-    ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex},
+    ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex, MAX_COMPLEXITY},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -322,13 +322,12 @@ impl PlaceSelector {
                             let mut weight = if !pt.is_place_init(place) {
                                 UNINIT_WEIGHT_FACTOR
                             } else {
-                                1
+                                MAX_COMPLEXITY.checked_sub(pt.get_complexity(place)).expect("weight is non negative")
                             };
                             if ppath.is_return_proj(pt) {
                                 weight *= RET_LHS_WEIGH_FACTOR;
                             }
-                            let target = ppath.target_index();
-                            if pt.ty(target).is_raw_ptr(&tcx) && pt.get_offset(target).is_some() {
+                            if pt.ty(place).is_raw_ptr(&tcx) && pt.get_offset(place).is_some() {
                                 weight = 0;
                             }
                             weight
