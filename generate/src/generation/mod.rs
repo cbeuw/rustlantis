@@ -547,14 +547,12 @@ impl GenerationCtx {
         })
     }
 
-    // fn generate_set_discriminant(&self) -> Result<Statement> {
-    //     todo!()
-    // }
     fn choose_statement(&mut self) {
         let choices_and_weights: Vec<(fn(&GenerationCtx) -> Result<Statement>, usize)> = vec![
             (Self::generate_assign, 20),
             (Self::generate_new_var, 4),
-            (Self::generate_set_discriminant, 1),
+            // Not generating SetDiscriminant for now due to niche checks
+            // (Self::generate_set_discriminant, 1),
             // (Self::generate_deinit, 1),
             // (Self::generate_storage_live, 5),
             // (Self::generate_storage_dead, 2),
@@ -674,10 +672,7 @@ impl GenerationCtx {
 
         let (place, place_val) =
             self.make_choice_weighted(places.into_iter(), weights, |ppath| {
-                let val = self
-                    .pt
-                    .known_val(ppath.target_index())
-                    .expect("has_value");
+                let val = self.pt.known_val(ppath.target_index()).expect("has_value");
                 Ok((ppath.to_place(&self.pt), *val))
             })?;
 
@@ -1282,8 +1277,9 @@ impl GenerationCtx {
             }
             if self.current_fn().basic_blocks.len() >= MAX_BB_COUNT_HARD {
                 debug!(
-                    "{} is too long, retrying",
-                    self.cursor.function.identifier()
+                    "{} -> {} is too long, retrying",
+                    self.cursor.function.identifier(),
+                    self.current_fn().return_ty().serialize(&self.tcx),
                 );
                 if self.cursor.function.index() == 0 {
                     self.restore_ctx();
