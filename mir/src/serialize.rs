@@ -1,5 +1,33 @@
 use crate::{syntax::*, tyctxt::TyCtxt};
 
+#[derive(Debug, Clone, Copy)]
+pub enum CallSynatx {
+    /// Call(bb2, _1, fn2(_3))
+    /// Up to 2023-08-19
+    V1,
+    /// Call(_1 = fn2(_3), bb2)
+    /// Up to 2023-11-14
+    V2,
+    /// Call(_1 = fn2(_3), bb2, UnwindUnreachable())
+    /// Uo to 2023-12-26
+    V3,
+    /// Call(_1 = fn2(_3), ReturnTo(bb2), UnwindUnreachable())
+    /// Current
+    V4,
+}
+
+impl From<&str> for CallSynatx {
+    fn from(value: &str) -> Self {
+        match value {
+            "v1" => Self::V1,
+            "v2" => Self::V2,
+            "v3" => Self::V3,
+            "v4" => Self::V4,
+            _ => panic!("invalid syntax version {value}"),
+        }
+    }
+}
+
 pub trait Serialize {
     fn serialize(&self, tcx: &TyCtxt) -> String;
 }
@@ -202,7 +230,7 @@ impl Serialize for Rvalue {
                         format!("{} {{ {list} }}", ty.type_name())
                     }
                 }
-            }
+            },
         }
     }
 }
@@ -225,14 +253,18 @@ impl Serialize for Statement {
     }
 }
 
-impl Serialize for Terminator {
-    fn serialize(&self, tcx: &TyCtxt) -> String {
+impl Terminator {
+    fn serialize(&self, tcx: &TyCtxt, call_syntax: CallSynatx) -> String {
         match self {
             Terminator::Return => "Return()".to_owned(),
             Terminator::Goto { target } => format!("Goto({})", target.identifier()),
             Terminator::Unreachable => "Unreachable()".to_owned(),
             Terminator::Drop { place, target } => {
-                format!("Drop({}, {})", place.serialize_value(tcx), target.identifier())
+                format!(
+                    "Drop({}, {})",
+                    place.serialize_value(tcx),
+                    target.identifier()
+                )
             }
             Terminator::Call {
                 destination,
@@ -250,11 +282,28 @@ impl Serialize for Terminator {
                     Callee::Named(func) => func.to_string(),
                     Callee::Intrinsic(func) => format!("core::intrinsics::{func}"),
                 };
-                format!(
-                    "Call({} = {fn_name}({args_list}), ReturnTo({}), UnwindUnreachable())",
-                    destination.serialize_place(tcx),
-                    target.identifier(),
-                )
+                match call_syntax {
+                    CallSynatx::V1 => format!(
+                        "Call({}, {}, {fn_name}({args_list}))",
+                        destination.serialize_place(tcx),
+                        target.identifier(),
+                    ),
+                    CallSynatx::V2 => format!(
+                        "Call({} = {fn_name}({args_list}), {})",
+                        destination.serialize_place(tcx),
+                        target.identifier(),
+                    ),
+                    CallSynatx::V3 => format!(
+                        "Call({} = {fn_name}({args_list}), {}, UnwindUnreachable())",
+                        destination.serialize_place(tcx),
+                        target.identifier(),
+                    ),
+                    CallSynatx::V4 => format!(
+                        "Call({} = {fn_name}({args_list}), ReturnTo({}), UnwindUnreachable())",
+                        destination.serialize_place(tcx),
+                        target.identifier(),
+                    ),
+                }
             }
             Terminator::SwitchInt { discr, targets } => {
                 let arms = targets.match_arms();
@@ -265,15 +314,15 @@ impl Serialize for Terminator {
     }
 }
 
-impl Serialize for BasicBlockData {
-    fn serialize(&self, tcx: &TyCtxt) -> String {
+impl BasicBlockData {
+    fn serialize(&self, tcx: &TyCtxt, call_syntax: CallSynatx) -> String {
         let mut stmts: String = self
             .statements
             .iter()
             .filter(|stmt| !matches!(stmt, Statement::Nop))
             .map(|stmt| format!("{};\n", stmt.serialize(tcx)))
             .collect();
-        stmts.push_str(&self.terminator.serialize(tcx));
+        stmts.push_str(&self.terminator.serialize(tcx, call_syntax));
         stmts
     }
 }
@@ -287,8 +336,8 @@ impl Serialize for VariantDef {
     }
 }
 
-impl Serialize for Body {
-    fn serialize(&self, tcx: &TyCtxt) -> String {
+impl Body {
+    fn serialize(&self, tcx: &TyCtxt, call_syntax: CallSynatx) -> String {
         // Return type annotation
         let mut body: String = format!("type RET = {};\n", self.return_ty().serialize(tcx));
         // Declarations
@@ -303,18 +352,22 @@ impl Serialize for Body {
             bbs.next()
                 .expect("body contains at least one bb")
                 .1
-                .serialize(tcx)
+                .serialize(tcx, call_syntax)
         ));
         // Other bbs
-        body.extend(
-            bbs.map(|(idx, bb)| format!("{} = {{\n{}\n}}\n", idx.identifier(), bb.serialize(tcx))),
-        );
+        body.extend(bbs.map(|(idx, bb)| {
+            format!(
+                "{} = {{\n{}\n}}\n",
+                idx.identifier(),
+                bb.serialize(tcx, call_syntax)
+            )
+        }));
         format!("mir! {{\n{body}\n}}")
     }
 }
 
-impl Serialize for Program {
-    fn serialize(&self, tcx: &TyCtxt) -> String {
+impl Program {
+    pub fn serialize(&self, tcx: &TyCtxt, call_syntax: CallSynatx) -> String {
         let mut program = Program::HEADER.to_string();
         if self.use_debug_dumper {
             program += Program::DEBUG_DUMPER;
@@ -342,7 +395,7 @@ impl Serialize for Program {
                 idx.identifier(),
                 args_list,
                 body.return_ty().serialize(tcx),
-                body.serialize(tcx)
+                body.serialize(tcx, call_syntax)
             )
         }));
         let arg_list: String = self
