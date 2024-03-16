@@ -1221,7 +1221,7 @@ impl PlaceTable {
     fn remove_edge(&mut self, e: ProjectionIndex) {
         let (source, _) = self.places.edge_endpoints(e).expect("edge exists");
         let tag = self.places[source].tag.expect("has tag");
-        let edges = &mut self.pointer_tags[tag];
+        let edges: &mut BTreeSet<NodeIndex> = &mut self.pointer_tags[tag];
         edges.remove(&source);
 
         let removed = self.places.remove_edge(e).expect("edge exists");
@@ -1787,6 +1787,7 @@ mod tests {
 
         let int = Local::new(1);
         pt.allocate_local(int, TyCtxt::I32);
+        pt.mark_place_init(int);
 
         // int_ref = &int
         let int_ref = Local::new(2);
@@ -1800,8 +1801,7 @@ mod tests {
         assert_eq!(pt.pointer_tags.first().unwrap().len(), 1);
 
         pt.place_written(int);
-        assert!(!pt
-            .places
-            .contains_edge(int_ref_p, int.to_place_index(&pt).unwrap()));
+        assert!(!pt.can_read_through(int_ref_p, int.to_place_index(&pt).unwrap()));
+        assert!(!pt.can_write_through(int_ref_p, int.to_place_index(&pt).unwrap()));
     }
 }
