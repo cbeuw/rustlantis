@@ -837,7 +837,7 @@ impl PlaceTable {
     }
 
     /// Returns the pointee in pointer -[Deref]-> pointee, if one exists
-    fn pointee(&self, pointer: PlaceIndex) -> Option<PlaceIndex> {
+    pub fn pointee(&self, pointer: PlaceIndex) -> Option<PlaceIndex> {
         assert!(self.places[pointer].ty.is_any_ptr(&self.tcx));
         self.places
             .edges_directed(pointer, Direction::Outgoing)

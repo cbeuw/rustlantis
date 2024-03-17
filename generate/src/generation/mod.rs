@@ -369,9 +369,14 @@ impl GenerationCtx {
             TyKind::Ref(ty, mutability) => (ty, mutability),
             _ => return Err(SelectionError::Exhausted),
         };
-        let (candidates, weights) = PlaceSelector::for_pointee(self.tcx.clone(), false)
+        let mut selector = PlaceSelector::for_pointee(self.tcx.clone(), false)
             .of_ty(*source_ty)
-            .except(lhs)
+            .except(lhs);
+        if let Some(_) = self.pt.pointee(lhs.to_place_index(&self.pt).unwrap()) {
+            // The MIR linter doesn't like it if we do x = &(*x)
+            selector = selector.except(lhs.clone().project(ProjectionElem::Deref));
+        }
+        let (candidates, weights) = selector
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
         self.make_choice_weighted(candidates.into_iter(), weights, |ppath| {
