@@ -1135,20 +1135,16 @@ impl PlaceTable {
         self.places.node_count()
     }
 
-    /// Whether writing to a place will invalidate a tag
-    fn will_write_invalidate(&self, dest: RunPointer, tag: Tag) -> bool {
-        let invalidated = self.memory.above_first_ref(dest);
-        return invalidated.contains(&tag);
-    }
-
     /// To be called when a place is written to. Invalidates (removes) all references and raw pointers after the first
     /// reference on the stack
     pub fn place_written(&mut self, p: impl ToPlaceIndex) {
         let p = p.to_place_index(self).expect("place exists");
         self.update_transitive_subfields(p, |this, place| {
             if let Some(run) = this.places[place].run_ptr {
+                // FIXME: this is inefficient: if a raw pointer is above a &mut, and a write happens through
+                // this, then it will be unconditionally invalidated after the write, even though it may be
+                // fine to write though this pointer multiple times if it is derived from the &mut (same tag)
                 let invalidated = this.memory.above_first_ref(run);
-                // TODO: don't copy partially invalidated refs
                 for tag in invalidated {
                     this.memory.remove_tag_run_ptr(tag, run);
                 }

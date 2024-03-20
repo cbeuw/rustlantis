@@ -113,31 +113,6 @@ impl Run {
         edges.iter().copied().collect()
     }
 
-    pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
-        let mut edges = BTreeSet::new();
-        for (_, stack) in self.ref_stack.iter(offset, len) {
-            let first_shared = stack
-                .iter()
-                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
-            if let Some(first_shared) = first_shared {
-                edges.extend(stack[..first_shared].iter().map(|borrow| borrow.tag));
-            }
-        }
-        edges.iter().copied().collect()
-    }
-
-    pub fn remove_all_above(&mut self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
-        let mut edges = vec![];
-        for (_, stack) in self.ref_stack.iter_mut(offset, len) {
-            let index = stack.iter().position(|borrow| borrow.tag == tag);
-            if let Some(index) = index {
-                edges.extend(stack[index..].iter().map(|borrow| borrow.tag));
-                stack.truncate(index);
-            }
-        }
-        edges
-    }
-
     /// Checks if a tag is below the last exclusive reference
     fn is_below_last_mut(&self, offset: Size, len: Size, tag: Tag) -> bool {
         for (_, stack) in self.ref_stack.iter(offset, len) {
@@ -435,20 +410,6 @@ impl BasicMemory {
             .or_insert(SmallVec::from([run_ptr].as_slice()));
     }
 
-    /// Remove tag for all runs
-    pub fn remove_tag(&mut self, tag: Tag) {
-        let run_ptrs = self.pointers.remove(&tag);
-        if let Some(run_ptrs) = run_ptrs {
-            for run_ptr in run_ptrs {
-                self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].remove_borrow(
-                    run_ptr.offset(),
-                    run_ptr.size,
-                    tag,
-                );
-            }
-        }
-    }
-
     /// Remove a range (run_ptr) from the lookup table.
     fn derange(&mut self, tag: Tag, run_ptr: RunPointer) {
         if let Some(all_run_ptrs) = self.pointers.get(&tag) {
@@ -478,25 +439,6 @@ impl BasicMemory {
                 self.pointers.insert(tag, updated);
             }
         }
-    }
-
-    /// Remove all tags including and above from a run. Returns a list of edges with no valid borrows
-    /// left in any run after removal
-    pub fn remove_tags_above(&mut self, tag: Tag, run_ptr: RunPointer) -> Vec<Tag> {
-        let removed = self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].remove_all_above(
-            run_ptr.offset(),
-            run_ptr.size,
-            tag,
-        );
-
-        let mut all_gone = vec![];
-        for edge in removed {
-            self.derange(edge, run_ptr);
-            if !self.pointers.contains_key(&edge) {
-                all_gone.push(edge);
-            }
-        }
-        all_gone
     }
 
     /// Remove tag for a run ptr. Returns true if the ref is no longer present in any
