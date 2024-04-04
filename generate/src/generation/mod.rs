@@ -30,9 +30,9 @@ const BB_MAX_LEN: usize = 32;
 /// Max. number of switch targets in a SwitchInt terminator
 const MAX_SWITCH_TARGETS: usize = 8;
 /// Max. number of BB in a function if RET is init (a Return must be generated)
-const MAX_BB_COUNT: usize = 15;
+const MAX_BB_COUNT: usize = 50;
 /// Max. number of BB in a function before giving up this function
-const MAX_BB_COUNT_HARD: usize = 60;
+const MAX_BB_COUNT_HARD: usize = 100;
 /// Max. number of functions in the program Call generator stops being a possible candidate
 const MAX_FN_COUNT: usize = 20;
 /// Max. number of arguments a function can have
