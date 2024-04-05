@@ -9,7 +9,7 @@ use rand_distr::WeightedIndex;
 
 use crate::{
     mem::BasicMemory,
-    ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex, MAX_COMPLEXITY},
+    ptable::{PlaceIndex, PlacePath, PlaceGraph, ToPlaceIndex, MAX_COMPLEXITY},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -158,7 +158,7 @@ impl PlaceSelector {
         Self { refed, ..self }
     }
 
-    fn into_iter_path(self, pt: &PlaceTable) -> impl Iterator<Item = PlacePath> + Clone + '_ {
+    fn into_iter_path(self, pt: &PlaceGraph) -> impl Iterator<Item = PlacePath> + Clone + '_ {
         let exclusion_indicies: Vec<PlaceIndex> = self
             .exclusions
             .iter()
@@ -288,7 +288,7 @@ impl PlaceSelector {
         })
     }
 
-    pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
+    pub fn into_weighted(self, pt: &PlaceGraph) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
         let usage = self.usage;
         let tcx = self.tcx.clone();
         let (places, weights): (Vec<PlacePath>, Vec<Weight>) =
@@ -358,7 +358,7 @@ impl PlaceSelector {
         }
     }
 
-    pub fn into_iter_place(self, pt: &PlaceTable) -> impl Iterator<Item = Place> + Clone + '_ {
+    pub fn into_iter_place(self, pt: &PlaceGraph) -> impl Iterator<Item = Place> + Clone + '_ {
         self.into_iter_path(pt).map(|ppath| ppath.to_place(pt))
     }
 }
@@ -380,15 +380,15 @@ mod tests {
     use test::Bencher;
 
     use crate::{
-        ptable::PlaceTable,
+        ptable::PlaceGraph,
         ty::{seed_tys, TySelect},
     };
 
     use super::PlaceSelector;
 
-    fn build_pt(rng: &mut impl Rng) -> (PlaceTable, Rc<TyCtxt>) {
+    fn build_pt(rng: &mut impl Rng) -> (PlaceGraph, Rc<TyCtxt>) {
         let tcx = Rc::new(seed_tys(rng));
-        let mut pt = PlaceTable::new(tcx.clone());
+        let mut pt = PlaceGraph::new(tcx.clone());
         let ty_weights = TySelect::new(&tcx);
         for i in 0..=32 {
             let pidx = pt.allocate_local(Local::new(i), ty_weights.choose_ty(rng, &tcx));

@@ -19,7 +19,7 @@ use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
 use crate::literal::GenLiteral;
 use crate::place_select::{PlaceSelector, Weight};
-use crate::ptable::{HasComplexity, PlaceIndex, PlaceOperand, PlaceTable, ToPlaceIndex};
+use crate::ptable::{HasComplexity, PlaceIndex, PlaceOperand, PlaceGraph, ToPlaceIndex};
 use crate::ty::{seed_tys, TySelect};
 
 use self::intrinsics::{ArithOffset, Transmute};
@@ -66,7 +66,7 @@ impl fmt::Debug for Cursor {
 #[derive(Clone)]
 pub struct SavedCtx {
     program: Program,
-    pt: PlaceTable,
+    pt: PlaceGraph,
     return_stack: Vec<Cursor>,
     cursor: Cursor,
 }
@@ -76,7 +76,7 @@ pub struct GenerationCtx {
     program: Program,
     tcx: Rc<TyCtxt>,
     ty_weights: TySelect,
-    pt: PlaceTable,
+    pt: PlaceGraph,
     return_stack: Vec<Cursor>,
     saved_ctx: Vec<SavedCtx>,
     cursor: Cursor,
@@ -1197,7 +1197,7 @@ impl GenerationCtx {
             tcx: tcx.clone(),
             ty_weights,
             program: Program::new(debug_dump),
-            pt: PlaceTable::new(tcx.clone()),
+            pt: PlaceGraph::new(tcx.clone()),
             return_stack: vec![],
             cursor: Cursor {
                 function: Function::new(0),
@@ -1305,9 +1305,9 @@ impl GenerationCtx {
     }
 
     fn post_generation(&mut self, stmt: &Statement) {
-        // We must evaluate the places first before updating any PlaceTable state,
+        // We must evaluate the places first before updating any PlaceGraph state,
         // as the updates may affect projections
-        let mut actions: Vec<Box<dyn FnOnce(&mut PlaceTable)>> = vec![];
+        let mut actions: Vec<Box<dyn FnOnce(&mut PlaceGraph)>> = vec![];
         {
             match stmt {
                 Statement::Assign(lhs, rvalue) => {

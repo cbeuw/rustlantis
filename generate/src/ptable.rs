@@ -23,7 +23,7 @@ use crate::mem::{
     AbstractByte, AllocId, AllocationBuilder, BasicMemory, BorrowType, RunPointer, Tag,
 };
 
-type PlaceGraph = StableGraph<PlaceNode, ProjectionElem>;
+type Graph = StableGraph<PlaceNode, ProjectionElem>;
 pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
@@ -77,7 +77,7 @@ pub enum PlaceOperand {
 }
 
 impl PlaceOperand {
-    pub fn from_operand(op: &Operand, pt: &PlaceTable) -> Self {
+    pub fn from_operand(op: &Operand, pt: &PlaceGraph) -> Self {
         match op {
             Operand::Copy(place) => {
                 PlaceOperand::Copy(place.to_place_index(pt).expect("arg exists"))
@@ -93,13 +93,13 @@ impl PlaceOperand {
 
 /// A data structure keeping track of all _syntactically expressible places_ in the program.
 #[derive(Clone)]
-pub struct PlaceTable {
+pub struct PlaceGraph {
     /// The callstack
     frames: Vec<Frame>,
     index_candidates: HashMap<usize, SmallVec<[Local; 1]>>,
     pointer_tags: IndexVec<Tag, BTreeSet<PlaceIndex>>,
 
-    places: PlaceGraph,
+    places: Graph,
     memory: BasicMemory,
     tcx: Rc<TyCtxt>,
 }
@@ -127,23 +127,23 @@ pub struct PlaceNode {
 }
 
 pub trait ToPlaceIndex {
-    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex>;
+    fn to_place_index(&self, pt: &PlaceGraph) -> Option<PlaceIndex>;
 }
 
 impl ToPlaceIndex for Place {
-    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
+    fn to_place_index(&self, pt: &PlaceGraph) -> Option<PlaceIndex> {
         pt.get_node(self)
     }
 }
 
 impl ToPlaceIndex for Local {
-    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
+    fn to_place_index(&self, pt: &PlaceGraph) -> Option<PlaceIndex> {
         pt.get_node(&Place::from_local(*self))
     }
 }
 
 impl ToPlaceIndex for PlaceIndex {
-    fn to_place_index(&self, _: &PlaceTable) -> Option<PlaceIndex> {
+    fn to_place_index(&self, _: &PlaceGraph) -> Option<PlaceIndex> {
         Some(*self)
     }
 }
@@ -152,7 +152,7 @@ impl<T> ToPlaceIndex for &T
 where
     T: ToPlaceIndex,
 {
-    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
+    fn to_place_index(&self, pt: &PlaceGraph) -> Option<PlaceIndex> {
         (*self).to_place_index(pt)
     }
 }
@@ -169,7 +169,7 @@ enum VisitAction {
     ShortCircuit,
 }
 
-impl PlaceTable {
+impl PlaceGraph {
     pub fn new(tcx: Rc<TyCtxt>) -> Self {
         Self {
             frames: vec![Frame::new(
@@ -391,7 +391,7 @@ impl PlaceTable {
     }
 
     fn add_place(
-        places: &mut PlaceGraph,
+        places: &mut Graph,
         ty: TyId,
         tcx: &TyCtxt,
         alloc_builder: &mut AllocationBuilder,
@@ -1238,7 +1238,7 @@ impl PlacePath {
         self.source
     }
 
-    pub fn to_place(&self, pt: &PlaceTable) -> Place {
+    pub fn to_place(&self, pt: &PlaceGraph) -> Place {
         let projs: SmallVec<[ProjectionElem; 8]> = self
             .path
             .iter()
@@ -1259,12 +1259,12 @@ impl PlacePath {
 
     pub fn projections<'pt>(
         &'pt self,
-        pt: &'pt PlaceTable,
+        pt: &'pt PlaceGraph,
     ) -> impl Iterator<Item = ProjectionElem> + 'pt {
         self.path.iter().map(|e| pt.places[*e])
     }
 
-    pub fn nodes<'pt>(&'pt self, pt: &'pt PlaceTable) -> impl Iterator<Item = PlaceIndex> + 'pt {
+    pub fn nodes<'pt>(&'pt self, pt: &'pt PlaceGraph) -> impl Iterator<Item = PlaceIndex> + 'pt {
         [self.source].into_iter().chain(
             self.path
                 .iter()
@@ -1272,7 +1272,7 @@ impl PlacePath {
         )
     }
 
-    pub fn is_return_proj(&self, pt: &PlaceTable) -> bool {
+    pub fn is_return_proj(&self, pt: &PlaceGraph) -> bool {
         pt.current_frame()
             .get_by_index(self.source)
             .expect("source exists")
@@ -1288,7 +1288,7 @@ impl PlacePath {
 /// FIXME: this breaks if there's a reference cycle in the graph
 #[derive(Clone)]
 pub struct ProjectionIter<'pt> {
-    pt: &'pt PlaceTable,
+    pt: &'pt PlaceGraph,
     root: PlaceIndex,
     path: Path,
     // Stack of nodes to visit and their depth (number of projections from root)
@@ -1298,7 +1298,7 @@ pub struct ProjectionIter<'pt> {
 }
 
 impl<'pt> ProjectionIter<'pt> {
-    fn new(pt: &'pt PlaceTable, root: PlaceIndex) -> Self {
+    fn new(pt: &'pt PlaceGraph, root: PlaceIndex) -> Self {
         ProjectionIter {
             pt,
             root,
@@ -1383,17 +1383,17 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
 }
 
 pub trait HasComplexity {
-    fn complexity(&self, pt: &PlaceTable) -> usize;
+    fn complexity(&self, pt: &PlaceGraph) -> usize;
 }
 
 impl HasComplexity for Place {
-    fn complexity(&self, pt: &PlaceTable) -> usize {
+    fn complexity(&self, pt: &PlaceGraph) -> usize {
         pt.places[self.to_place_index(pt).expect("place exists")].complexity
     }
 }
 
 impl HasComplexity for Operand {
-    fn complexity(&self, pt: &PlaceTable) -> usize {
+    fn complexity(&self, pt: &PlaceGraph) -> usize {
         match self {
             Operand::Copy(place) | Operand::Move(place) => place.complexity(pt),
             Operand::Constant(_) => 1,
@@ -1402,7 +1402,7 @@ impl HasComplexity for Operand {
 }
 
 impl HasComplexity for Rvalue {
-    fn complexity(&self, pt: &PlaceTable) -> usize {
+    fn complexity(&self, pt: &PlaceGraph) -> usize {
         match self {
             Rvalue::Use(operand) | Rvalue::Cast(operand, _) | Rvalue::UnaryOp(_, operand) => {
                 operand.complexity(pt)
@@ -1423,7 +1423,7 @@ impl<T> HasComplexity for &T
 where
     T: HasComplexity,
 {
-    fn complexity(&self, pt: &PlaceTable) -> usize {
+    fn complexity(&self, pt: &PlaceGraph) -> usize {
         (*self).complexity(pt)
     }
 }
@@ -1445,9 +1445,9 @@ mod tests {
         ptable::{HasComplexity, PlaceIndex, ToPlaceIndex},
     };
 
-    use super::PlaceTable;
+    use super::PlaceGraph;
 
-    fn prepare_t() -> (PlaceTable, Local, Place, Place, Place, Place, Place) {
+    fn prepare_t() -> (PlaceGraph, Local, Place, Place, Place, Place, Place) {
         /*
             ┌──────┬──────┐
             │      │      │
@@ -1461,7 +1461,7 @@ mod tests {
         let t_i16_i32 = tcx.push(TyKind::Tuple(vec![TyCtxt::I16, TyCtxt::I32]));
         let t_root = tcx.push(TyKind::Tuple(vec![TyCtxt::I8, t_i16_i32, TyCtxt::I64]));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
         let local = Local::new(1);
         pt.allocate_local(local, t_root);
 
@@ -1527,7 +1527,7 @@ mod tests {
         // *const (*const i32,)
         let ty = tcx.push(TyKind::RawPtr(inner_ty, Mutability::Not));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
         let root = Local::new(1);
         pt.allocate_local(root, ty);
 
@@ -1567,7 +1567,7 @@ mod tests {
         let mut tcx = TyCtxt::from_primitives();
         let ty = tcx.push(TyKind::Tuple(vec![TyCtxt::I8, TyCtxt::I32]));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
         let local = Local::new(1);
         pt.allocate_local(local, ty);
 
@@ -1650,7 +1650,7 @@ mod tests {
         let mut tcx = TyCtxt::from_primitives();
         let ty = tcx.push(TyKind::Array(TyCtxt::I32, 4));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
         let local = Local::new(1);
         let local_pidx = pt.allocate_local(local, ty);
 
@@ -1685,7 +1685,7 @@ mod tests {
         let mut tcx = TyCtxt::from_primitives();
         let elem_ty = tcx.push(TyKind::Tuple(vec![TyCtxt::I32, TyCtxt::I64]));
         let ty = tcx.push(TyKind::Array(elem_ty, 4));
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
         let local = Local::new(1);
         let local_pidx = pt.allocate_local(local, ty);
 
@@ -1714,7 +1714,7 @@ mod tests {
         let t_ref = tcx.push(TyKind::Ref(t_i16_i32, Mutability::Not));
         let t_ptr = tcx.push(TyKind::RawPtr(t_i16_i32, Mutability::Not));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
 
         let root = Local::new(1);
         pt.allocate_local(root, t_i16_i32);
@@ -1779,7 +1779,7 @@ mod tests {
 
         let t_ref = tcx.push(TyKind::Ref(TyCtxt::I32, Mutability::Not));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
 
         let int = Local::new(1);
         pt.allocate_local(int, TyCtxt::I32);
