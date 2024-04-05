@@ -56,9 +56,10 @@ Arguments:
   <seed>  generation seed
 
 Options:
-  -d, --debug    generate a program where values are printed instead of hashed (slow)
-  -h, --help     Print help
-  -V, --version  Print version
+  -d, --debug                      generate a program where values are printed instead of hashed (slow)
+      --call-syntax <call-syntax>  switch between different versions of Call syntaxes [default: v4] [possible values: v1, v2, v3, v4]
+  -h, --help                       Print help
+  -V, --version                    Print version
 ```
 
 To difftest an existing program, run `difftest`
