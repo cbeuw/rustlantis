@@ -1,7 +1,0 @@
-compile:
-  image:
-    name: cbeuw/rustlantis-env:latest
-  stage: build
-  script:
-    - cargo build
-    - RUST_LOG=debug cargo test

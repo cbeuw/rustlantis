@@ -1,6 +1,6 @@
 /*
 Copyright: The Rust Project contributors
-With modifications by Andy Wang
+With modifications by Rustlantis Author
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
