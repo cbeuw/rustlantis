@@ -19,7 +19,7 @@ use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
 use crate::literal::GenLiteral;
 use crate::place_select::{PlaceSelector, Weight};
-use crate::ptable::{HasComplexity, PlaceIndex, PlaceOperand, PlaceGraph, ToPlaceIndex};
+use crate::pgraph::{HasComplexity, PlaceIndex, PlaceOperand, PlaceGraph, ToPlaceIndex};
 use crate::ty::{seed_tys, TySelect};
 
 use self::intrinsics::{ArithOffset, Transmute};

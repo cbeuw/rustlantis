@@ -1442,7 +1442,7 @@ mod tests {
 
     use crate::{
         mem::BasicMemory,
-        ptable::{HasComplexity, PlaceIndex, ToPlaceIndex},
+        pgraph::{HasComplexity, PlaceIndex, ToPlaceIndex},
     };
 
     use super::PlaceGraph;

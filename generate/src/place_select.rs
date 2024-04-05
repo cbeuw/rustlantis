@@ -9,7 +9,7 @@ use rand_distr::WeightedIndex;
 
 use crate::{
     mem::BasicMemory,
-    ptable::{PlaceIndex, PlacePath, PlaceGraph, ToPlaceIndex, MAX_COMPLEXITY},
+    pgraph::{PlaceIndex, PlacePath, PlaceGraph, ToPlaceIndex, MAX_COMPLEXITY},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -380,7 +380,7 @@ mod tests {
     use test::Bencher;
 
     use crate::{
-        ptable::PlaceGraph,
+        pgraph::PlaceGraph,
         ty::{seed_tys, TySelect},
     };
 

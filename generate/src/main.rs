@@ -11,7 +11,7 @@ mod generation;
 mod literal;
 mod mem;
 mod place_select;
-mod ptable;
+mod pgraph;
 mod ty;
 
 use std::time::Instant;
