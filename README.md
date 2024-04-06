@@ -3,7 +3,7 @@ A Rust Mid-level Intermediate Representation fuzzer
 
 It can generate [custom MIR](https://doc.rust-lang.org/std/intrinsics/mir/index.html) programs containing:
 - All primitive integer and floating point types, `bool`, `char`, arrays,
-tuples, raw pointers, and structs.
+tuples, references, raw pointers, structs, and enums.
 - Functions containing multiple basic blocks
 - Terminators: `Goto`, `Return`, `SwitchInt` (`match`), `Call`.
 - Intrinsic functions: `arith_offset` (for pointer arithmetics), `transmute`,
@@ -12,7 +12,7 @@ tuples, raw pointers, and structs.
 and floating points, and checked arithmetic (Add, Sub, Mul) on integers
 - All primitive literal expressions, as well as tuple, array, and struct
 aggregate expressions
-- Creating pointers with `addr_of!` and `addr_of_mut!`, and dereferencing
+- Creating references and raw pointers, and dereferencing them
 - Casts between integers, floating points, `char`, and `bool`
 
 Generated programs are terminating, UB-free, and deterministic. A discrepancy between testing backends
