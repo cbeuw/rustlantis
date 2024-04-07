@@ -74,7 +74,7 @@ Options:
 ```
 
 ## Quirks (LINKS ARE NOT ANONYMOUS)
-- Cranelift not supported on AArch64 macOS: https://github.com/bjorn3/rustc_codegen_cranelift/issues/1248
+- Cranelift not supported on AArch64 macOS: bjorn3/rustc_codegen_cranelift/issues/1248
 - `rustc_codegen_backend` can be used as a backend, but it doesn't support enough language features yet to be usable
 
 ## Namesake
@@ -87,31 +87,31 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 🏗️: Root cause in Cranelift
 
 ### Crashes & ICEs
-- 🦀 `RenameReturnPlace` is broken: https://github.com/rust-lang/rust/issues/110902
-- 🦀 `ReferencePropagation` prevents partial initialisation: https://github.com/rust-lang/rust/issues/111426
-- 🐉 phi nodes assumed to be non-empty: https://github.com/llvm/llvm-project/issues/63013
-- 🐉 Assertion failure in `RegisterCoalescer`: https://github.com/llvm/llvm-project/issues/63033
-- 🦀 MIR inlining inserts statements at the wrong place: https://github.com/rust-lang/rust/issues/117355
-- 🏗️ Overflowing shift triggers panic in Cranelift: https://github.com/rust-lang/rustc_codegen_cranelift/issues/1455 & https://github.com/bytecodealliance/wasmtime/issues/7865
+- 🦀 `RenameReturnPlace` is broken: rust-lang/rust/issues/110902
+- 🦀 `ReferencePropagation` prevents partial initialisation: rust-lang/rust/issues/111426
+- 🐉 phi nodes assumed to be non-empty: llvm/llvm-project/issues/63013
+- 🐉 Assertion failure in `RegisterCoalescer`: llvm/llvm-project/issues/63033
+- 🦀 MIR inlining inserts statements at the wrong place: rust-lang/rust/issues/117355
+- 🏗️ Overflowing shift triggers panic in Cranelift: rust-lang/rustc_codegen_cranelift/issues/1455 & bytecodealliance/wasmtime/issues/7865
 
 ### Silent Miscompilations
-- 🦀 `ConstProp` propagates over mutating borrows: https://github.com/rust-lang/rust/issues/110947
-- 🦀 `*const T` in function parameters annotated with `readonly`: https://github.com/rust-lang/rust/issues/111502
-- 🐉 Aliasing analysis merges loads from different offsets: https://github.com/rust-lang/rust/issues/112061 & https://github.com/llvm/llvm-project/issues/63019
-- 🐉 Constant folding produces invalid boolean values: https://github.com/rust-lang/rust/issues/112170 & https://github.com/llvm/llvm-project/issues/63055
-- 🐉 Aliasing analysis broken for overflowing pointer offsets: https://github.com/rust-lang/rust/issues/112526 & https://github.com/llvm/llvm-project/issues/63266
-- https://github.com/rust-lang/rust/issues/112548
-- 🐉 Copy elision corrupts stack arguments with two parts: https://github.com/rust-lang/rust/issues/112767 & https://github.com/llvm/llvm-project/issues/63430
-- 🐉 Copy elision reads stack arguments from the wrong offsets: https://github.com/llvm/llvm-project/issues/63475
-- 🦀 Subnormal f64 to f32 cast is wrong: https://github.com/rust-lang/rust/issues/113407
-- 🐉 AST size merging is wrong: https://github.com/llvm/llvm-project/issues/64897 
-- 🦀 `ConstProp` propagates over assignment of unknown values: https://github.com/rust-lang/rust/issues/118328
-- 🐉 Bad `undef`/`poison` handling in `InstCombine`: https://github.com/llvm/llvm-project/issues/74890
-- 🦀 `GVN` merges moved function arguments: https://github.com/rust-lang/rust/issues/120613
-- 🐉 `GVNPass` forgets to remove poison generating flags: https://github.com/llvm/llvm-project/issues/82884
-- 🏗️ Misoptimization of imul + ireduce: https://github.com/rust-lang/rustc_codegen_cranelift/issues/1460 & https://github.com/bytecodealliance/wasmtime/issues/7999
-- 🐉 `InstCombine` calculates wrong `insertelement` instructions: https://github.com/rust-lang/rust/issues/121996 & https://github.com/llvm/llvm-project/issues/84025
+- 🦀 `ConstProp` propagates over mutating borrows: rust-lang/rust/issues/110947
+- 🦀 `*const T` in function parameters annotated with `readonly`: rust-lang/rust/issues/111502
+- 🐉 Aliasing analysis merges loads from different offsets: rust-lang/rust/issues/112061 & llvm/llvm-project/issues/63019
+- 🐉 Constant folding produces invalid boolean values: rust-lang/rust/issues/112170 & llvm/llvm-project/issues/63055
+- 🐉 Aliasing analysis broken for overflowing pointer offsets: rust-lang/rust/issues/112526 & llvm/llvm-project/issues/63266
+- rust-lang/rust/issues/112548
+- 🐉 Copy elision corrupts stack arguments with two parts: rust-lang/rust/issues/112767 & llvm/llvm-project/issues/63430
+- 🐉 Copy elision reads stack arguments from the wrong offsets: llvm/llvm-project/issues/63475
+- 🦀 Subnormal f64 to f32 cast is wrong: rust-lang/rust/issues/113407
+- 🐉 AST size merging is wrong: llvm/llvm-project/issues/64897 
+- 🦀 `ConstProp` propagates over assignment of unknown values: rust-lang/rust/issues/118328
+- 🐉 Bad `undef`/`poison` handling in `InstCombine`: llvm/llvm-project/issues/74890
+- 🦀 `GVN` merges moved function arguments: rust-lang/rust/issues/120613
+- 🐉 `GVNPass` forgets to remove poison generating flags: llvm/llvm-project/issues/82884
+- 🏗️ Misoptimization of imul + ireduce: rust-lang/rustc_codegen_cranelift/issues/1460 & bytecodealliance/wasmtime/issues/7999
+- 🐉 `InstCombine` calculates wrong `insertelement` instructions: rust-lang/rust/issues/121996 & llvm/llvm-project/issues/84025
 
 ### Previously known bugs
-- 🦀 Const eval gives `x % x` wrong sign when `x` is a negative float: https://github.com/rust-lang/rust/issues/109567 (first reported https://github.com/rust-lang/rust/issues/102403)
-- 🐉 Write to dangling pointer is hoisted outside of condition: https://github.com/rust-lang/rust/issues/112213 (first reported https://github.com/llvm/llvm-project/issues/51838)
+- 🦀 Const eval gives `x % x` wrong sign when `x` is a negative float: rust-lang/rust/issues/109567 (first reported rust-lang/rust/issues/102403)
+- 🐉 Write to dangling pointer is hoisted outside of condition: rust-lang/rust/issues/112213 (first reported llvm/llvm-project/issues/51838)
