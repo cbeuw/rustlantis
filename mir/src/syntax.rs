@@ -814,14 +814,33 @@ impl Program {
             printf("%i\0".as_ptr() as *const c_char,*self);
         }
     }
-    impl PrintFDebug for f32{
-        unsafe fn printf_debug(&self){
-            printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double);
+    impl PrintFDebug for f32 {
+        unsafe fn printf_debug(&self) {
+            if self.is_nan(){
+                printf(
+                    "NaN\0".as_ptr() as *const c_char,
+                );
+            }else{
+                printf(
+                    "%f\0".as_ptr() as *const c_char,
+                    *self as core::ffi::c_double,
+                );
+            }
+           
         }
     }
-    impl PrintFDebug for f64{
-        unsafe fn printf_debug(&self){
-            printf("%f\0".as_ptr() as *const c_char,*self as core::ffi::c_double);
+    impl PrintFDebug for f64 {
+        unsafe fn printf_debug(&self) {
+            if self.is_nan(){
+                printf(
+                    "NaN\0".as_ptr() as *const c_char,
+                );
+            }else{
+                printf(
+                    "%f\0".as_ptr() as *const c_char,
+                    *self as core::ffi::c_double,
+                );
+            }
         }
     }
     impl<T:PrintFDebug,const N:usize> PrintFDebug for [T;N]{
