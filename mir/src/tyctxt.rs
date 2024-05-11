@@ -183,7 +183,7 @@ pub fn adt_impl_printf_debug(adt:&Adt,id:TyId)->String{
         let mut res = format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{printf(\"{name}{{\\0\".as_ptr()  as *const c_char)}};",name = id.type_name());
         // Iterate trough fields to print values of fields of stuct
         for (field_id,_) in adt.variants[0].fields.iter().enumerate(){
-            res.push_str(format!("\n\tprintf(\"fld{field_id}:\\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();"));
+            res.push_str(&format!("\n\tprintf(\"fld{field_id}:\\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();"));
         }
         res.push_str("\n\tunsafe{printf(\"}\\0\".as_ptr() as *const c_char)};}\n}");
         res
