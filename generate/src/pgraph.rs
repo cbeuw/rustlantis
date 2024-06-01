@@ -736,7 +736,8 @@ impl PlaceGraph {
     pub fn mark_place_moved(&mut self, p: impl ToPlaceIndex) {
         let p = p.to_place_index(&self).expect("place exists");
         self.mark_place_uninit(p);
-        self.place_written(p);
+        // We assume that we never move through a pointer
+        self.place_written(p, None);
     }
 
     pub fn mark_place_uninit(&mut self, p: impl ToPlaceIndex) {
@@ -1135,16 +1136,33 @@ impl PlaceGraph {
         self.places.node_count()
     }
 
+    /// Returns the tag used to access a Place. Returns None if the place is not accessed through a pointer
+    /// Panics if the place is behind a pointer but the pointer has no tag
+    pub fn accessing_tag(&self, place: &Place) -> Option<Tag> {
+        // This assumes that Deref is always the first projection
+        if let Some(ProjectionElem::Deref) = place.projection().get(0) {
+            Some(
+                self.places[place.local().to_place_index(&self).expect("place exists")]
+                    .tag
+                    .expect("has tag"),
+            )
+        } else {
+            None
+        }
+    }
+
     /// To be called when a place is written to. Invalidates (removes) all references and raw pointers after the first
-    /// reference on the stack
-    pub fn place_written(&mut self, p: impl ToPlaceIndex) {
-        let p = p.to_place_index(self).expect("place exists");
-        self.update_transitive_subfields(p, |this, place| {
+    /// shared reference on the stack, and after the mutable reference tag used to write
+    pub fn place_written(&mut self, p: impl ToPlaceIndex, tag: Option<Tag>) {
+        let target = p.to_place_index(&self).expect("place exists");
+        self.update_transitive_subfields(target, |this, place| {
             if let Some(run) = this.places[place].run_ptr {
-                // FIXME: this is inefficient: if a raw pointer is above a &mut, and a write happens through
-                // this, then it will be unconditionally invalidated after the write, even though it may be
-                // fine to write though this pointer multiple times if it is derived from the &mut (same tag)
-                let invalidated = this.memory.above_first_ref(run);
+                let invalidated = if let Some(tag) = tag {
+                    this.memory.other_tags_above(run, tag)
+                } else {
+                    this.memory.above_first_ref(run)
+                };
+                // TODO: don't copy partially invalidated refs
                 for tag in invalidated {
                     this.memory.remove_tag_run_ptr(tag, run);
                 }
@@ -1155,25 +1173,12 @@ impl PlaceGraph {
         });
     }
 
-    pub fn can_read_through(&self, ptr: PlaceIndex, p: PlaceIndex) -> bool {
-        assert_ne!(ptr, p);
-
-        if ptr == p {
-            return true;
-        }
-        if !self.ty(ptr).is_any_ptr(&self.tcx) {
-            // You can always read through a non-pointer
-            return true;
-        }
-        let Some(tag) = self.places[ptr].tag else {
-            // Has no permission
-            return false;
-        };
-        let mut can = true;
+    fn is_mutably_borrowed(&self, p: PlaceIndex) -> bool {
+        let mut is = false;
         self.visit_transitive_subfields(p, |node| {
             if let Some(run) = self.places[node].run_ptr {
-                if !self.memory.can_read_with(run, tag) {
-                    can = false;
+                if self.memory.has_mut(run) {
+                    is = true;
                     return VisitAction::ShortCircuit;
                 }
                 VisitAction::Stop
@@ -1181,36 +1186,72 @@ impl PlaceGraph {
                 VisitAction::Continue
             }
         });
-        can
+        is
     }
 
-    /// Checks if a pointer can be used to write through its target
-    pub fn can_write_through(&self, ptr: PlaceIndex, p: PlaceIndex) -> bool {
-        // assert_ne!(ptr, p);
-        if ptr == p {
-            return true;
-        }
-        if !self.ty(ptr).is_any_ptr(&self.tcx) {
-            // You can always write through a non-pointer
-            return true;
-        }
-        let Some(tag) = self.places[ptr].tag else {
-            // Has no permission
+    /// Checks if a local can be used to read a place
+    pub fn can_read_through(&self, local: PlaceIndex, p: PlaceIndex) -> bool {
+        if self.is_mutably_borrowed(local) {
+            // We cannot access a local if it is currently mutably borrowed
             return false;
-        };
-        let mut can = true;
-        self.visit_transitive_subfields(p, |node| {
-            if let Some(run) = self.places[node].run_ptr {
-                if !self.memory.can_write_with(run, tag) {
-                    can = false;
-                    return VisitAction::ShortCircuit;
+        }
+        if local == p {
+            return true;
+        }
+        // Access not through deref
+        if !self.ty(local).is_any_ptr(&self.tcx) {
+            true
+        } else {
+            let Some(tag) = self.places[local].tag else {
+                // Has no permission
+                return false;
+            };
+            let mut can = true;
+            self.visit_transitive_subfields(p, |node| {
+                if let Some(run) = self.places[node].run_ptr {
+                    if !self.memory.can_read_with(run, tag) {
+                        can = false;
+                        return VisitAction::ShortCircuit;
+                    }
+                    VisitAction::Stop
+                } else {
+                    VisitAction::Continue
                 }
-                VisitAction::Stop
-            } else {
-                VisitAction::Continue
-            }
-        });
-        can
+            });
+            can
+        }
+    }
+
+    /// Checks if a local can be used to write a place
+    pub fn can_write_through(&self, local: PlaceIndex, p: PlaceIndex) -> bool {
+        if self.is_mutably_borrowed(local) {
+            // We cannot access a local if it is currently mutably borrowed
+            return false;
+        }
+        if local == p {
+            return true;
+        }
+        if !self.ty(local).is_any_ptr(&self.tcx) {
+            true
+        } else {
+            let Some(tag) = self.places[local].tag else {
+                // Has no permission
+                return false;
+            };
+            let mut can = true;
+            self.visit_transitive_subfields(p, |node| {
+                if let Some(run) = self.places[node].run_ptr {
+                    if !self.memory.can_write_with(run, tag) {
+                        can = false;
+                        return VisitAction::ShortCircuit;
+                    }
+                    VisitAction::Stop
+                } else {
+                    VisitAction::Continue
+                }
+            });
+            can
+        }
     }
 
     // We need to mark reference uninit if the edge is removed (though not raw pointers)
@@ -1222,6 +1263,19 @@ impl PlaceGraph {
 
         let removed = self.places.remove_edge(e).expect("edge exists");
         assert!(removed.is_deref());
+    }
+
+    // Returns if a ConstantIndex can be turned into an Index with local.
+    // Conditions are that a local with a known val equal to the index exists, and this local
+    // can be read
+    // HACK: ConstantIndex isn't supported in custom MIR syntax
+    fn usable_offset(&self, offset: u64) -> bool {
+        let locals = self.locals_with_val(offset as usize);
+        let has_usable = locals.iter().any(|local| {
+            let pidx = local.to_place_index(&self).expect("exists");
+            self.can_read_through(pidx, pidx)
+        });
+        has_usable
     }
 }
 
@@ -1245,8 +1299,16 @@ impl PlacePath {
             .map(|&proj| {
                 let mut proj = pt.places[proj];
                 if let ProjectionElem::ConstantIndex { offset } = proj {
-                    let local = pt.locals_with_val(offset as usize)[0]; // TODO: randomise this?
-                    proj = ProjectionElem::Index(local);
+                    let locals = pt.locals_with_val(offset as usize);
+                    let local = locals
+                        .iter()
+                        .filter(|local| {
+                            let pidx = local.to_place_index(pt).expect("exists");
+                            pt.can_read_through(pidx, pidx)
+                        })
+                        .next()
+                        .expect("has a usable local as index");
+                    proj = ProjectionElem::Index(*local);
                 }
                 proj
             })
@@ -1313,10 +1375,8 @@ impl<'pt> ProjectionIter<'pt> {
                     {
                         return None;
                     }
-                    // Only do indexing if we can find a local as index
-                    // TODO: move this to a function
                     if let ProjectionElem::ConstantIndex { offset } = e.weight()
-                        && pt.locals_with_val(*offset as usize).is_empty()
+                        && !pt.usable_offset(*offset)
                     {
                         return None;
                     }
@@ -1364,7 +1424,7 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
                 }
 
                 if let ProjectionElem::ConstantIndex { offset } = e.weight()
-                    && self.pt.locals_with_val(*offset as usize).is_empty()
+                    && !self.pt.usable_offset(*offset)
                 {
                     return None;
                 }
@@ -1755,7 +1815,13 @@ mod tests {
         assert!(!pt.can_write_through(root_ptr2_p, root_0));
 
         // Writing through (*root_ptr1).0
-        pt.place_written(root_0);
+        pt.place_written(
+            &Place::from_projected(
+                root_ptr1,
+                &[ProjectionElem::Deref, ProjectionElem::TupleField(0.into())],
+            ),
+            pt.places[root_ptr1_p].tag,
+        );
 
         // (*root_ref).0 is invalidated
         assert!(!pt.can_read_through(root_ref_p, root_0));
@@ -1796,7 +1862,7 @@ mod tests {
         pt.set_ref(int_ref, int, Some(int_ref_p));
         assert_eq!(pt.pointer_tags.first().unwrap().len(), 1);
 
-        pt.place_written(int);
+        pt.place_written(&Place::from_local(int), None);
         assert!(!pt.can_read_through(int_ref_p, int.to_place_index(&pt).unwrap()));
         assert!(!pt.can_write_through(int_ref_p, int.to_place_index(&pt).unwrap()));
     }

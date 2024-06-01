@@ -777,7 +777,7 @@ impl GenerationCtx {
 
         // Modification must start after this point, as we may bail during above
         self.save_ctx();
-        self.pt.place_written(&return_place);
+        self.pt.place_written(&return_place, self.pt.accessing_tag(&return_place));
         let target_bb = self.add_new_bb();
         self.return_stack.push(Cursor {
             function: self.cursor.function,
@@ -807,7 +807,7 @@ impl GenerationCtx {
             .ok_or(SelectionError::Exhausted)?;
 
         let return_place =
-            self.make_choice_weighted(return_places.into_iter(), weights, |ppath| {
+            self.make_choice_weighted(return_places.into_iter(), weights, |ppath: crate::pgraph::PlacePath| {
                 Result::Ok(ppath.to_place(&self.pt))
             })?;
 
@@ -821,7 +821,7 @@ impl GenerationCtx {
             .collect();
 
         self.pt.mark_place_init(ret);
-        self.pt.place_written(ret);
+        self.pt.place_written(&return_place, self.pt.accessing_tag(&return_place));
         let Callee::Intrinsic(intrinsic_name) = callee else {
             panic!("callee is intrinsic");
         };
@@ -1437,9 +1437,8 @@ impl GenerationCtx {
                 Statement::Assign(place, _)
                 | Statement::Deinit(place)
                 | Statement::SetDiscriminant(place, _) => {
-                    let pidx = place.to_place_index(&self.pt).unwrap();
                     actions.push(Box::new(move |pt| {
-                        pt.place_written(pidx);
+                        pt.place_written(place, pt.accessing_tag(place));
                     }))
                 }
                 Statement::StorageLive(_) => {}

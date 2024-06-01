@@ -9,7 +9,7 @@ use rand_distr::WeightedIndex;
 
 use crate::{
     mem::BasicMemory,
-    pgraph::{PlaceIndex, PlacePath, PlaceGraph, ToPlaceIndex, MAX_COMPLEXITY},
+    pgraph::{PlaceGraph, PlaceIndex, PlacePath, ToPlaceIndex, MAX_COMPLEXITY},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -219,7 +219,9 @@ impl PlaceSelector {
             }
 
             // Avoid having ref in return type
-            if self.usage == PlaceUsage::RET && pt.ty(index).contains(&self.tcx, |tcx, ty| ty.is_ref(tcx)) {
+            if self.usage == PlaceUsage::RET
+                && pt.ty(index).contains(&self.tcx, |tcx, ty| ty.is_ref(tcx))
+            {
                 return false;
             }
 
@@ -236,28 +238,24 @@ impl PlaceSelector {
                 return false;
             }
 
-            // We assume that if path has a deref, then the source is the pointer
-            if ppath.projections(pt).any(|proj| proj.is_deref()) {
-                match self.usage {
-                    // writes
-                    PlaceUsage::LHS | PlaceUsage::SetDiscriminant | PlaceUsage::RET => {
-                        if !pt.can_write_through(ppath.source(), index) {
-                            return false;
-                        }
+            // Check for aliasing rules
+            match self.usage {
+                // writes
+                PlaceUsage::LHS | PlaceUsage::SetDiscriminant | PlaceUsage::RET => {
+                    if !pt.can_write_through(ppath.source(), index) {
+                        return false;
                     }
-                    // reads that will be done as moves
-                    PlaceUsage::Operand | PlaceUsage::Argument
-                        if !pt.ty(index).is_copy(&self.tcx) =>
-                    {
-                        if !pt.can_write_through(ppath.source(), index) {
-                            return false;
-                        }
+                }
+                // reads that will be done as moves
+                PlaceUsage::Operand | PlaceUsage::Argument if !pt.ty(index).is_copy(&self.tcx) => {
+                    if !pt.can_write_through(ppath.source(), index) {
+                        return false;
                     }
-                    // reads
-                    _ => {
-                        if !pt.can_read_through(ppath.source(), index) {
-                            return false;
-                        }
+                }
+                // reads
+                _ => {
+                    if !pt.can_read_through(ppath.source(), index) {
+                        return false;
                     }
                 }
             }
@@ -322,7 +320,9 @@ impl PlaceSelector {
                             let mut weight = if !pt.is_place_init(place) {
                                 UNINIT_WEIGHT_FACTOR
                             } else {
-                                MAX_COMPLEXITY.checked_sub(pt.get_complexity(place)).expect("weight is non negative")
+                                MAX_COMPLEXITY
+                                    .checked_sub(pt.get_complexity(place))
+                                    .expect("weight is non negative")
                             };
                             if ppath.is_return_proj(pt) {
                                 weight *= RET_LHS_WEIGH_FACTOR;

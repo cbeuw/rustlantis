@@ -97,6 +97,25 @@ impl Run {
         }
     }
 
+    /// Returns a list of other tags above a certain tag
+    pub fn other_tags_above(&self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
+        let mut edges = BTreeSet::new();
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let index = stack
+                .iter()
+                .position(|borrow| borrow.tag == tag)
+                .expect("tag exists");
+            edges.extend(stack.iter().skip(index + 1).filter_map(|borrow| {
+                if borrow.tag != tag {
+                    Some(borrow.tag)
+                } else {
+                    None
+                }
+            }));
+        }
+        edges.iter().copied().collect()
+    }
+
     pub fn above_first_ref(&self, offset: Size, len: Size) -> Vec<Tag> {
         let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
@@ -111,6 +130,18 @@ impl Run {
             }
         }
         edges.iter().copied().collect()
+    }
+
+    fn has_mut(&self, offset: Size, len: Size) -> bool {
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            if stack
+                .iter()
+                .any(|borrow| borrow.borrow_type == BorrowType::Exclusive)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Checks if a tag is below the last exclusive reference
@@ -454,6 +485,14 @@ impl BasicMemory {
         !self.pointers.contains_key(&tag)
     }
 
+    pub fn other_tags_above(&self, run_ptr: RunPointer, tag: Tag) -> Vec<Tag> {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].other_tags_above(
+            run_ptr.offset(),
+            run_ptr.size,
+            tag,
+        )
+    }
+
     pub fn above_first_ref(&self, run_ptr: RunPointer) -> Vec<Tag> {
         self.allocations[run_ptr.alloc_id].runs[run_ptr.run()]
             .above_first_ref(run_ptr.offset(), run_ptr.size)
@@ -481,5 +520,10 @@ impl BasicMemory {
             run_ptr.size,
             tag,
         )
+    }
+
+    pub fn has_mut(&self, run_ptr: RunPointer) -> bool {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()]
+            .has_mut(run_ptr.offset(), run_ptr.size)
     }
 }
