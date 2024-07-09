@@ -991,6 +991,7 @@ impl PlaceGraph {
     }
 
     /// Whether two places overlap or alias
+    #[inline(always)]
     pub fn overlap(&self, a: impl ToPlaceIndex, b: impl ToPlaceIndex) -> bool {
         let a = a.to_place_index(self).expect("place exists");
         let b = b.to_place_index(self).expect("place exists");
