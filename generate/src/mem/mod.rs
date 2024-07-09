@@ -57,13 +57,20 @@ pub struct Borrow {
 pub struct Run {
     bytes: Box<[AbstractByte]>,
     ref_stack: RangeMap<Vec<Borrow>>,
+
+    // A cache on if any borrow stack in the run has a mutable borrow
+    _has_mut: Option<bool>,
 }
 
 impl Run {
     pub fn new_uninit(size: Size) -> Self {
         let bytes = vec![AbstractByte::Uninit; size.bytes() as usize].into_boxed_slice();
         let ref_stack = RangeMap::new(size, vec![]);
-        Self { bytes, ref_stack }
+        Self {
+            bytes,
+            ref_stack,
+            _has_mut: Some(false),
+        }
     }
 
     pub fn size(&self) -> Size {
@@ -71,6 +78,9 @@ impl Run {
     }
 
     pub fn add_borrow(&mut self, offset: Size, len: Size, borrow_type: BorrowType, tag: Tag) {
+        if borrow_type == BorrowType::Exclusive {
+            self._has_mut = Some(true);
+        }
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
             stack.push(Borrow {
                 borrow_type,
@@ -81,6 +91,7 @@ impl Run {
     }
 
     pub fn remove_borrow(&mut self, offset: Size, len: Size, tag: Tag) {
+        self._has_mut = None;
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
             if let Some(i) = stack.iter().position(|b| b.tag == tag) {
                 let removed = stack.remove(i);
@@ -133,6 +144,9 @@ impl Run {
     }
 
     fn has_mut(&self, offset: Size, len: Size) -> bool {
+        if let Some(has_mut) = self._has_mut {
+            return has_mut;
+        }
         for (_, stack) in self.ref_stack.iter(offset, len) {
             if stack
                 .iter()
