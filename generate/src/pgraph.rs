@@ -661,7 +661,8 @@ impl PlaceGraph {
     where
         F: FnMut(&mut Self, PlaceIndex) -> VisitAction,
     {
-        let mut to_visit = vec![start];
+        let mut to_visit: SmallVec<[PlaceIndex; 10]> = SmallVec::with_capacity(10);
+        to_visit.push(start);
         while let Some(node) = to_visit.pop() {
             let todo = visit(self, node);
             match todo {
@@ -676,7 +677,8 @@ impl PlaceGraph {
     where
         F: FnMut(PlaceIndex) -> VisitAction,
     {
-        let mut to_visit = vec![start];
+        let mut to_visit: SmallVec<[PlaceIndex; 10]> = SmallVec::with_capacity(10);
+        to_visit.push(start);
         while let Some(node) = to_visit.pop() {
             let todo = visit(node);
             match todo {
