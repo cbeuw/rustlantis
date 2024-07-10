@@ -9,7 +9,7 @@ use rand_distr::WeightedIndex;
 
 use crate::{
     mem::BasicMemory,
-    pgraph::{PlaceGraph, PlaceIndex, PlacePath, ToPlaceIndex, MAX_COMPLEXITY},
+    pgraph::{PlaceGraph, PlaceIndex, PlacePath, ToPlaceIndex},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -39,7 +39,7 @@ pub struct PlaceSelector {
 
 pub type Weight = usize;
 
-const RET_LHS_WEIGH_FACTOR: Weight = 2;
+const RET_LHS_WEIGHT_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
 const DEREF_WEIGHT_FACTOR: Weight = 20;
 const LIT_ARG_WEIGHT_FACTOR: Weight = 2;
@@ -318,15 +318,14 @@ impl PlaceSelector {
                         }
                         PlaceUsage::LHS | PlaceUsage::SetDiscriminant | PlaceUsage::RET => {
                             let mut weight = if !pt.is_place_init(place) {
-                                UNINIT_WEIGHT_FACTOR
+                                if ppath.is_return_proj(pt) {
+                                    RET_LHS_WEIGHT_FACTOR
+                                } else {
+                                    UNINIT_WEIGHT_FACTOR
+                                }
                             } else {
-                                MAX_COMPLEXITY
-                                    .checked_sub(pt.get_complexity(place))
-                                    .expect("weight is non negative")
+                                1
                             };
-                            if ppath.is_return_proj(pt) {
-                                weight *= RET_LHS_WEIGH_FACTOR;
-                            }
                             if pt.ty(place).is_raw_ptr(&tcx) && pt.get_offset(place).is_some() {
                                 weight = 0;
                             }
