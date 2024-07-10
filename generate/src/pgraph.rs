@@ -110,6 +110,9 @@ pub struct PlaceNode {
     alloc_id: AllocId,
     complexity: usize,
 
+    subfields: Vec<PlaceIndex>,
+    subfield_edges: Vec<EdgeIndex>,
+
     // Only Tys fitting into a single Run have these
     run_ptr: Option<RunPointer>,
 
@@ -404,6 +407,8 @@ impl PlaceGraph {
                 ty,
                 alloc_id,
                 complexity: 0,
+                subfields: vec![],
+                subfield_edges: vec![],
                 run_ptr,
                 val: None,
                 offset: None,
@@ -416,6 +421,8 @@ impl PlaceGraph {
                 ty,
                 alloc_id,
                 complexity: 0,
+                subfields: vec![],
+                subfield_edges: vec![],
                 run_ptr: Some(RunPointer {
                     alloc_id,
                     run_and_offset,
@@ -431,6 +438,8 @@ impl PlaceGraph {
                 ty,
                 alloc_id,
                 complexity: 0,
+                subfields: vec![],
+                subfield_edges: vec![],
                 run_ptr: None,
                 val: None,
                 offset: None,
@@ -441,11 +450,13 @@ impl PlaceGraph {
         match ty.kind(tcx) {
             TyKind::Tuple(elems) => elems.iter().enumerate().for_each(|(idx, elem)| {
                 let sub_pidx = Self::add_place(places, *elem, tcx, alloc_builder, None);
-                places.add_edge(
+                let edge_idx = places.add_edge(
                     pidx,
                     sub_pidx,
                     ProjectionElem::TupleField(FieldIdx::new(idx)),
                 );
+                places[pidx].subfields.push(sub_pidx);
+                places[pidx].subfield_edges.push(edge_idx);
             }),
             TyKind::Array(elem_ty, len) => {
                 for i in 0..*len {
@@ -464,22 +475,26 @@ impl PlaceGraph {
                     };
                     let elem_pidx =
                         Self::add_place(places, *elem_ty, tcx, alloc_builder, child_run_ptr);
-                    places.add_edge(
+                    let edge_idx = places.add_edge(
                         pidx,
                         elem_pidx,
                         ProjectionElem::ConstantIndex { offset: i as u64 },
                     );
+                    places[pidx].subfields.push(elem_pidx);
+                    places[pidx].subfield_edges.push(edge_idx);
                 }
             }
             TyKind::Adt(adt) if adt.is_enum() => {
                 for (vid, var) in adt.variants.iter_enumerated() {
                     for (fid, ty) in var.fields.iter_enumerated() {
                         let field_pidx = Self::add_place(places, *ty, tcx, alloc_builder, None);
-                        places.add_edge(
+                        let edge_idx = places.add_edge(
                             pidx,
                             field_pidx,
                             ProjectionElem::DowncastField(vid, fid, *ty),
                         );
+                        places[pidx].subfields.push(field_pidx);
+                        places[pidx].subfield_edges.push(edge_idx);
                     }
                 }
             }
@@ -487,7 +502,9 @@ impl PlaceGraph {
                 let fields = &adt.variants.first().expect("adt is a struct").fields;
                 for (fid, ty) in fields.iter_enumerated() {
                     let field_pidx = Self::add_place(places, *ty, tcx, alloc_builder, None);
-                    places.add_edge(pidx, field_pidx, ProjectionElem::Field(fid));
+                    let edge_idx = places.add_edge(pidx, field_pidx, ProjectionElem::Field(fid));
+                    places[pidx].subfields.push(field_pidx);
+                    places[pidx].subfield_edges.push(edge_idx);
                 }
             }
             TyKind::RawPtr(..) => { /* pointer has no subfields  */ }
@@ -525,11 +542,7 @@ impl PlaceGraph {
         self.places[p].active_variant = discriminant;
 
         // All inactive variant fields are uninit
-        let invalidated: Vec<NodeIndex> = self
-            .places
-            .edges_directed(p, Direction::Outgoing)
-            .map(|e| e.target())
-            .collect();
+        let invalidated = self.places[p].subfields.clone();
 
         for pidx in invalidated {
             self.invalidate_place(pidx);
@@ -590,13 +603,9 @@ impl PlaceGraph {
             self.places[dst].offset = self.places[src].offset;
         }
 
-        let projs: Vec<_> = self
-            .places
-            .edges_directed(dst, Direction::Outgoing)
-            .filter_map(|e| (!e.weight().is_deref()).then_some(e.weight()))
-            .copied()
-            .collect();
-        for proj in projs {
+        let projs: Vec<_> = self.places[dst].subfield_edges.iter().copied().collect();
+        for eidx in projs {
+            let proj = self.places[eidx];
             let new_dst = self
                 .project_from_node(dst, proj)
                 .expect("projection exists");
@@ -940,18 +949,18 @@ impl PlaceGraph {
             // Uninit enum
             false
         } else {
-            self.places
-                .edges_directed(pidx, Direction::Outgoing)
-                .filter_map(|e| {
-                    if e.weight().is_deref() {
-                        None
-                    } else if let ProjectionElem::DowncastField(vid, ..) = e.weight()
-                        && self.places[e.source()].active_variant != Some(*vid)
+            self.places[pidx]
+                .subfield_edges
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &eidx)| {
+                    if let ProjectionElem::DowncastField(vid, ..) = self.places[eidx]
+                        && self.places[pidx].active_variant != Some(vid)
                     {
                         // Only check active variant
                         None
                     } else {
-                        Some(e.target())
+                        Some(self.places[pidx].subfields[i])
                     }
                 })
                 .all(|sub| self.is_place_init(sub))
@@ -959,9 +968,7 @@ impl PlaceGraph {
     }
 
     fn immediate_subfields(&self, pidx: PlaceIndex) -> impl Iterator<Item = PlaceIndex> + '_ {
-        self.places
-            .edges_directed(pidx, Direction::Outgoing)
-            .filter_map(|e| (!e.weight().is_deref()).then_some(e.target()))
+        self.places[pidx].subfields.iter().copied()
     }
 
     fn immediate_superfields(&self, pidx: PlaceIndex) -> impl Iterator<Item = PlaceIndex> + '_ {
@@ -1412,26 +1419,22 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
             self.path.truncate(depth - 1);
             self.path.push(edge);
 
-            let new_edges = self.pt.places.edges_directed(target, Direction::Outgoing);
-            self.to_visit.extend(new_edges.filter_map(|e| {
+            let new_edges = self.pt.places[target].subfield_edges.iter();
+            self.to_visit.extend(new_edges.filter_map(|&eidx| {
+                let e = self.pt.places[eidx];
                 // Only downcast to current variants
-                if let ProjectionElem::DowncastField(vid, _, _) = e.weight()
-                    && self.pt.known_variant(e.source()) != Some(*vid)
+                if let ProjectionElem::DowncastField(vid, _, _) = e
+                    && self.pt.known_variant(target) != Some(vid)
                 {
                     return None;
                 }
 
-                // Do not follow deref edges since we are not root
-                if e.weight().is_deref() {
-                    return None;
-                }
-
-                if let ProjectionElem::ConstantIndex { offset } = e.weight()
-                    && !self.pt.usable_offset(*offset)
+                if let ProjectionElem::ConstantIndex { offset } = e
+                    && !self.pt.usable_offset(offset)
                 {
                     return None;
                 }
-                Some((e.id(), depth + 1))
+                Some((eidx, depth + 1))
             }));
 
             Some(PlacePath {
