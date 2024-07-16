@@ -23,20 +23,7 @@ always indicate a bug in them (or a bug in Rustlantis).
 - rustup
 
 ## Config
-Copy `config.toml.example` to `config.toml` and supply the paths to the *repository root* of testing backends.
-
-To prepare `rustc_codegen_cranelift`:
-```bash
-git clone https://github.com/bjorn3/rustc_codegen_cranelift
-cd rustc_codegen_cranelift && ./y.rs prepare && ./y.rs build
-```
-
-To prepare Miri:
-```bash
-git clone https://github.com/rust-lang/miri
-cargo install rustup-toolchain-install-master
-cd miri && ./miri toolchain && ./miri build --release && ./target/release/cargo-miri miri setup
-```
+Install Miri and Cranelift with Rustup `rustup component add miri rustc-codegen-cranelift-preview`, then copy `config.toml.example` to `config.toml`
 
 ## Usage
 
@@ -75,7 +62,7 @@ Options:
 
 ## Quirks
 - Cranelift not supported on AArch64 macOS: https://github.com/bjorn3/rustc_codegen_cranelift/issues/1248
-- `rustc_codegen_backend` can be used as a backend, but it doesn't support enough language features yet to be usable
+- `rustc_codegen_gcc` can be used as a backend, but it doesn't support enough language features yet to be usable
 
 ## Namesake
 The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https://en.wikipedia.org/wiki/Shuttle%E2%80%93Mir_program

@@ -30,11 +30,14 @@ fn main() -> ExitCode {
 
     let mut backends: HashMap<BackendName, Box<dyn Backend>> = HashMap::default();
     if let Ok(clif_dir) = settings.get_string("cranelift_dir") {
-        let clif = Cranelift::from_repo(clif_dir, OptLevel::Optimised, OptLevel::Unoptimised);
-        match clif {
-            Ok(clif) => backends.insert("cranelift-opt-only", Box::new(clif)),
-            Err(e) => panic!("cranelift init failed\n{}", e.0),
-        };
+        let clif = Cranelift::from_repo(clif_dir, OptLevel::Optimised, OptLevel::Unoptimised)
+            .expect("cranelift init failed");
+        backends.insert("cranelift-opt-only", Box::new(clif));
+    } else if let Ok(clif_toolchain) = settings.get_string("cranelift_toolchain") {
+        let clif =
+            Cranelift::from_rustup(&clif_toolchain, OptLevel::Optimised, OptLevel::Unoptimised)
+                .expect("cranelift init failed");
+        backends.insert("cranelift-opt-only", Box::new(clif));
     }
 
     let check_ub = settings
@@ -42,19 +45,19 @@ fn main() -> ExitCode {
         .map(|config| config == "true" || config == "1")
         .unwrap_or(true);
     if let Ok(miri_dir) = settings.get_string("miri_dir") {
-        let miri = Miri::from_repo(miri_dir, check_ub);
-        match miri {
-            Ok(miri) if check_ub => backends.insert("miri-checked", Box::new(miri)),
-            Ok(miri) => backends.insert("miri-unchecked", Box::new(miri)),
-            Err(e) => panic!("miri init failed\n{}", e.0),
-        };
+        let miri = Miri::from_repo(miri_dir, check_ub).expect("miri init failed");
+        if check_ub {
+            backends.insert("miri-checked", Box::new(miri));
+        } else {
+            backends.insert("miri-unchecked", Box::new(miri));
+        }
     } else if let Ok(miri_toolchain) = settings.get_string("miri_toolchain") {
-        let miri = Miri::from_rustup(&miri_toolchain, check_ub);
-        match miri {
-            Ok(miri) if check_ub => backends.insert("miri-checked", Box::new(miri)),
-            Ok(miri) => backends.insert("miri-unchecked", Box::new(miri)),
-            Err(e) => panic!("miri init failed\n{}", e.0),
-        };
+        let miri = Miri::from_rustup(&miri_toolchain, check_ub).expect("miri init failed");
+        if check_ub {
+            backends.insert("miri-checked", Box::new(miri));
+        } else {
+            backends.insert("miri-unchecked", Box::new(miri));
+        }
     }
 
     if let Ok(cg_gcc) = settings.get_string("cg_gcc_dir") {
