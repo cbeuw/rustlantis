@@ -1,30 +1,24 @@
 cff-version: 1.2.0
 title: Rustlantis
-message: A Rust Mid-level Intermediate Representation fuzzer
+message: A fuzzer for the Rust compiler
 type: software
 authors:
-  - given-names: Andy
+  - given-names: Qian (Andy)
     family-names: Wang
-    affiliation: ETH Zürich
     orcid: 'https://orcid.org/0009-0006-0779-8651'
+    affiliation: ETH Zürich
   - given-names: Ralf
     family-names: Jung
-    affiliation: ETH Zürich
     orcid: 'https://orcid.org/0000-0001-7669-6348'
+    affiliation: ETH Zürich
 identifiers:
-  - type: url
-    value: >-
-      https://ethz.ch/content/dam/ethz/special-interest/infk/inst-pls/plf-dam/documents/StudentProjects/MasterTheses/2023-Andy-Thesis.pdf
+  - type: doi
+    value: 10.1145/3689780
 repository-code: 'https://github.com/cbeuw/rustlantis'
-abstract: >-
-  Rustlantis is a novel fuzzer capable of generating
-  programs in Rust’s Mid-level Intermediate Representation
-  that are deterministic and free from Undefined Behaviour.
 keywords:
+  - Compiler testing
   - Rust
-  - fuzzing
-  - software validation
-  - compilers
+  - Fuzzing
 license:
- - Apache-2.0
- - MIT
+  - Apache-2.0
+  - MIT
