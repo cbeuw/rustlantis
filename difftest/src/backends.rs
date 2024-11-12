@@ -157,20 +157,36 @@ impl Backend for LLVM {
     }
 }
 
+enum BackendSource {
+    Path(PathBuf),
+    Rustup(String),
+}
+
 pub struct Miri {
-    binary: PathBuf,
+    miri: BackendSource,
     sysroot: PathBuf,
     check_ub: bool,
 }
 
 impl Miri {
-    fn find_sysroot(miri_dir: &Path) -> Result<PathBuf, BackendInitError> {
-        let output = Command::new(miri_dir.join("target/release/cargo-miri"))
+    fn find_sysroot(miri_source: &BackendSource) -> Result<PathBuf, BackendInitError> {
+        let mut command = match miri_source {
+            BackendSource::Path(source_dir) => {
+                let mut cmd = Command::new(source_dir.join("target/release/cargo-miri"));
+                cmd.current_dir(source_dir);
+                cmd
+            }
+            BackendSource::Rustup(toolchain) => {
+                let mut cmd = Command::new("rustup");
+                cmd.args(["run", toolchain, "cargo-miri"]);
+                cmd
+            }
+        };
+        let output = command
             .arg("miri")
             .arg("setup")
             .arg("--print-sysroot")
             .clear_env(&["PATH", "DEVELOPER_DIR"])
-            .current_dir(miri_dir)
             .output()
             .expect("can run cargo-miri setup --print-sysroot");
         if !output.status.success() {
@@ -239,28 +255,36 @@ impl Miri {
             debug!("Detected built Miri under {}", miri_dir.to_string_lossy());
         }
 
-        let sysroot = Self::find_sysroot(miri_dir)?;
+        let sysroot = Self::find_sysroot(&BackendSource::Path(miri_dir.to_owned()))?;
 
         Ok(Self {
-            binary: miri_dir.join("target/release/miri"),
+            miri: BackendSource::Path(miri_dir.join("target/release/miri")),
             sysroot,
             check_ub,
         })
     }
 
-    pub fn from_binary<P: AsRef<Path>>(binary_path: P, sysroot: P, check_ub: bool) -> Self {
-        Self {
-            binary: binary_path.as_ref().to_owned(),
-            sysroot: sysroot.as_ref().to_owned(),
+    pub fn from_rustup(toolchain: &str, check_ub: bool) -> Result<Self, BackendInitError> {
+        let sysroot = Self::find_sysroot(&BackendSource::Rustup(toolchain.to_owned()))?;
+        Ok(Self {
+            miri: BackendSource::Rustup(toolchain.to_owned()),
+            sysroot,
             check_ub,
-        }
+        })
     }
 }
 
 impl Backend for Miri {
     fn execute(&self, source: &Path, _: &Path) -> ExecResult {
         debug!("Executing {} with Miri", source.to_string_lossy());
-        let mut command = Command::new(&self.binary);
+        let mut command = match &self.miri {
+            BackendSource::Path(binary) => Command::new(binary),
+            BackendSource::Rustup(toolchain) => {
+                let mut cmd = Command::new("rustup");
+                cmd.args(["run", &toolchain, "miri"]);
+                cmd
+            }
+        };
         if self.check_ub {
             command.arg("-Zmiri-tree-borrows");
         } else {
@@ -270,7 +294,7 @@ impl Backend for Miri {
                 .arg("-Zmiri-disable-alignment-check");
         }
         command
-            .env_clear()
+            .clear_env(&["PATH", "DEVELOPER_DIR"])
             .args([OsStr::new("--sysroot"), self.sysroot.as_os_str()])
             .arg(source);
         let miri_out = command.output().expect("can run miri and get output");
@@ -284,7 +308,7 @@ impl Backend for Miri {
 }
 
 pub struct Cranelift {
-    binary: PathBuf,
+    clif: BackendSource,
     codegen_opt: OptLevel,
     mir_opt: OptLevel,
 }
@@ -327,7 +351,7 @@ impl Cranelift {
         }
 
         Ok(Cranelift {
-            binary: clif_dir.join("dist/rustc-clif"),
+            clif: BackendSource::Path(clif_dir.join("dist/rustc-clif")),
             codegen_opt,
             mir_opt,
         })
@@ -339,16 +363,37 @@ impl Cranelift {
         mir_opt: OptLevel,
     ) -> Self {
         Self {
-            binary: binary_path.as_ref().to_owned(),
+            clif: BackendSource::Path(binary_path.as_ref().to_owned()),
             codegen_opt,
             mir_opt,
         }
+    }
+
+    pub fn from_rustup(
+        toolchain: &str,
+        codegen_opt: OptLevel,
+        mir_opt: OptLevel,
+    ) -> Result<Self, BackendInitError> {
+        Ok(Self {
+            clif: BackendSource::Rustup(toolchain.to_owned()),
+            codegen_opt,
+            mir_opt,
+        })
     }
 }
 
 impl Backend for Cranelift {
     fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
-        let compile_out = Command::new(&self.binary)
+        let mut command = match &self.clif {
+            BackendSource::Path(binary) => Command::new(binary),
+            BackendSource::Rustup(toolchain) => {
+                let mut cmd = Command::new("rustc");
+                cmd.arg(format!("+{toolchain}"));
+                cmd.args(["-Z", "codegen-backend=cranelift"]);
+                cmd
+            }
+        };
+        let compile_out = command
             .arg(source)
             .args(["-o", target.to_str().unwrap()])
             .args([

@@ -9,13 +9,14 @@ use rand_distr::WeightedIndex;
 
 use crate::{
     mem::BasicMemory,
-    ptable::{PlaceIndex, PlacePath, PlaceTable, ToPlaceIndex},
+    pgraph::{PlaceGraph, PlaceIndex, PlacePath, ToPlaceIndex},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PlaceUsage {
     Operand,
     LHS,
+    RET,
     SetDiscriminant,
     Pointee,
     Argument,
@@ -38,20 +39,20 @@ pub struct PlaceSelector {
 
 pub type Weight = usize;
 
-const RET_LHS_WEIGH_FACTOR: Weight = 2;
+const RET_LHS_WEIGHT_FACTOR: Weight = 2;
 const UNINIT_WEIGHT_FACTOR: Weight = 2;
-const DEREF_WEIGHT_FACTOR: Weight = 2;
+const DEREF_WEIGHT_FACTOR: Weight = 20;
 const LIT_ARG_WEIGHT_FACTOR: Weight = 2;
-const PTR_ARG_WEIGHT_FACTOR: Weight = 2;
-const REF_ARG_WEIGHT_FACTOR: Weight = 9999;
+const PTR_ARG_WEIGHT_FACTOR: Weight = 20;
+const REF_ARG_WEIGHT_FACTOR: Weight = 20;
 const OFFSETTED_PTR_WEIGHT_FACTOR: Weight = 10;
 const ROUNDTRIPPED_PTR_WEIGHT_FACTOR: Weight = 100;
 
 impl PlaceSelector {
-    pub fn for_pointee(tcx: Rc<TyCtxt>) -> Self {
+    pub fn for_pointee(tcx: Rc<TyCtxt>, allow_uninit: bool) -> Self {
         Self {
             usage: PlaceUsage::Pointee,
-            allow_uninit: true,
+            allow_uninit,
             ..Self::for_operand(tcx)
         }
     }
@@ -73,6 +74,13 @@ impl PlaceSelector {
         Self {
             usage: PlaceUsage::SetDiscriminant,
             ..Self::for_operand(tcx)
+        }
+    }
+
+    pub fn for_return_place(tcx: Rc<TyCtxt>) -> Self {
+        Self {
+            usage: PlaceUsage::RET,
+            ..Self::for_lhs(tcx)
         }
     }
 
@@ -150,7 +158,7 @@ impl PlaceSelector {
         Self { refed, ..self }
     }
 
-    fn into_iter_path(self, pt: &PlaceTable) -> impl Iterator<Item = PlacePath> + Clone + '_ {
+    fn into_iter_path(self, pt: &PlaceGraph) -> impl Iterator<Item = PlacePath> + Clone + '_ {
         let exclusion_indicies: Vec<PlaceIndex> = self
             .exclusions
             .iter()
@@ -188,6 +196,11 @@ impl PlaceSelector {
                 return false;
             };
 
+            // Ref validity
+            if self.usage != PlaceUsage::LHS && !pt.contains_only_valid_ref(index) {
+                return false;
+            }
+
             // Known val
             if self.usage == PlaceUsage::KnownVal && pt.known_val(index).is_none() {
                 return false;
@@ -205,6 +218,13 @@ impl PlaceSelector {
                 }
             }
 
+            // Avoid having ref in return type
+            if self.usage == PlaceUsage::RET
+                && pt.ty(index).contains(&self.tcx, |tcx, ty| ty.is_ref(tcx))
+            {
+                return false;
+            }
+
             // Not excluded
             if exclusion_indicies
                 .iter()
@@ -218,24 +238,29 @@ impl PlaceSelector {
                 return false;
             }
 
-            // We assume that if path has a deref, then the source is the pointer
-            if ppath.projections(pt).any(|proj| proj.is_deref()) {
-                match self.usage {
-                    // writes
-                    PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
-                        if !pt.can_write_through(ppath.source(), index) {
-                            return false;
-                        }
+            // Check for aliasing rules
+            match self.usage {
+                // writes
+                PlaceUsage::LHS | PlaceUsage::SetDiscriminant | PlaceUsage::RET => {
+                    if !pt.can_write_through(ppath.source(), index) {
+                        return false;
                     }
-                    // reads
-                    _ => {
-                        if !pt.can_read_through(ppath.source(), index) {
-                            return false;
-                        }
+                }
+                // reads that will be done as moves
+                PlaceUsage::Operand | PlaceUsage::Argument if !pt.ty(index).is_copy(&self.tcx) => {
+                    if !pt.can_write_through(ppath.source(), index) {
+                        return false;
+                    }
+                }
+                // reads
+                _ => {
+                    if !pt.can_read_through(ppath.source(), index) {
+                        return false;
                     }
                 }
             }
 
+            // Function arguments
             if self.usage == PlaceUsage::Argument {
                 if moved.iter().any(|excl| pt.overlap(index, excl)) {
                     return false;
@@ -248,12 +273,7 @@ impl PlaceSelector {
                 }
 
                 if !pt.ty(index).is_copy(&self.tcx) {
-                    // If this is a type that must be moved, then we must be able to write through
-                    // the chosen projection,
-                    if !pt.can_write_through(ppath.source(), index) {
-                        return false;
-                    }
-                    // and it must not be referenced by an already-picked reference
+                    // If this is a type that must be moved, then it must not be referenced by an already-picked reference
                     for r in &refed {
                         if pt.contains_ref_to(*r, index) {
                             return false;
@@ -266,7 +286,7 @@ impl PlaceSelector {
         })
     }
 
-    pub fn into_weighted(self, pt: &PlaceTable) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
+    pub fn into_weighted(self, pt: &PlaceGraph) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
         let usage = self.usage;
         let tcx = self.tcx.clone();
         let (places, weights): (Vec<PlacePath>, Vec<Weight>) =
@@ -275,7 +295,7 @@ impl PlaceSelector {
                     let place = ppath.target_index();
                     let mut weight = match usage {
                         PlaceUsage::Argument => {
-                            let mut weight = pt.get_complexity(place);
+                            let mut weight = 1;
                             let index = ppath.target_index();
                             let ty = pt.ty(index);
                             if ty.contains(&tcx, |tcx, ty| ty.is_ref(tcx)) {
@@ -296,17 +316,17 @@ impl PlaceSelector {
                             }
                             weight
                         }
-                        PlaceUsage::LHS | PlaceUsage::SetDiscriminant => {
+                        PlaceUsage::LHS | PlaceUsage::SetDiscriminant | PlaceUsage::RET => {
                             let mut weight = if !pt.is_place_init(place) {
-                                UNINIT_WEIGHT_FACTOR
+                                if ppath.is_return_proj(pt) {
+                                    RET_LHS_WEIGHT_FACTOR
+                                } else {
+                                    UNINIT_WEIGHT_FACTOR
+                                }
                             } else {
                                 1
                             };
-                            if ppath.is_return_proj(pt) {
-                                weight *= RET_LHS_WEIGH_FACTOR;
-                            }
-                            let target = ppath.target_index();
-                            if pt.ty(target).is_raw_ptr(&tcx) && pt.get_offset(target).is_some() {
+                            if pt.ty(place).is_raw_ptr(&tcx) && pt.get_offset(place).is_some() {
                                 weight = 0;
                             }
                             weight
@@ -337,7 +357,7 @@ impl PlaceSelector {
         }
     }
 
-    pub fn into_iter_place(self, pt: &PlaceTable) -> impl Iterator<Item = Place> + Clone + '_ {
+    pub fn into_iter_place(self, pt: &PlaceGraph) -> impl Iterator<Item = Place> + Clone + '_ {
         self.into_iter_path(pt).map(|ppath| ppath.to_place(pt))
     }
 }
@@ -359,15 +379,15 @@ mod tests {
     use test::Bencher;
 
     use crate::{
-        ptable::PlaceTable,
+        pgraph::PlaceGraph,
         ty::{seed_tys, TySelect},
     };
 
     use super::PlaceSelector;
 
-    fn build_pt(rng: &mut impl Rng) -> (PlaceTable, Rc<TyCtxt>) {
+    fn build_pt(rng: &mut impl Rng) -> (PlaceGraph, Rc<TyCtxt>) {
         let tcx = Rc::new(seed_tys(rng));
-        let mut pt = PlaceTable::new(tcx.clone());
+        let mut pt = PlaceGraph::new(tcx.clone());
         let ty_weights = TySelect::new(&tcx);
         for i in 0..=32 {
             let pidx = pt.allocate_local(Local::new(i), ty_weights.choose_ty(rng, &tcx));

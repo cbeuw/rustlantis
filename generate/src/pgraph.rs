@@ -23,10 +23,12 @@ use crate::mem::{
     AbstractByte, AllocId, AllocationBuilder, BasicMemory, BorrowType, RunPointer, Tag,
 };
 
-type PlaceGraph = StableGraph<PlaceNode, ProjectionElem>;
+type Graph = StableGraph<PlaceNode, ProjectionElem>;
 pub type PlaceIndex = NodeIndex;
 pub type ProjectionIndex = EdgeIndex;
 pub type Path = SmallVec<[ProjectionIndex; 4]>;
+
+pub const MAX_COMPLEXITY: usize = 100;
 
 #[derive(Clone)]
 struct Frame {
@@ -75,7 +77,7 @@ pub enum PlaceOperand {
 }
 
 impl PlaceOperand {
-    pub fn from_operand(op: &Operand, pt: &PlaceTable) -> Self {
+    pub fn from_operand(op: &Operand, pt: &PlaceGraph) -> Self {
         match op {
             Operand::Copy(place) => {
                 PlaceOperand::Copy(place.to_place_index(pt).expect("arg exists"))
@@ -91,13 +93,13 @@ impl PlaceOperand {
 
 /// A data structure keeping track of all _syntactically expressible places_ in the program.
 #[derive(Clone)]
-pub struct PlaceTable {
+pub struct PlaceGraph {
     /// The callstack
     frames: Vec<Frame>,
     index_candidates: HashMap<usize, SmallVec<[Local; 1]>>,
     pointer_tags: IndexVec<Tag, BTreeSet<PlaceIndex>>,
 
-    places: PlaceGraph,
+    places: Graph,
     memory: BasicMemory,
     tcx: Rc<TyCtxt>,
 }
@@ -107,6 +109,9 @@ pub struct PlaceNode {
     pub ty: TyId,
     alloc_id: AllocId,
     complexity: usize,
+
+    subfields: Vec<PlaceIndex>,
+    subfield_edges: Vec<EdgeIndex>,
 
     // Only Tys fitting into a single Run have these
     run_ptr: Option<RunPointer>,
@@ -125,23 +130,23 @@ pub struct PlaceNode {
 }
 
 pub trait ToPlaceIndex {
-    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex>;
+    fn to_place_index(&self, pt: &PlaceGraph) -> Option<PlaceIndex>;
 }
 
 impl ToPlaceIndex for Place {
-    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
+    fn to_place_index(&self, pt: &PlaceGraph) -> Option<PlaceIndex> {
         pt.get_node(self)
     }
 }
 
 impl ToPlaceIndex for Local {
-    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
+    fn to_place_index(&self, pt: &PlaceGraph) -> Option<PlaceIndex> {
         pt.get_node(&Place::from_local(*self))
     }
 }
 
 impl ToPlaceIndex for PlaceIndex {
-    fn to_place_index(&self, _: &PlaceTable) -> Option<PlaceIndex> {
+    fn to_place_index(&self, _: &PlaceGraph) -> Option<PlaceIndex> {
         Some(*self)
     }
 }
@@ -150,7 +155,7 @@ impl<T> ToPlaceIndex for &T
 where
     T: ToPlaceIndex,
 {
-    fn to_place_index(&self, pt: &PlaceTable) -> Option<PlaceIndex> {
+    fn to_place_index(&self, pt: &PlaceGraph) -> Option<PlaceIndex> {
         (*self).to_place_index(pt)
     }
 }
@@ -167,7 +172,7 @@ enum VisitAction {
     ShortCircuit,
 }
 
-impl PlaceTable {
+impl PlaceGraph {
     pub fn new(tcx: Rc<TyCtxt>) -> Self {
         Self {
             frames: vec![Frame::new(
@@ -225,7 +230,7 @@ impl PlaceTable {
                 |pid| {
                     let node = &self.places[pid];
                     if let Some(run_ptr) = node.run_ptr {
-                        invalidated.extend(self.memory.above_first_shared(run_ptr));
+                        invalidated.extend(self.memory.above_first_ref(run_ptr));
                         VisitAction::Stop
                     } else {
                         VisitAction::Continue
@@ -293,12 +298,9 @@ impl PlaceTable {
                             "function arguments must be init: arg {local:?} source {source_pidx:?}"
                         );
                         self.copy_place(pidx, source_pidx);
-                        self.update_transitive_subfields(pidx, |this, node| {
-                            if this.ty(node).is_ref(&this.tcx) {
-                                this.mark_ref_protected(node);
-                            }
-                            VisitAction::Continue
-                        })
+                        for r in self.refs_in(pidx) {
+                            self.mark_ref_protected(r);
+                        }
                     }
                     PlaceOperand::Constant(lit) => self.assign_literal(pidx, Some(*lit)),
                 }
@@ -320,15 +322,20 @@ impl PlaceTable {
             .iter()
             .map(|local| self.places[*local].alloc_id)
             .collect();
-        let mut has_stack_ref = false;
+        let mut has_invalid_ref = false;
         // Check if it contains any references that will be invalidated upon return
         self.visit_transitive_subfields(
             Local::RET.to_place_index(self).expect("ret exists"),
             |node| {
                 if self.ty(node).is_ref(&self.tcx) {
+                    if !self.is_ref_valid(node) {
+                        has_invalid_ref = true;
+                        return VisitAction::ShortCircuit;
+                    }
                     if let Some(pointee) = self.pointee(node) {
                         if local_allocs.contains(&self.places[pointee].alloc_id) {
-                            has_stack_ref = true;
+                            // Will dangle after return
+                            has_invalid_ref = true;
                             return VisitAction::ShortCircuit;
                         }
                     }
@@ -337,7 +344,7 @@ impl PlaceTable {
                 VisitAction::Continue
             },
         );
-        !has_stack_ref
+        !has_invalid_ref
     }
 
     pub fn exit_fn(&mut self) {
@@ -387,7 +394,7 @@ impl PlaceTable {
     }
 
     fn add_place(
-        places: &mut PlaceGraph,
+        places: &mut Graph,
         ty: TyId,
         tcx: &TyCtxt,
         alloc_builder: &mut AllocationBuilder,
@@ -400,6 +407,8 @@ impl PlaceTable {
                 ty,
                 alloc_id,
                 complexity: 0,
+                subfields: vec![],
+                subfield_edges: vec![],
                 run_ptr,
                 val: None,
                 offset: None,
@@ -412,6 +421,8 @@ impl PlaceTable {
                 ty,
                 alloc_id,
                 complexity: 0,
+                subfields: vec![],
+                subfield_edges: vec![],
                 run_ptr: Some(RunPointer {
                     alloc_id,
                     run_and_offset,
@@ -427,6 +438,8 @@ impl PlaceTable {
                 ty,
                 alloc_id,
                 complexity: 0,
+                subfields: vec![],
+                subfield_edges: vec![],
                 run_ptr: None,
                 val: None,
                 offset: None,
@@ -437,11 +450,13 @@ impl PlaceTable {
         match ty.kind(tcx) {
             TyKind::Tuple(elems) => elems.iter().enumerate().for_each(|(idx, elem)| {
                 let sub_pidx = Self::add_place(places, *elem, tcx, alloc_builder, None);
-                places.add_edge(
+                let edge_idx = places.add_edge(
                     pidx,
                     sub_pidx,
                     ProjectionElem::TupleField(FieldIdx::new(idx)),
                 );
+                places[pidx].subfields.push(sub_pidx);
+                places[pidx].subfield_edges.push(edge_idx);
             }),
             TyKind::Array(elem_ty, len) => {
                 for i in 0..*len {
@@ -460,22 +475,26 @@ impl PlaceTable {
                     };
                     let elem_pidx =
                         Self::add_place(places, *elem_ty, tcx, alloc_builder, child_run_ptr);
-                    places.add_edge(
+                    let edge_idx = places.add_edge(
                         pidx,
                         elem_pidx,
                         ProjectionElem::ConstantIndex { offset: i as u64 },
                     );
+                    places[pidx].subfields.push(elem_pidx);
+                    places[pidx].subfield_edges.push(edge_idx);
                 }
             }
             TyKind::Adt(adt) if adt.is_enum() => {
                 for (vid, var) in adt.variants.iter_enumerated() {
                     for (fid, ty) in var.fields.iter_enumerated() {
                         let field_pidx = Self::add_place(places, *ty, tcx, alloc_builder, None);
-                        places.add_edge(
+                        let edge_idx = places.add_edge(
                             pidx,
                             field_pidx,
                             ProjectionElem::DowncastField(vid, fid, *ty),
                         );
+                        places[pidx].subfields.push(field_pidx);
+                        places[pidx].subfield_edges.push(edge_idx);
                     }
                 }
             }
@@ -483,7 +502,9 @@ impl PlaceTable {
                 let fields = &adt.variants.first().expect("adt is a struct").fields;
                 for (fid, ty) in fields.iter_enumerated() {
                     let field_pidx = Self::add_place(places, *ty, tcx, alloc_builder, None);
-                    places.add_edge(pidx, field_pidx, ProjectionElem::Field(fid));
+                    let edge_idx = places.add_edge(pidx, field_pidx, ProjectionElem::Field(fid));
+                    places[pidx].subfields.push(field_pidx);
+                    places[pidx].subfield_edges.push(edge_idx);
                 }
             }
             TyKind::RawPtr(..) => { /* pointer has no subfields  */ }
@@ -521,11 +542,7 @@ impl PlaceTable {
         self.places[p].active_variant = discriminant;
 
         // All inactive variant fields are uninit
-        let invalidated: Vec<NodeIndex> = self
-            .places
-            .edges_directed(p, Direction::Outgoing)
-            .map(|e| e.target())
-            .collect();
+        let invalidated = self.places[p].subfields.clone();
 
         for pidx in invalidated {
             self.invalidate_place(pidx);
@@ -586,13 +603,9 @@ impl PlaceTable {
             self.places[dst].offset = self.places[src].offset;
         }
 
-        let projs: Vec<_> = self
-            .places
-            .edges_directed(dst, Direction::Outgoing)
-            .filter_map(|e| (!e.weight().is_deref()).then_some(e.weight()))
-            .copied()
-            .collect();
-        for proj in projs {
+        let projs: Vec<_> = self.places[dst].subfield_edges.iter().copied().collect();
+        for eidx in projs {
+            let proj = self.places[eidx];
             let new_dst = self
                 .project_from_node(dst, proj)
                 .expect("projection exists");
@@ -657,7 +670,8 @@ impl PlaceTable {
     where
         F: FnMut(&mut Self, PlaceIndex) -> VisitAction,
     {
-        let mut to_visit = vec![start];
+        let mut to_visit: SmallVec<[PlaceIndex; 10]> = SmallVec::with_capacity(10);
+        to_visit.push(start);
         while let Some(node) = to_visit.pop() {
             let todo = visit(self, node);
             match todo {
@@ -672,7 +686,8 @@ impl PlaceTable {
     where
         F: FnMut(PlaceIndex) -> VisitAction,
     {
-        let mut to_visit = vec![start];
+        let mut to_visit: SmallVec<[PlaceIndex; 10]> = SmallVec::with_capacity(10);
+        to_visit.push(start);
         while let Some(node) = to_visit.pop() {
             let todo = visit(node);
             match todo {
@@ -685,7 +700,7 @@ impl PlaceTable {
 
     pub fn update_complexity(&mut self, target: impl ToPlaceIndex, new_flow: usize) {
         let target = target.to_place_index(self).expect("place exists");
-        let new_flow = new_flow.min(100);
+        let new_flow = new_flow.min(MAX_COMPLEXITY);
 
         // Subplaces' complexity is overwritten as target's new complexity
         self.update_transitive_subfields(target, |this, place| {
@@ -732,7 +747,8 @@ impl PlaceTable {
     pub fn mark_place_moved(&mut self, p: impl ToPlaceIndex) {
         let p = p.to_place_index(&self).expect("place exists");
         self.mark_place_uninit(p);
-        self.place_written(p);
+        // We assume that we never move through a pointer
+        self.place_written(p, None);
     }
 
     pub fn mark_place_uninit(&mut self, p: impl ToPlaceIndex) {
@@ -746,14 +762,6 @@ impl PlaceTable {
             self.remove_edge(old);
         }
 
-        // If this place is pointed to by a reference, we must remove the Deref edge
-        // so the reference is invalidated
-        for (pointer, ref_edge) in self.pointers_to(pidx) {
-            if self.ty(pointer).is_ref(&self.tcx) {
-                self.remove_edge(ref_edge);
-            }
-        }
-
         self.update_transitive_subfields(pidx, |this, place| {
             this.places[place].active_variant = None;
             let node = &this.places[place];
@@ -764,6 +772,28 @@ impl PlaceTable {
                 VisitAction::Continue
             }
         });
+    }
+
+    /// Whether a reference value is legal to produce
+    fn is_ref_valid(&self, r: PlaceIndex) -> bool {
+        assert!(self.ty(r).is_ref(&self.tcx));
+        let Some(target) = self.pointee(r) else {
+            return false;
+        };
+        self.is_place_init(target)
+    }
+
+    /// Whether all refs contained in a place are all valid
+    pub fn contains_only_valid_ref(&self, p: PlaceIndex) -> bool {
+        let mut has_invalid = false;
+        self.visit_transitive_subfields(p, |node| {
+            if self.ty(node).is_ref(&self.tcx) && !self.is_ref_valid(node) {
+                has_invalid = true;
+                return VisitAction::ShortCircuit;
+            }
+            VisitAction::Continue
+        });
+        !has_invalid
     }
 
     pub fn mark_place_init(&mut self, p: impl ToPlaceIndex) {
@@ -819,7 +849,7 @@ impl PlaceTable {
     }
 
     /// Returns the pointee in pointer -[Deref]-> pointee, if one exists
-    fn pointee(&self, pointer: PlaceIndex) -> Option<PlaceIndex> {
+    pub fn pointee(&self, pointer: PlaceIndex) -> Option<PlaceIndex> {
         assert!(self.places[pointer].ty.is_any_ptr(&self.tcx));
         self.places
             .edges_directed(pointer, Direction::Outgoing)
@@ -857,6 +887,10 @@ impl PlaceTable {
             TyKind::Ref(_, Mutability::Not) => BorrowType::Shared,
             _ => panic!("source must be of pointer type"),
         };
+
+        if matches!(ref_type, BorrowType::Shared | BorrowType::Exclusive) {
+            assert!(self.is_place_init(pointee));
+        }
 
         if let Some(old) = self.ref_edge(pointer) {
             self.remove_edge(old);
@@ -915,18 +949,18 @@ impl PlaceTable {
             // Uninit enum
             false
         } else {
-            self.places
-                .edges_directed(pidx, Direction::Outgoing)
-                .filter_map(|e| {
-                    if e.weight().is_deref() {
-                        None
-                    } else if let ProjectionElem::DowncastField(vid, ..) = e.weight()
-                        && self.places[e.source()].active_variant != Some(*vid)
+            self.places[pidx]
+                .subfield_edges
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &eidx)| {
+                    if let ProjectionElem::DowncastField(vid, ..) = self.places[eidx]
+                        && self.places[pidx].active_variant != Some(vid)
                     {
                         // Only check active variant
                         None
                     } else {
-                        Some(e.target())
+                        Some(self.places[pidx].subfields[i])
                     }
                 })
                 .all(|sub| self.is_place_init(sub))
@@ -934,9 +968,7 @@ impl PlaceTable {
     }
 
     fn immediate_subfields(&self, pidx: PlaceIndex) -> impl Iterator<Item = PlaceIndex> + '_ {
-        self.places
-            .edges_directed(pidx, Direction::Outgoing)
-            .filter_map(|e| (!e.weight().is_deref()).then_some(e.target()))
+        self.places[pidx].subfields.iter().copied()
     }
 
     fn immediate_superfields(&self, pidx: PlaceIndex) -> impl Iterator<Item = PlaceIndex> + '_ {
@@ -966,6 +998,7 @@ impl PlaceTable {
     }
 
     /// Whether two places overlap or alias
+    #[inline(always)]
     pub fn overlap(&self, a: impl ToPlaceIndex, b: impl ToPlaceIndex) -> bool {
         let a = a.to_place_index(self).expect("place exists");
         let b = b.to_place_index(self).expect("place exists");
@@ -1113,107 +1146,146 @@ impl PlaceTable {
         self.places.node_count()
     }
 
-    /// Whether writing to a place will invalidate a tag
-    fn will_write_invalidate(&self, dest: RunPointer, tag: Tag) -> bool {
-        let invalidated = self.memory.above_first_shared(dest);
-        return invalidated.contains(&tag);
+    /// Returns the tag used to access a Place. Returns None if the place is not accessed through a pointer
+    /// Panics if the place is behind a pointer but the pointer has no tag
+    pub fn accessing_tag(&self, place: &Place) -> Option<Tag> {
+        // This assumes that Deref is always the first projection
+        if let Some(ProjectionElem::Deref) = place.projection().get(0) {
+            Some(
+                self.places[place.local().to_place_index(&self).expect("place exists")]
+                    .tag
+                    .expect("has tag"),
+            )
+        } else {
+            None
+        }
     }
 
     /// To be called when a place is written to. Invalidates (removes) all references and raw pointers after the first
-    /// shared reference on the stack, and mark references uninit
-    pub fn place_written(&mut self, p: impl ToPlaceIndex) {
-        let p = p.to_place_index(self).expect("place exists");
-        self.update_transitive_subfields(p, |this, place| {
+    /// shared reference on the stack, and other tags after the mutable reference tag used to write
+    pub fn place_written(&mut self, p: impl ToPlaceIndex, tag: Option<Tag>) {
+        let target = p.to_place_index(&self).expect("place exists");
+        self.update_transitive_subfields(target, |this, place| {
             if let Some(run) = this.places[place].run_ptr {
-                let invalidated = this.memory.above_first_shared(run);
+                let invalidated = if let Some(tag) = tag {
+                    this.memory.other_tags_above(run, tag)
+                } else {
+                    this.memory.above_first_ref(run)
+                };
                 // TODO: don't copy partially invalidated refs
                 for tag in invalidated {
-                    let all_gone = this.memory.remove_tag_run_ptr(tag, run);
-                    if all_gone {
-                        for pointer in this.pointer_tags[tag].clone() {
-                            let edge = this.ref_edge(pointer).expect("has edge");
-                            this.remove_edge(edge);
-                        }
+                    this.memory.remove_tag_run_ptr(tag, run);
+                }
+                VisitAction::Stop
+            } else {
+                VisitAction::Continue
+            }
+        });
+    }
+
+    fn is_mutably_borrowed(&self, p: PlaceIndex) -> bool {
+        let mut is = false;
+        self.visit_transitive_subfields(p, |node| {
+            if let Some(run) = self.places[node].run_ptr {
+                if self.memory.has_mut(run) {
+                    is = true;
+                    return VisitAction::ShortCircuit;
+                }
+                VisitAction::Stop
+            } else {
+                VisitAction::Continue
+            }
+        });
+        is
+    }
+
+    /// Checks if a local can be used to read a place
+    pub fn can_read_through(&self, local: PlaceIndex, p: PlaceIndex) -> bool {
+        if self.is_mutably_borrowed(local) {
+            // We cannot access a local if it is currently mutably borrowed
+            return false;
+        }
+        if local == p {
+            return true;
+        }
+        // Access not through deref
+        if !self.ty(local).is_any_ptr(&self.tcx) {
+            true
+        } else {
+            let Some(tag) = self.places[local].tag else {
+                // Has no permission
+                return false;
+            };
+            let mut can = true;
+            self.visit_transitive_subfields(p, |node| {
+                if let Some(run) = self.places[node].run_ptr {
+                    if !self.memory.can_read_with(run, tag) {
+                        can = false;
+                        return VisitAction::ShortCircuit;
                     }
+                    VisitAction::Stop
+                } else {
+                    VisitAction::Continue
                 }
-                VisitAction::Stop
-            } else {
-                VisitAction::Continue
-            }
-        });
+            });
+            can
+        }
     }
 
-    pub fn can_read_through(&self, ptr: PlaceIndex, p: PlaceIndex) -> bool {
-        assert_ne!(ptr, p);
-
-        if ptr == p {
-            return true;
-        }
-        if !self.ty(ptr).is_any_ptr(&self.tcx) {
-            // You can always read through a non-pointer
-            return true;
-        }
-        let Some(tag) = self.places[ptr].tag else {
-            // Has no permission
+    /// Checks if a local can be used to write a place
+    pub fn can_write_through(&self, local: PlaceIndex, p: PlaceIndex) -> bool {
+        if self.is_mutably_borrowed(local) {
+            // We cannot access a local if it is currently mutably borrowed
             return false;
-        };
-        let mut can = true;
-        self.visit_transitive_subfields(p, |node| {
-            if let Some(run) = self.places[node].run_ptr {
-                if !self.memory.can_read_with(run, tag) {
-                    can = false;
-                    return VisitAction::ShortCircuit;
-                }
-                VisitAction::Stop
-            } else {
-                VisitAction::Continue
-            }
-        });
-        can
-    }
-
-    /// Checks if a pointer can be used to write through its target
-    pub fn can_write_through(&self, ptr: PlaceIndex, p: PlaceIndex) -> bool {
-        // assert_ne!(ptr, p);
-        if ptr == p {
+        }
+        if local == p {
             return true;
         }
-        if !self.ty(ptr).is_any_ptr(&self.tcx) {
-            // You can always write through a non-pointer
-            return true;
-        }
-        let Some(tag) = self.places[ptr].tag else {
-            // Has no permission
-            return false;
-        };
-        let mut can = true;
-        self.visit_transitive_subfields(p, |node| {
-            if let Some(run) = self.places[node].run_ptr {
-                if !self.memory.can_write_with(run, tag) {
-                    can = false;
-                    return VisitAction::ShortCircuit;
+        if !self.ty(local).is_any_ptr(&self.tcx) {
+            true
+        } else {
+            let Some(tag) = self.places[local].tag else {
+                // Has no permission
+                return false;
+            };
+            let mut can = true;
+            self.visit_transitive_subfields(p, |node| {
+                if let Some(run) = self.places[node].run_ptr {
+                    if !self.memory.can_write_with(run, tag) {
+                        can = false;
+                        return VisitAction::ShortCircuit;
+                    }
+                    VisitAction::Stop
+                } else {
+                    VisitAction::Continue
                 }
-                VisitAction::Stop
-            } else {
-                VisitAction::Continue
-            }
-        });
-        can
+            });
+            can
+        }
     }
 
     // We need to mark reference uninit if the edge is removed (though not raw pointers)
     fn remove_edge(&mut self, e: ProjectionIndex) {
         let (source, _) = self.places.edge_endpoints(e).expect("edge exists");
         let tag = self.places[source].tag.expect("has tag");
-        let edges = &mut self.pointer_tags[tag];
+        let edges: &mut BTreeSet<NodeIndex> = &mut self.pointer_tags[tag];
         edges.remove(&source);
-        if self.ty(source).is_ref(&self.tcx) {
-            let run_ptr = self.places[source].run_ptr.expect("pointer is a scalar");
-            self.memory.fill(run_ptr, AbstractByte::Uninit);
-        }
 
         let removed = self.places.remove_edge(e).expect("edge exists");
         assert!(removed.is_deref());
+    }
+
+    // Returns if a ConstantIndex can be turned into an Index with local.
+    // Conditions are that a local with a known val equal to the index exists, and this local
+    // can be read
+    // HACK: ConstantIndex isn't supported in custom MIR syntax
+    fn usable_offset(&self, offset: u64) -> bool {
+        let locals = self.locals_with_val(offset as usize);
+        let has_usable = locals.iter().any(|local| {
+            let pidx = local.to_place_index(&self).expect("exists");
+            self.can_read_through(pidx, pidx)
+        });
+        has_usable
     }
 }
 
@@ -1230,15 +1302,23 @@ impl PlacePath {
         self.source
     }
 
-    pub fn to_place(&self, pt: &PlaceTable) -> Place {
+    pub fn to_place(&self, pt: &PlaceGraph) -> Place {
         let projs: SmallVec<[ProjectionElem; 8]> = self
             .path
             .iter()
             .map(|&proj| {
                 let mut proj = pt.places[proj];
                 if let ProjectionElem::ConstantIndex { offset } = proj {
-                    let local = pt.locals_with_val(offset as usize)[0]; // TODO: randomise this?
-                    proj = ProjectionElem::Index(local);
+                    let locals = pt.locals_with_val(offset as usize);
+                    let local = locals
+                        .iter()
+                        .filter(|local| {
+                            let pidx = local.to_place_index(pt).expect("exists");
+                            pt.can_read_through(pidx, pidx)
+                        })
+                        .next()
+                        .expect("has a usable local as index");
+                    proj = ProjectionElem::Index(*local);
                 }
                 proj
             })
@@ -1251,12 +1331,12 @@ impl PlacePath {
 
     pub fn projections<'pt>(
         &'pt self,
-        pt: &'pt PlaceTable,
+        pt: &'pt PlaceGraph,
     ) -> impl Iterator<Item = ProjectionElem> + 'pt {
         self.path.iter().map(|e| pt.places[*e])
     }
 
-    pub fn nodes<'pt>(&'pt self, pt: &'pt PlaceTable) -> impl Iterator<Item = PlaceIndex> + 'pt {
+    pub fn nodes<'pt>(&'pt self, pt: &'pt PlaceGraph) -> impl Iterator<Item = PlaceIndex> + 'pt {
         [self.source].into_iter().chain(
             self.path
                 .iter()
@@ -1264,7 +1344,7 @@ impl PlacePath {
         )
     }
 
-    pub fn is_return_proj(&self, pt: &PlaceTable) -> bool {
+    pub fn is_return_proj(&self, pt: &PlaceGraph) -> bool {
         pt.current_frame()
             .get_by_index(self.source)
             .expect("source exists")
@@ -1280,7 +1360,7 @@ impl PlacePath {
 /// FIXME: this breaks if there's a reference cycle in the graph
 #[derive(Clone)]
 pub struct ProjectionIter<'pt> {
-    pt: &'pt PlaceTable,
+    pt: &'pt PlaceGraph,
     root: PlaceIndex,
     path: Path,
     // Stack of nodes to visit and their depth (number of projections from root)
@@ -1290,7 +1370,7 @@ pub struct ProjectionIter<'pt> {
 }
 
 impl<'pt> ProjectionIter<'pt> {
-    fn new(pt: &'pt PlaceTable, root: PlaceIndex) -> Self {
+    fn new(pt: &'pt PlaceGraph, root: PlaceIndex) -> Self {
         ProjectionIter {
             pt,
             root,
@@ -1305,10 +1385,8 @@ impl<'pt> ProjectionIter<'pt> {
                     {
                         return None;
                     }
-                    // Only do indexing if we can find a local as index
-                    // TODO: move this to a function
                     if let ProjectionElem::ConstantIndex { offset } = e.weight()
-                        && pt.locals_with_val(*offset as usize).is_empty()
+                        && !pt.usable_offset(*offset)
                     {
                         return None;
                     }
@@ -1341,26 +1419,22 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
             self.path.truncate(depth - 1);
             self.path.push(edge);
 
-            let new_edges = self.pt.places.edges_directed(target, Direction::Outgoing);
-            self.to_visit.extend(new_edges.filter_map(|e| {
+            let new_edges = self.pt.places[target].subfield_edges.iter();
+            self.to_visit.extend(new_edges.filter_map(|&eidx| {
+                let e = self.pt.places[eidx];
                 // Only downcast to current variants
-                if let ProjectionElem::DowncastField(vid, _, _) = e.weight()
-                    && self.pt.known_variant(e.source()) != Some(*vid)
+                if let ProjectionElem::DowncastField(vid, _, _) = e
+                    && self.pt.known_variant(target) != Some(vid)
                 {
                     return None;
                 }
 
-                // Do not follow deref edges since we are not root
-                if e.weight().is_deref() {
-                    return None;
-                }
-
-                if let ProjectionElem::ConstantIndex { offset } = e.weight()
-                    && self.pt.locals_with_val(*offset as usize).is_empty()
+                if let ProjectionElem::ConstantIndex { offset } = e
+                    && !self.pt.usable_offset(offset)
                 {
                     return None;
                 }
-                Some((e.id(), depth + 1))
+                Some((eidx, depth + 1))
             }));
 
             Some(PlacePath {
@@ -1375,17 +1449,17 @@ impl<'pt> Iterator for ProjectionIter<'pt> {
 }
 
 pub trait HasComplexity {
-    fn complexity(&self, pt: &PlaceTable) -> usize;
+    fn complexity(&self, pt: &PlaceGraph) -> usize;
 }
 
 impl HasComplexity for Place {
-    fn complexity(&self, pt: &PlaceTable) -> usize {
+    fn complexity(&self, pt: &PlaceGraph) -> usize {
         pt.places[self.to_place_index(pt).expect("place exists")].complexity
     }
 }
 
 impl HasComplexity for Operand {
-    fn complexity(&self, pt: &PlaceTable) -> usize {
+    fn complexity(&self, pt: &PlaceGraph) -> usize {
         match self {
             Operand::Copy(place) | Operand::Move(place) => place.complexity(pt),
             Operand::Constant(_) => 1,
@@ -1394,7 +1468,7 @@ impl HasComplexity for Operand {
 }
 
 impl HasComplexity for Rvalue {
-    fn complexity(&self, pt: &PlaceTable) -> usize {
+    fn complexity(&self, pt: &PlaceGraph) -> usize {
         match self {
             Rvalue::Use(operand) | Rvalue::Cast(operand, _) | Rvalue::UnaryOp(_, operand) => {
                 operand.complexity(pt)
@@ -1415,7 +1489,7 @@ impl<T> HasComplexity for &T
 where
     T: HasComplexity,
 {
-    fn complexity(&self, pt: &PlaceTable) -> usize {
+    fn complexity(&self, pt: &PlaceGraph) -> usize {
         (*self).complexity(pt)
     }
 }
@@ -1434,12 +1508,12 @@ mod tests {
 
     use crate::{
         mem::BasicMemory,
-        ptable::{HasComplexity, PlaceIndex, ToPlaceIndex},
+        pgraph::{HasComplexity, PlaceIndex, ToPlaceIndex},
     };
 
-    use super::PlaceTable;
+    use super::PlaceGraph;
 
-    fn prepare_t() -> (PlaceTable, Local, Place, Place, Place, Place, Place) {
+    fn prepare_t() -> (PlaceGraph, Local, Place, Place, Place, Place, Place) {
         /*
             ┌──────┬──────┐
             │      │      │
@@ -1453,7 +1527,7 @@ mod tests {
         let t_i16_i32 = tcx.push(TyKind::Tuple(vec![TyCtxt::I16, TyCtxt::I32]));
         let t_root = tcx.push(TyKind::Tuple(vec![TyCtxt::I8, t_i16_i32, TyCtxt::I64]));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
         let local = Local::new(1);
         pt.allocate_local(local, t_root);
 
@@ -1519,7 +1593,7 @@ mod tests {
         // *const (*const i32,)
         let ty = tcx.push(TyKind::RawPtr(inner_ty, Mutability::Not));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
         let root = Local::new(1);
         pt.allocate_local(root, ty);
 
@@ -1559,7 +1633,7 @@ mod tests {
         let mut tcx = TyCtxt::from_primitives();
         let ty = tcx.push(TyKind::Tuple(vec![TyCtxt::I8, TyCtxt::I32]));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
         let local = Local::new(1);
         pt.allocate_local(local, ty);
 
@@ -1642,7 +1716,7 @@ mod tests {
         let mut tcx = TyCtxt::from_primitives();
         let ty = tcx.push(TyKind::Array(TyCtxt::I32, 4));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
         let local = Local::new(1);
         let local_pidx = pt.allocate_local(local, ty);
 
@@ -1677,7 +1751,7 @@ mod tests {
         let mut tcx = TyCtxt::from_primitives();
         let elem_ty = tcx.push(TyKind::Tuple(vec![TyCtxt::I32, TyCtxt::I64]));
         let ty = tcx.push(TyKind::Array(elem_ty, 4));
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
         let local = Local::new(1);
         let local_pidx = pt.allocate_local(local, ty);
 
@@ -1706,7 +1780,7 @@ mod tests {
         let t_ref = tcx.push(TyKind::Ref(t_i16_i32, Mutability::Not));
         let t_ptr = tcx.push(TyKind::RawPtr(t_i16_i32, Mutability::Not));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
 
         let root = Local::new(1);
         pt.allocate_local(root, t_i16_i32);
@@ -1747,7 +1821,13 @@ mod tests {
         assert!(!pt.can_write_through(root_ptr2_p, root_0));
 
         // Writing through (*root_ptr1).0
-        pt.place_written(root_0);
+        pt.place_written(
+            &Place::from_projected(
+                root_ptr1,
+                &[ProjectionElem::Deref, ProjectionElem::TupleField(0.into())],
+            ),
+            pt.places[root_ptr1_p].tag,
+        );
 
         // (*root_ref).0 is invalidated
         assert!(!pt.can_read_through(root_ref_p, root_0));
@@ -1771,10 +1851,11 @@ mod tests {
 
         let t_ref = tcx.push(TyKind::Ref(TyCtxt::I32, Mutability::Not));
 
-        let mut pt = PlaceTable::new(Rc::new(tcx));
+        let mut pt = PlaceGraph::new(Rc::new(tcx));
 
         let int = Local::new(1);
         pt.allocate_local(int, TyCtxt::I32);
+        pt.mark_place_init(int);
 
         // int_ref = &int
         let int_ref = Local::new(2);
@@ -1787,9 +1868,8 @@ mod tests {
         pt.set_ref(int_ref, int, Some(int_ref_p));
         assert_eq!(pt.pointer_tags.first().unwrap().len(), 1);
 
-        pt.place_written(int);
-        assert!(!pt
-            .places
-            .contains_edge(int_ref_p, int.to_place_index(&pt).unwrap()));
+        pt.place_written(&Place::from_local(int), None);
+        assert!(!pt.can_read_through(int_ref_p, int.to_place_index(&pt).unwrap()));
+        assert!(!pt.can_write_through(int_ref_p, int.to_place_index(&pt).unwrap()));
     }
 }

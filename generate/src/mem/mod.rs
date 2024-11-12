@@ -57,13 +57,20 @@ pub struct Borrow {
 pub struct Run {
     bytes: Box<[AbstractByte]>,
     ref_stack: RangeMap<Vec<Borrow>>,
+
+    // A cache on if any borrow stack in the run has a mutable borrow
+    _has_mut: Option<bool>,
 }
 
 impl Run {
     pub fn new_uninit(size: Size) -> Self {
         let bytes = vec![AbstractByte::Uninit; size.bytes() as usize].into_boxed_slice();
         let ref_stack = RangeMap::new(size, vec![]);
-        Self { bytes, ref_stack }
+        Self {
+            bytes,
+            ref_stack,
+            _has_mut: Some(false),
+        }
     }
 
     pub fn size(&self) -> Size {
@@ -71,6 +78,9 @@ impl Run {
     }
 
     pub fn add_borrow(&mut self, offset: Size, len: Size, borrow_type: BorrowType, tag: Tag) {
+        if borrow_type == BorrowType::Exclusive {
+            self._has_mut = Some(true);
+        }
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
             stack.push(Borrow {
                 borrow_type,
@@ -81,6 +91,7 @@ impl Run {
     }
 
     pub fn remove_borrow(&mut self, offset: Size, len: Size, tag: Tag) {
+        self._has_mut = None;
         for (_, stack) in self.ref_stack.iter_mut(offset, len) {
             if let Some(i) = stack.iter().position(|b| b.tag == tag) {
                 let removed = stack.remove(i);
@@ -97,12 +108,34 @@ impl Run {
         }
     }
 
-    pub fn above_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
+    /// Returns a list of other tags above a certain tag
+    pub fn other_tags_above(&self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
         let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
-            let first_shared = stack
+            let index = stack
                 .iter()
-                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
+                .position(|borrow| borrow.tag == tag)
+                .expect("tag exists");
+            edges.extend(stack.iter().skip(index + 1).filter_map(|borrow| {
+                if borrow.tag != tag {
+                    Some(borrow.tag)
+                } else {
+                    None
+                }
+            }));
+        }
+        edges.iter().copied().collect()
+    }
+
+    pub fn above_first_ref(&self, offset: Size, len: Size) -> Vec<Tag> {
+        let mut edges = BTreeSet::new();
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let first_shared = stack.iter().position(|borrow| {
+                matches!(
+                    borrow.borrow_type,
+                    BorrowType::Shared | BorrowType::Exclusive
+                )
+            });
             if let Some(first_shared) = first_shared {
                 edges.extend(stack[first_shared..].iter().map(|borrow| borrow.tag));
             }
@@ -110,40 +143,53 @@ impl Run {
         edges.iter().copied().collect()
     }
 
-    pub fn below_first_shared(&self, offset: Size, len: Size) -> Vec<Tag> {
-        let mut edges = BTreeSet::new();
+    fn has_mut(&self, offset: Size, len: Size) -> bool {
+        if let Some(has_mut) = self._has_mut {
+            return has_mut;
+        }
         for (_, stack) in self.ref_stack.iter(offset, len) {
-            let first_shared = stack
+            if stack
                 .iter()
-                .position(|borrow| borrow.borrow_type == BorrowType::Shared);
-            if let Some(first_shared) = first_shared {
-                edges.extend(stack[..first_shared].iter().map(|borrow| borrow.tag));
+                .any(|borrow| borrow.borrow_type == BorrowType::Exclusive)
+            {
+                return true;
             }
         }
-        edges.iter().copied().collect()
+        false
     }
 
-    pub fn remove_all_above(&mut self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
-        let mut edges = vec![];
-        for (_, stack) in self.ref_stack.iter_mut(offset, len) {
-            let index = stack.iter().position(|borrow| borrow.tag == tag);
-            if let Some(index) = index {
-                edges.extend(stack[index..].iter().map(|borrow| borrow.tag));
-                stack.truncate(index);
+    /// Checks if a tag is below the last exclusive reference
+    fn is_below_last_mut(&self, offset: Size, len: Size, tag: Tag) -> bool {
+        for (_, stack) in self.ref_stack.iter(offset, len) {
+            let last_mut = stack
+                .iter()
+                .rposition(|borrow| borrow.borrow_type == BorrowType::Exclusive);
+            if let Some(pos) = last_mut {
+                if stack[..pos]
+                    .iter()
+                    .find(|borrow| borrow.tag == tag)
+                    .is_some()
+                {
+                    return true;
+                }
             }
         }
-        edges
+        false
     }
 
     pub fn can_read_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
-        //FIXME: performance
+        if self.is_below_last_mut(offset, len, tag) {
+            return false;
+        }
         self.ref_stack
             .iter(offset, len)
             .all(|(_, stack)| stack.iter().any(|borrow| borrow.tag == tag))
     }
 
     pub fn can_write_with(&self, offset: Size, len: Size, tag: Tag) -> bool {
-        //FIXME: performance
+        if self.is_below_last_mut(offset, len, tag) {
+            return false;
+        }
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let first_shared = stack
                 .iter()
@@ -157,8 +203,12 @@ impl Run {
                     return false;
                 }
             }
-            // tag is below first shared
-            if !stack[..tag_search_limit].iter().any(|borrow| borrow.tag == tag) {
+            // and the tag exists below first shared (or anywhere, if there is no shared)
+            if stack[..tag_search_limit]
+                .iter()
+                .find(|borrow| borrow.tag == tag)
+                .is_none()
+            {
                 return false;
             }
         }
@@ -405,20 +455,6 @@ impl BasicMemory {
             .or_insert(SmallVec::from([run_ptr].as_slice()));
     }
 
-    /// Remove tag for all runs
-    pub fn remove_tag(&mut self, tag: Tag) {
-        let run_ptrs = self.pointers.remove(&tag);
-        if let Some(run_ptrs) = run_ptrs {
-            for run_ptr in run_ptrs {
-                self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].remove_borrow(
-                    run_ptr.offset(),
-                    run_ptr.size,
-                    tag,
-                );
-            }
-        }
-    }
-
     /// Remove a range (run_ptr) from the lookup table.
     fn derange(&mut self, tag: Tag, run_ptr: RunPointer) {
         if let Some(all_run_ptrs) = self.pointers.get(&tag) {
@@ -450,25 +486,6 @@ impl BasicMemory {
         }
     }
 
-    /// Remove all tags including and above from a run. Returns a list of edges with no valid borrows
-    /// left in any run after removal
-    pub fn remove_tags_above(&mut self, tag: Tag, run_ptr: RunPointer) -> Vec<Tag> {
-        let removed = self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].remove_all_above(
-            run_ptr.offset(),
-            run_ptr.size,
-            tag,
-        );
-
-        let mut all_gone = vec![];
-        for edge in removed {
-            self.derange(edge, run_ptr);
-            if !self.pointers.contains_key(&edge) {
-                all_gone.push(edge);
-            }
-        }
-        all_gone
-    }
-
     /// Remove tag for a run ptr. Returns true if the ref is no longer present in any
     /// borrow stack
     pub fn remove_tag_run_ptr(&mut self, tag: Tag, run_ptr: RunPointer) -> bool {
@@ -482,9 +499,17 @@ impl BasicMemory {
         !self.pointers.contains_key(&tag)
     }
 
-    pub fn above_first_shared(&self, run_ptr: RunPointer) -> Vec<Tag> {
+    pub fn other_tags_above(&self, run_ptr: RunPointer, tag: Tag) -> Vec<Tag> {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].other_tags_above(
+            run_ptr.offset(),
+            run_ptr.size,
+            tag,
+        )
+    }
+
+    pub fn above_first_ref(&self, run_ptr: RunPointer) -> Vec<Tag> {
         self.allocations[run_ptr.alloc_id].runs[run_ptr.run()]
-            .above_first_shared(run_ptr.offset(), run_ptr.size)
+            .above_first_ref(run_ptr.offset(), run_ptr.size)
     }
 
     pub fn mark_protected(&mut self, run_ptr: RunPointer, tag: Tag) {
@@ -509,5 +534,10 @@ impl BasicMemory {
             run_ptr.size,
             tag,
         )
+    }
+
+    pub fn has_mut(&self, run_ptr: RunPointer) -> bool {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()]
+            .has_mut(run_ptr.offset(), run_ptr.size)
     }
 }

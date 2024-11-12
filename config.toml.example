@@ -1,8 +1,8 @@
-# Path to Miri repository
-miri_dir = "../miri"
+# Fuzz using rustup distributed miri
+miri_toolchain = "nightly"
 
-# Path to rustc_codegen_cranelift repository
-cranelift_dir = "../rustc_codegen_cranelift"
+# Fuzz using rustup distributed cranelift
+cranelift_toolchain = "nightly"
 
 # Override toolchain for default rustc backend
 llvm_toolchain = "nightly"

@@ -19,8 +19,8 @@ use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
 use rand_distr::{Distribution, WeightedError, WeightedIndex};
 
 use crate::literal::GenLiteral;
+use crate::pgraph::{HasComplexity, PlaceGraph, PlaceIndex, PlaceOperand, ToPlaceIndex};
 use crate::place_select::{PlaceSelector, Weight};
-use crate::ptable::{HasComplexity, PlaceIndex, PlaceOperand, PlaceTable, ToPlaceIndex};
 use crate::ty::{seed_tys, TySelect};
 
 use self::intrinsics::{ArithOffset, Transmute};
@@ -31,9 +31,9 @@ const BB_MAX_LEN: usize = 32;
 /// Max. number of switch targets in a SwitchInt terminator
 const MAX_SWITCH_TARGETS: usize = 8;
 /// Max. number of BB in a function if RET is init (a Return must be generated)
-const MAX_BB_COUNT: usize = 15;
+const MAX_BB_COUNT: usize = 50;
 /// Max. number of BB in a function before giving up this function
-const MAX_BB_COUNT_HARD: usize = 60;
+const MAX_BB_COUNT_HARD: usize = 100;
 /// Max. number of functions in the program Call generator stops being a possible candidate
 const MAX_FN_COUNT: usize = 20;
 /// Max. number of arguments a function can have
@@ -67,7 +67,7 @@ impl fmt::Debug for Cursor {
 #[derive(Clone)]
 pub struct SavedCtx {
     program: Program,
-    pt: PlaceTable,
+    pt: PlaceGraph,
     return_stack: Vec<Cursor>,
     cursor: Cursor,
 }
@@ -77,7 +77,7 @@ pub struct GenerationCtx {
     program: Program,
     tcx: Rc<TyCtxt>,
     ty_weights: TySelect,
-    pt: PlaceTable,
+    pt: PlaceGraph,
     return_stack: Vec<Cursor>,
     saved_ctx: Vec<SavedCtx>,
     cursor: Cursor,
@@ -354,7 +354,7 @@ impl GenerationCtx {
             TyKind::RawPtr(ty, mutability) => (ty, mutability),
             _ => return Err(SelectionError::Exhausted),
         };
-        let (candidates, weights) = PlaceSelector::for_pointee(self.tcx.clone())
+        let (candidates, weights) = PlaceSelector::for_pointee(self.tcx.clone(), true)
             .of_ty(*source_ty)
             .except(lhs)
             .into_weighted(&self.pt)
@@ -370,9 +370,14 @@ impl GenerationCtx {
             TyKind::Ref(ty, mutability) => (ty, mutability),
             _ => return Err(SelectionError::Exhausted),
         };
-        let (candidates, weights) = PlaceSelector::for_pointee(self.tcx.clone())
+        let mut selector = PlaceSelector::for_pointee(self.tcx.clone(), false)
             .of_ty(*source_ty)
-            .except(lhs)
+            .except(lhs);
+        if let Some(_) = self.pt.pointee(lhs.to_place_index(&self.pt).unwrap()) {
+            // The MIR linter doesn't like it if we do x = &(*x)
+            selector = selector.except(lhs.clone().project(ProjectionElem::Deref));
+        }
+        let (candidates, weights) = selector
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
         self.make_choice_weighted(candidates.into_iter(), weights, |ppath| {
@@ -434,11 +439,11 @@ impl GenerationCtx {
         let choices_and_weights: Vec<(fn(&GenerationCtx, &Place) -> Result<Rvalue>, usize)> = vec![
             (Self::generate_use, 1),
             (Self::generate_unary_op, 1),
-            (Self::generate_binary_op, 1),
-            (Self::generate_checked_binary_op, 1),
+            (Self::generate_binary_op, 2),
+            (Self::generate_checked_binary_op, 2),
             (Self::generate_cast, 1),
-            (Self::generate_address_of, 1),
-            (Self::generate_ref, 1),
+            (Self::generate_address_of, 4),
+            (Self::generate_ref, 4),
             (Self::generate_aggregate, 2),
         ];
 
@@ -548,14 +553,12 @@ impl GenerationCtx {
         })
     }
 
-    // fn generate_set_discriminant(&self) -> Result<Statement> {
-    //     todo!()
-    // }
     fn choose_statement(&mut self) {
         let choices_and_weights: Vec<(fn(&GenerationCtx) -> Result<Statement>, usize)> = vec![
             (Self::generate_assign, 20),
             (Self::generate_new_var, 4),
-            (Self::generate_set_discriminant, 1),
+            // Not generating SetDiscriminant for now due to niche checks
+            // (Self::generate_set_discriminant, 1),
             // (Self::generate_deinit, 1),
             // (Self::generate_storage_live, 5),
             // (Self::generate_storage_dead, 2),
@@ -588,19 +591,38 @@ impl GenerationCtx {
     }
 }
 
+enum TerminatorParams {
+    Goto,
+    SwitchInt {
+        discriminator: Place,
+        discriminator_value: Literal,
+    },
+    Call {
+        args: Vec<Operand>,
+        return_place: Place,
+    },
+    IntrinsicCall {
+        callee: Callee,
+        args: Vec<Operand>,
+        return_place: Place,
+    },
+}
 // Terminator
 impl GenerationCtx {
     fn enter_bb(&mut self, bb: BasicBlock) {
         self.cursor.basic_block = bb;
     }
 
-    fn generate_goto(&mut self) -> Result<()> {
+    fn generate_goto_params(&self) -> Result<TerminatorParams> {
+        Ok(TerminatorParams::Goto)
+    }
+
+    fn add_goto(&mut self) {
         let bb = self.add_new_bb();
 
         self.current_bb_mut()
             .set_terminator(Terminator::Goto { target: bb });
         self.enter_bb(bb);
-        Ok(())
     }
 
     // Produce count number of "decoy" BasicBlocks that will never be
@@ -651,7 +673,7 @@ impl GenerationCtx {
         picked
     }
 
-    fn generate_switch_int(&mut self) -> Result<()> {
+    fn generate_switch_int_params(&self) -> Result<TerminatorParams> {
         trace!("generating a SwitchInt terminator");
         let (places, weights) = PlaceSelector::for_known_val(self.tcx.clone())
             .of_tys(&[
@@ -675,20 +697,24 @@ impl GenerationCtx {
 
         let (place, place_val) =
             self.make_choice_weighted(places.into_iter(), weights, |ppath| {
-                let val = self
-                    .pt
-                    .known_val(ppath.target_index())
-                    .expect("has_value");
+                let val = self.pt.known_val(ppath.target_index()).expect("has_value");
                 Ok((ppath.to_place(&self.pt), *val))
             })?;
 
+        return Ok(TerminatorParams::SwitchInt {
+            discriminator: place,
+            discriminator_value: place_val,
+        });
+    }
+
+    fn add_switch_int(&mut self, discr: Place, discr_val: Literal) {
         let decoy_count = self.rng.get_mut().gen_range(1..=MAX_SWITCH_TARGETS);
         let mut targets = self.decoy_bbs(decoy_count);
         let otherwise = targets.pop().unwrap();
 
         let target_bb = self.add_new_bb();
         targets.push(target_bb);
-        let target_discr = match place_val {
+        let target_discr = match discr_val {
             Literal::Uint(i, _) => i,
             Literal::Int(i, _) => i as u128,
             // Literal::Bool(b) => b as u128,
@@ -712,7 +738,7 @@ impl GenerationCtx {
             .collect();
 
         let term = Terminator::SwitchInt {
-            discr: Operand::Copy(place),
+            discr: Operand::Copy(discr),
             targets: SwitchTargets {
                 branches,
                 otherwise,
@@ -721,13 +747,11 @@ impl GenerationCtx {
 
         self.current_bb_mut().set_terminator(term);
         self.enter_bb(target_bb);
-
-        Ok(())
     }
 
-    fn generate_call(&mut self) -> Result<()> {
+    fn generate_call_params(&self) -> Result<TerminatorParams> {
         trace!("generating a Call terminator to {:?}", self.cursor);
-        let (return_places, weights) = PlaceSelector::for_lhs(self.tcx.clone())
+        let (return_places, weights) = PlaceSelector::for_return_place(self.tcx.clone())
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
@@ -736,7 +760,8 @@ impl GenerationCtx {
                 Result::Ok(ppath.to_place(&self.pt))
             })?;
 
-        let args_count = self.rng.get_mut().gen_range(0..=MAX_ARGS_COUNT);
+        // TODO: if return place has a ref, don't generate 0 argument as this can never be valid
+        let args_count = self.rng.borrow_mut().gen_range(0..=MAX_ARGS_COUNT);
         let mut selector = PlaceSelector::for_argument(self.tcx.clone())
             .having_moved(return_place.to_place_index(&self.pt).unwrap());
         let mut args = vec![];
@@ -774,10 +799,13 @@ impl GenerationCtx {
             })?;
             args.push(arg);
         }
+        return Ok(TerminatorParams::Call { args, return_place });
+    }
 
-        // Modification must start after this point, as we may bail during above
+    fn add_call(&mut self, args: Vec<Operand>, return_place: Place) {
         self.save_ctx();
-        self.pt.place_written(&return_place);
+        self.pt
+            .place_written(&return_place, self.pt.accessing_tag(&return_place));
         let target_bb = self.add_new_bb();
         self.return_stack.push(Cursor {
             function: self.cursor.function,
@@ -798,22 +826,28 @@ impl GenerationCtx {
             });
 
         trace!("generated a Call terminator");
-        Ok(())
     }
 
-    fn generate_intrinsic_call(&mut self) -> Result<()> {
+    fn generate_intrinsic_call_params(&self) -> Result<TerminatorParams> {
         let (return_places, weights) = PlaceSelector::for_lhs(self.tcx.clone())
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
-        let return_place =
-            self.make_choice_weighted(return_places.into_iter(), weights, |ppath| {
-                Result::Ok(ppath.to_place(&self.pt))
-            })?;
+        let return_place = self.make_choice_weighted(
+            return_places.into_iter(),
+            weights,
+            |ppath: crate::pgraph::PlacePath| Result::Ok(ppath.to_place(&self.pt)),
+        )?;
 
         let (callee, args) = self.choose_intrinsic(&return_place)?;
+        Ok(TerminatorParams::IntrinsicCall {
+            callee,
+            args,
+            return_place,
+        })
+    }
 
-        // Post generation value manipulation
+    fn add_intrinsic_call(&mut self, callee: Callee, args: Vec<Operand>, return_place: Place) {
         let ret = return_place.to_place_index(&self.pt).expect("place exists");
         let arg_places: Vec<PlaceOperand> = args
             .iter()
@@ -821,7 +855,8 @@ impl GenerationCtx {
             .collect();
 
         self.pt.mark_place_init(ret);
-        self.pt.place_written(ret);
+        self.pt
+            .place_written(&return_place, self.pt.accessing_tag(&return_place));
         let Callee::Intrinsic(intrinsic_name) = callee else {
             panic!("callee is intrinsic");
         };
@@ -858,7 +893,6 @@ impl GenerationCtx {
         }
 
         self.pt.assign_literal(ret, None);
-        // Finish post generation manipulation
 
         let bb = self.add_new_bb();
         self.current_bb_mut().set_terminator(Terminator::Call {
@@ -868,12 +902,11 @@ impl GenerationCtx {
             args,
         });
         self.enter_bb(bb);
-        Ok(())
     }
 
     // Generate a Return terminator, returns false if it's being
     // generated in fn0
-    fn generate_return(&mut self) -> Result<bool> {
+    fn add_return(&mut self) -> bool {
         trace!("generating a Return terminator to {:?}", self.cursor);
         debug_assert!(self.pt.can_return());
 
@@ -883,7 +916,7 @@ impl GenerationCtx {
         // If we reach this point, we have succesfully generated the current function.
         // The context saved when we generated the call is no longer needed
         self.saved_ctx.pop();
-        Ok(self.exit_fn())
+        self.exit_fn()
     }
 
     /// Terminates the current BB, and moves the generation context to the new BB
@@ -893,25 +926,41 @@ impl GenerationCtx {
             if Place::RETURN_SLOT.complexity(&self.pt) > 10
                 || self.current_fn().basic_blocks.len() >= MAX_BB_COUNT
             {
-                return self.generate_return().unwrap();
+                return self.add_return();
             }
         }
 
-        let choices_and_weights: Vec<(fn(&mut GenerationCtx) -> Result<()>, usize)> = vec![
-            (Self::generate_goto, 20),
-            (Self::generate_switch_int, 20),
-            (Self::generate_intrinsic_call, 20),
+        let choices_and_weights: Vec<(fn(&GenerationCtx) -> Result<TerminatorParams>, usize)> = vec![
+            (Self::generate_goto_params, 20),
+            (Self::generate_switch_int_params, 20),
+            (Self::generate_intrinsic_call_params, 20),
             (
-                Self::generate_call,
+                Self::generate_call_params,
                 MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
             ),
         ];
-        let (choices, weights): (Vec<fn(&mut GenerationCtx) -> Result<()>>, Vec<usize>) =
-            choices_and_weights.into_iter().unzip();
+        let (choices, weights): (
+            Vec<fn(&GenerationCtx) -> Result<TerminatorParams>>,
+            Vec<usize>,
+        ) = choices_and_weights.into_iter().unzip();
 
         let weights = WeightedIndex::new(weights).expect("weights are valid");
-        self.make_choice_weighted_mut(choices.into_iter(), weights, |ctx, f| f(ctx))
+        let params = self
+            .make_choice_weighted(choices.into_iter(), weights, |f| f(&self))
             .expect("deadend");
+        match params {
+            TerminatorParams::Goto => self.add_goto(),
+            TerminatorParams::Call { args, return_place } => self.add_call(args, return_place),
+            TerminatorParams::IntrinsicCall {
+                callee,
+                args,
+                return_place,
+            } => self.add_intrinsic_call(callee, args, return_place),
+            TerminatorParams::SwitchInt {
+                discriminator,
+                discriminator_value,
+            } => self.add_switch_int(discriminator, discriminator_value),
+        }
         true
     }
 
@@ -1107,32 +1156,6 @@ impl GenerationCtx {
         }
     }
 
-    fn make_choice_weighted_mut<T, F, R>(
-        &mut self,
-        choices: impl Iterator<Item = T> + Clone,
-        mut weights: WeightedIndex<Weight>,
-        mut use_choice: F,
-    ) -> Result<R>
-    where
-        F: FnMut(&mut Self, T) -> Result<R>,
-        T: Clone,
-    {
-        loop {
-            let i = weights.sample(&mut *self.rng.borrow_mut());
-            let choice = choices.clone().nth(i).expect("choices not empty");
-            let res = use_choice(self, choice.clone());
-            match res {
-                Ok(val) => return Ok(val),
-                Err(_) => {
-                    weights.update_weights(&[(i, &0)]).map_err(|err| {
-                        assert_eq!(err, WeightedError::AllWeightsZero);
-                        SelectionError::Exhausted
-                    })?;
-                }
-            }
-        }
-    }
-
     fn make_choice<T, F, R>(
         &self,
         choices: impl Iterator<Item = T> + Clone,
@@ -1188,6 +1211,7 @@ impl GenerationCtx {
     }
 
     pub fn new(seed: u64, debug_dump: VarDumper) -> Self {
+
         let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(seed)));
         let tcx = Rc::new(seed_tys(&mut *rng.borrow_mut()));
         let ty_weights = TySelect::new(&tcx);
@@ -1197,7 +1221,7 @@ impl GenerationCtx {
             tcx: tcx.clone(),
             ty_weights,
             program: Program::new(debug_dump),
-            pt: PlaceTable::new(tcx.clone()),
+            pt: PlaceGraph::new(tcx.clone()),
             return_stack: vec![],
             cursor: Cursor {
                 function: Function::new(0),
@@ -1282,8 +1306,9 @@ impl GenerationCtx {
             }
             if self.current_fn().basic_blocks.len() >= MAX_BB_COUNT_HARD {
                 debug!(
-                    "{} is too long, retrying",
-                    self.cursor.function.identifier()
+                    "{} -> {} is too long, retrying",
+                    self.cursor.function.identifier(),
+                    self.current_fn().return_ty().serialize(&self.tcx),
                 );
                 if self.cursor.function.index() == 0 {
                     self.restore_ctx();
@@ -1304,9 +1329,9 @@ impl GenerationCtx {
     }
 
     fn post_generation(&mut self, stmt: &Statement) {
-        // We must evaluate the places first before updating any PlaceTable state,
+        // We must evaluate the places first before updating any PlaceGraph state,
         // as the updates may affect projections
-        let mut actions: Vec<Box<dyn FnOnce(&mut PlaceTable)>> = vec![];
+        let mut actions: Vec<Box<dyn FnOnce(&mut PlaceGraph)>> = vec![];
         {
             match stmt {
                 Statement::Assign(lhs, rvalue) => {
@@ -1435,12 +1460,9 @@ impl GenerationCtx {
             match stmt {
                 Statement::Assign(place, _)
                 | Statement::Deinit(place)
-                | Statement::SetDiscriminant(place, _) => {
-                    let pidx = place.to_place_index(&self.pt).unwrap();
-                    actions.push(Box::new(move |pt| {
-                        pt.place_written(pidx);
-                    }))
-                }
+                | Statement::SetDiscriminant(place, _) => actions.push(Box::new(move |pt| {
+                    pt.place_written(place, pt.accessing_tag(place));
+                })),
                 Statement::StorageLive(_) => {}
                 Statement::StorageDead(_) => {}
                 Statement::Retag(_) => todo!(),
