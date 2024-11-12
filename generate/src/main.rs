@@ -13,7 +13,7 @@ mod mem;
 mod place_select;
 mod pgraph;
 mod ty;
-
+use mir::VarDumper;
 use std::time::Instant;
 
 use clap::{arg, command, value_parser, Arg};
