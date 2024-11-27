@@ -102,3 +102,6 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 ### Previously known bugs
 - 🦀 Const eval gives `x % x` wrong sign when `x` is a negative float: https://github.com/rust-lang/rust/issues/109567 (first reported https://github.com/rust-lang/rust/issues/102403)
 - 🐉 Write to dangling pointer is hoisted outside of condition: https://github.com/rust-lang/rust/issues/112213 (first reported https://github.com/llvm/llvm-project/issues/51838)
+
+## License
+Rustlantis is distributed under the terms of both the MIT License and the Apache License (Version 2.0), at your choice.
