@@ -105,3 +105,5 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 
 ## License
 Rustlantis is distributed under the terms of both the MIT License and the Apache License (Version 2.0), at your choice.
+
+© ETH Zurich
