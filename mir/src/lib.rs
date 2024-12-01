@@ -11,6 +11,6 @@ pub enum VarDumper{
     HashDumper,
     /// Print variables using standard rust formatting 
     StdVarDumper,
-    /// Print variables using the c `printf` function. If `rust_gpu` is true, then use the `printf!()` rust-gpu macro instead of `printf`
+    /// Print variables using the c `printf` function. If `rust_gpu` is true, then use the `debug_printf!()` rust-gpu macro instead of `printf`
     PrintfVarDumper{rust_gpu:bool},
 }

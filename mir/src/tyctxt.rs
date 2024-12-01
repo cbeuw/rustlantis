@@ -155,7 +155,7 @@ pub fn adt_impl_printf_debug(adt:&Adt,id:TyId,rust_gpu:bool)->String{
         let name = id.type_name();
         let mut res = format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{");
         if rust_gpu{
-            res.push_str(&format!("unsafe{{printf!(\"{name}::\".as_ptr())}};")); 
+            res.push_str(&format!("unsafe{{debug_printf!(\"{name}::\")}};")); 
         }else{
             res.push_str(&format!("unsafe{{printf(\"{name}::\\0\".as_ptr()  as *const c_char)}};"));
         }
@@ -170,7 +170,7 @@ pub fn adt_impl_printf_debug(adt:&Adt,id:TyId,rust_gpu:bool)->String{
             }
             res.push_str("}=>{\n");
             if rust_gpu{
-                res.push_str(&format!("unsafe{{printf!(\"Variant{variant_idx}{{\")}};\n"));
+                res.push_str(&format!("unsafe{{debug_printf!(\"Variant{variant_idx}{{\")}};\n"));
             }else{
                 res.push_str(&format!("unsafe{{printf(\"Variant{variant_idx}{{\\0\".as_ptr() as *const c_char)}};\n"));
             }
@@ -178,9 +178,9 @@ pub fn adt_impl_printf_debug(adt:&Adt,id:TyId,rust_gpu:bool)->String{
             // Iterate trough fields to print values of fields of variant
             for (field_id,_) in variant.fields.iter().enumerate(){
                 if rust_gpu{
-                    res.push_str(&format!("\t\tunsafe{{printf!(\"fld{field_id}:\")}};\n"));
+                    res.push_str(&format!("\t\tunsafe{{debug_printf!(\"fld{field_id}:\")}};\n"));
                     res.push_str(&format!("\t\tfld{field_id}.printf_debug();\n"));
-                    res.push_str("unsafe{printf!(\",\")};\n");
+                    res.push_str("unsafe{debug_printf!(\",\")};\n");
                 }else{
                     res.push_str(&format!("\t\tunsafe{{printf(\"fld{field_id}:\\0\".as_ptr() as *const c_char)}};\n"));
                     res.push_str(&format!("\t\tfld{field_id}.printf_debug();\n"));
@@ -192,7 +192,7 @@ pub fn adt_impl_printf_debug(adt:&Adt,id:TyId,rust_gpu:bool)->String{
         }
         res.push_str("\t\t}\n");
         if rust_gpu{
-            res.push_str("unsafe{printf!(\"}\")};\n");
+            res.push_str("unsafe{debug_printf!(\"}\")};\n");
         }else{
             res.push_str("unsafe{printf(\"\\0}\".as_ptr() as *const c_char)};\n");
         }
@@ -203,18 +203,18 @@ pub fn adt_impl_printf_debug(adt:&Adt,id:TyId,rust_gpu:bool)->String{
     else{
         // Formats a struct
         let mut res =  if rust_gpu{
-            format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{printf!(\"{name}{{\")}};",name = id.type_name())
+            format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{debug_printf!(\"{name}{{\")}};",name = id.type_name())
         }else{format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{printf(\"{name}{{\\0\".as_ptr()  as *const c_char)}};",name = id.type_name())};
         // Iterate trough fields to print values of fields of stuct
         for (field_id,_) in adt.variants[0].fields.iter().enumerate(){
             if rust_gpu{
-            res.push_str(&format!("\n\tprintf!(\"fld{field_id}:\");\n\tself.fld{field_id}.printf_debug();"));
+            res.push_str(&format!("\n\tdebug_printf!(\"fld{field_id}:\");\n\tself.fld{field_id}.printf_debug();"));
             }else{
                 res.push_str(&format!("\n\tprintf(\"fld{field_id}:\\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();"));
             }
         }
         if rust_gpu{
-        res.push_str("\n\tunsafe{printf!(\"}\")};}\n}");}
+        res.push_str("\n\tunsafe{debug_printf!(\"}\")};}\n}");}
         else{
             res.push_str("\n\tunsafe{printf(\"}\\0\".as_ptr() as *const c_char)};}\n}"); 
         }

@@ -379,7 +379,7 @@ impl Program {
             VarDumper::PrintfVarDumper{rust_gpu:true}=>Program::RUSTGPU_PRINTF_DUMPER,
         };
         if let VarDumper::PrintfVarDumper { rust_gpu:true } = self.var_dumper {
-            program += "use spirv_std::*;\n";
+            program += "use spirv_std::{spirv,macros::debug_printf};\n";
         }
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
             let args_list: String = body
