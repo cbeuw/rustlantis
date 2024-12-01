@@ -368,12 +368,19 @@ impl Body {
 
 impl Program {
     pub fn serialize(&self, tcx: &TyCtxt, call_syntax: CallSynatx) -> String {
-        let mut program = Program::HEADER.to_string();
+        let mut program =match self.var_dumper{
+            VarDumper::PrintfVarDumper{rust_gpu:true}=>Program::NOSTD_HEADER.to_string(),
+            _=> Program::HEADER.to_string(),
+        };
         program += match self.var_dumper{
             VarDumper::HashDumper=>Program::DUMPER,
             VarDumper::StdVarDumper=>Program::DEBUG_DUMPER,
-            VarDumper::PrintfVarDumper=>Program::PRINTF_DUMPER,
+            VarDumper::PrintfVarDumper{rust_gpu:false}=>Program::PRINTF_DUMPER,
+            VarDumper::PrintfVarDumper{rust_gpu:true}=>Program::RUSTGPU_PRINTF_DUMPER,
         };
+        if let VarDumper::PrintfVarDumper { rust_gpu:true } = self.var_dumper {
+            program += "use spirv_std::*;\n";
+        }
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
             let args_list: String = body
                 .args_iter()
@@ -401,7 +408,7 @@ impl Program {
         let arg_list: String = self
             .entry_args
             .iter()
-            .map(|arg| format!("std::hint::black_box({})", arg.serialize(tcx)))
+            .map(|arg| format!("core::hint::black_box({})", arg.serialize(tcx)))
             .intersperse(", ".to_string())
             .collect();
 
@@ -421,13 +428,23 @@ impl Program {
                 }
             "#
         };
-
-        program.push_str(&format!(
-            "pub fn main() {{
-                {first_fn}({arg_list});
-                {hash_printer}
-            }}"
-        ));
+        if let VarDumper::PrintfVarDumper { rust_gpu:true } = self.var_dumper {
+            program.push_str(&format!(
+                "#[spirv(compute(threads(1)))]
+                pub fn main() {{
+                    {first_fn}({arg_list});
+                    {hash_printer}
+                }}"
+            ));
+        } else{
+            program.push_str(&format!(
+                "pub fn main() {{
+                    {first_fn}({arg_list});
+                    {hash_printer}
+                }}"
+            ));
+        }
+       
         program
     }
 }

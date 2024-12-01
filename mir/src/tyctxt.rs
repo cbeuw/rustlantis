@@ -123,7 +123,7 @@ impl TyCtxt {
             // `Debug` derive is ommited for printf-based dumping. An  implemntation of the PrintFDebug trait is emmited instead.
             str += &match dumper{
                 VarDumper::HashDumper | VarDumper::StdVarDumper => self.adt_meta[&id].derive_attrs(),
-                VarDumper::PrintfVarDumper => adt_impl_printf_debug(adt,id),
+                VarDumper::PrintfVarDumper{rust_gpu} => adt_impl_printf_debug(adt,id,rust_gpu),
             };
             if adt.is_enum() {
                 let variants: String = adt
@@ -147,14 +147,19 @@ impl TyCtxt {
         str
     }
 }
-// Implements the PrintFDebug trait for an ADT.
-// This trait is used to dump variables using `printf`
-pub fn adt_impl_printf_debug(adt:&Adt,id:TyId)->String{
+/// Implements the PrintFDebug trait for an ADT.
+/// This trait is used to dump variables using `printf`
+pub fn adt_impl_printf_debug(adt:&Adt,id:TyId,rust_gpu:bool)->String{
     let res = if adt.is_enum() {
         // Formats an enum
         let name = id.type_name();
         let mut res = format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{");
-        res.push_str(&format!("unsafe{{printf(\"{name}::\\0\".as_ptr()  as *const c_char)}};"));
+        if rust_gpu{
+            res.push_str(&format!("unsafe{{printf!(\"{name}::\".as_ptr())}};")); 
+        }else{
+            res.push_str(&format!("unsafe{{printf(\"{name}::\\0\".as_ptr()  as *const c_char)}};"));
+        }
+        
         res.push_str("match self{\n");
         // Iterate through variants cratete a match statement
         for (variant_idx,variant) in adt.variants.iter().enumerate(){
@@ -164,28 +169,55 @@ pub fn adt_impl_printf_debug(adt:&Adt,id:TyId)->String{
                 res.push_str(&format!("fld{field_id},"));
             }
             res.push_str("}=>{\n");
-            res.push_str(&format!("unsafe{{printf(\"Variant{variant_idx}{{\\0\".as_ptr() as *const c_char)}};\n"));
+            if rust_gpu{
+                res.push_str(&format!("unsafe{{printf!(\"Variant{variant_idx}{{\")}};\n"));
+            }else{
+                res.push_str(&format!("unsafe{{printf(\"Variant{variant_idx}{{\\0\".as_ptr() as *const c_char)}};\n"));
+            }
+            
             // Iterate trough fields to print values of fields of variant
             for (field_id,_) in variant.fields.iter().enumerate(){
-                res.push_str(&format!("\t\tunsafe{{printf(\"fld{field_id}:\\0\".as_ptr() as *const c_char)}};\n"));
-                res.push_str(&format!("\t\tfld{field_id}.printf_debug();\n"));
-                res.push_str("unsafe{printf(\",\\0\".as_ptr() as *const c_char)};\n");
+                if rust_gpu{
+                    res.push_str(&format!("\t\tunsafe{{printf!(\"fld{field_id}:\")}};\n"));
+                    res.push_str(&format!("\t\tfld{field_id}.printf_debug();\n"));
+                    res.push_str("unsafe{printf!(\",\")};\n");
+                }else{
+                    res.push_str(&format!("\t\tunsafe{{printf(\"fld{field_id}:\\0\".as_ptr() as *const c_char)}};\n"));
+                    res.push_str(&format!("\t\tfld{field_id}.printf_debug();\n"));
+                    res.push_str("unsafe{printf(\",\\0\".as_ptr() as *const c_char)};\n");
+                }
+               
             }
             res.push_str("},\n")
         }
         res.push_str("\t\t}\n");
-        res.push_str("unsafe{printf(\"\\0}\".as_ptr() as *const c_char)};\n");
+        if rust_gpu{
+            res.push_str("unsafe{printf!(\"}\")};\n");
+        }else{
+            res.push_str("unsafe{printf(\"\\0}\".as_ptr() as *const c_char)};\n");
+        }
+        
         res.push_str("\t}\n}");
         res
     }
     else{
         // Formats a struct
-        let mut res = format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{printf(\"{name}{{\\0\".as_ptr()  as *const c_char)}};",name = id.type_name());
+        let mut res =  if rust_gpu{
+            format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{printf!(\"{name}{{\")}};",name = id.type_name())
+        }else{format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{printf(\"{name}{{\\0\".as_ptr()  as *const c_char)}};",name = id.type_name())};
         // Iterate trough fields to print values of fields of stuct
         for (field_id,_) in adt.variants[0].fields.iter().enumerate(){
-            res.push_str(&format!("\n\tprintf(\"fld{field_id}:\\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();"));
+            if rust_gpu{
+            res.push_str(&format!("\n\tprintf!(\"fld{field_id}:\");\n\tself.fld{field_id}.printf_debug();"));
+            }else{
+                res.push_str(&format!("\n\tprintf(\"fld{field_id}:\\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();"));
+            }
         }
-        res.push_str("\n\tunsafe{printf(\"}\\0\".as_ptr() as *const c_char)};}\n}");
+        if rust_gpu{
+        res.push_str("\n\tunsafe{printf!(\"}\")};}\n}");}
+        else{
+            res.push_str("\n\tunsafe{printf(\"}\\0\".as_ptr() as *const c_char)};}\n}"); 
+        }
         res
     };
     format!("{res}\n#[derive(Copy,Clone)]")

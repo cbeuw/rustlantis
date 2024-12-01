@@ -991,7 +991,7 @@ impl GenerationCtx {
         for vars in dumpped.chunks(Program::DUMPER_ARITY) {
             let new_bb = self.add_new_bb();
 
-            let args = if self.program.var_dumper == VarDumper::StdVarDumper || self.program.var_dumper == VarDumper::PrintfVarDumper{
+            let args = if matches!(self.program.var_dumper,VarDumper::StdVarDumper | VarDumper::PrintfVarDumper{..}){
                 let mut args = Vec::with_capacity(1 + Program::DUMPER_ARITY * 2);
                 args.push(Operand::Constant(
                     self.cursor.function.index().try_into().unwrap(),

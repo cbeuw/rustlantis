@@ -29,7 +29,7 @@ fn main() {
             arg!(-d --debug "generate a program where values are printed instead of hashed (slow)"),
 
             arg!(-p --printf_debug "generate a program where values are printed using the C 'printf' function instead of hashed (slow)"),
-
+            arg!(-g --rust_gpu "generate a program where values are printed using the C 'printf' function instead of hashed (slow)"),
             Arg::new("call-syntax")
                 .long("call-syntax")
                 .value_parser(["v1", "v2", "v3", "v4"])
@@ -44,11 +44,12 @@ fn main() {
         .get_one::<u64>("seed")
         .expect("need an integer as seed");
     let debug_dump = matches.get_one::<bool>("debug").copied().unwrap_or(false);
-    let printf_dump = matches.get_one::<bool>("printf_debug").copied().unwrap_or(false);
+    let rust_gpu = matches.get_one::<bool>("rust_gpu").copied().unwrap_or(false);
+    let printf_dump = matches.get_one::<bool>("printf_debug").copied().unwrap_or(false) | rust_gpu;
     let dumper = match (debug_dump,printf_dump){
         (false,false)=>VarDumper::HashDumper,
         (true,false)=>VarDumper::StdVarDumper,
-        (false,true)=>VarDumper::PrintfVarDumper,
+        (false,true)=>VarDumper::PrintfVarDumper{rust_gpu},
         (true,true)=>panic!("You can only choose either the `debug` dumper or `printf_debug` dumper, but both of them have been selected."),
     };
     info!("Generating a program with seed {seed}");
