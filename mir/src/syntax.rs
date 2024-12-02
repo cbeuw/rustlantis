@@ -1151,7 +1151,7 @@ impl Program {
     "#;
      /// Implements printf based debuggig for primitive types.
      pub const RUSTGPU_PRINTF_DUMPER: &'static str = r#"
-     use core::ffi::{c_char, c_int,c_uint,c_long,c_ulong};
+     use core::ffi::{c_char, c_int,c_uint,c_long};
      trait PrintFDebug{
          unsafe fn printf_debug(&self);
      }
@@ -1207,7 +1207,7 @@ impl Program {
              }else{
                  debug_printf!(
                      "%f",
-                     *self as core::ffi::c_double,
+                     *self as f32,
                  );
              }
             
@@ -1220,7 +1220,7 @@ impl Program {
              }else{
                  debug_printf!(
                      "%f",
-                     *self as core::ffi::c_double,
+                     *self as f32,
                  );
              }
          }
@@ -1248,10 +1248,10 @@ impl Program {
      impl PrintFDebug for i64{
          unsafe fn printf_debug(&self){
             if *self < 0{
-               debug_printf!("-%lu",*(-self) as c_ulong); 
+               debug_printf!("-%lu",-self as u64); 
             }
             else{
-            debug_printf!("%lu",*self as c_ulong);}
+            debug_printf!("%lu",*self as u64);}
          }
      }
      impl PrintFDebug for u64{
@@ -1273,10 +1273,10 @@ impl Program {
          unsafe fn printf_debug(&self){
            
             if *self < 0{
-               debug_printf!("-%lu",*(-self) as c_ulong); 
+               debug_printf!("-%lu",-self as u64); 
             }
             else{
-            debug_printf!("%lu",*self as c_ulong);}
+            debug_printf!("%lu",*self as u64);}
             }
    
      }
