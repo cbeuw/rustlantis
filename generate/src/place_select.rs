@@ -159,6 +159,7 @@ impl PlaceSelector {
     }
 
     fn into_iter_path(self, pt: &PlaceGraph) -> impl Iterator<Item = PlacePath> + Clone + '_ {
+
         let exclusion_indicies: Vec<PlaceIndex> = self
             .exclusions
             .iter()
@@ -289,10 +290,12 @@ impl PlaceSelector {
     pub fn into_weighted(self, pt: &PlaceGraph) -> Option<(Vec<PlacePath>, WeightedIndex<Weight>)> {
         let usage = self.usage;
         let tcx = self.tcx.clone();
+       
         let (places, weights): (Vec<PlacePath>, Vec<Weight>) =
             self.into_iter_path(pt)
                 .map(|ppath| {
                     let place = ppath.target_index();
+               
                     let mut weight = match usage {
                         PlaceUsage::Argument => {
                             let mut weight = 1;

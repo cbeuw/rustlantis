@@ -1149,8 +1149,8 @@ impl Program {
         }
     }
     "#;
-     /// Implements printf based debuggig for primitive types.
-     pub const RUSTGPU_PRINTF_DUMPER: &'static str = r#"
+    /// Implements printf based debuggig for primitive types.
+    pub const RUSTGPU_PRINTF_DUMPER: &'static str = r#"
      use core::ffi::{c_char, c_int,c_uint,c_long};
      trait PrintFDebug{
          unsafe fn printf_debug(&self);

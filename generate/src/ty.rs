@@ -65,9 +65,7 @@ impl TySelect {
                 TyKind::Int(..) => Some(p_ints / TyKind::INTS.len() as f32),
                 TyKind::Uint(..) => Some(p_ints / TyKind::INTS.len() as f32),
                 TyKind::Float(..) => Some(p_floats / TyKind::FLOATS.len() as f32),
-                TyKind::RawPtr(..) | TyKind::Ref(..) => {
-                    Some(p_pointers / num_ptrs as f32)
-                }
+                TyKind::RawPtr(..) | TyKind::Ref(..) => Some(p_pointers / num_ptrs as f32),
                 _ => None,
             };
             if let Some(rate) = p {
@@ -96,8 +94,8 @@ impl TySelect {
                 .unwrap();
             }
             trace!("Typing context with weights:\n{s}");
-            // FractalFir: serialization requires info about which dumper(printf-based one or not) is used. I pass `StdVarDumper` here to preserve 
-            // previous behaviour.  
+            // FractalFir: serialization requires info about which dumper(printf-based one or not) is used. I pass `StdVarDumper` here to preserve
+            // previous behaviour.
             trace!("{}", tcx.serialize(mir::VarDumper::StdVarDumper));
         }
 
@@ -106,9 +104,15 @@ impl TySelect {
     }
 
     pub fn choose_ty(&self, rng: &mut impl Rng, tcx: &TyCtxt) -> TyId {
-        tcx.indices()
+        let res = tcx.indices()
             .nth(self.weights.sample(rng))
-            .expect("tyctxt isn't empty")
+            .expect("tyctxt isn't empty");
+        if tcx.no_128_bit_ints() && (res == TyCtxt::I128 || res == TyCtxt::U128){
+            TyCtxt::U64
+        }else{
+            res
+        }
+        
     }
 }
 
@@ -120,7 +124,11 @@ fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
             (0..length)
                 .map(|_| {
                     tcx.indices()
-                        .filter(|ty| *ty != TyCtxt::UNIT)
+                        .filter(|ty| {
+                            *ty != TyCtxt::UNIT
+                                && (!tcx.no_128_bit_ints()
+                                    || !(*ty == TyCtxt::U128 || *ty == TyCtxt::I128))
+                        })
                         .choose(rng)
                         .unwrap()
                 })
@@ -128,7 +136,10 @@ fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
         }),
         1 => TyKind::RawPtr(
             tcx.indices()
-                .filter(|ty| *ty != TyCtxt::UNIT)
+                .filter(|ty| {
+                    *ty != TyCtxt::UNIT
+                        && (!tcx.no_128_bit_ints() || !(*ty == TyCtxt::U128 || *ty == TyCtxt::I128))
+                })
                 .choose(rng)
                 .unwrap(),
             if rng.gen_bool(0.5) {
@@ -139,7 +150,10 @@ fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
         ),
         2 => TyKind::Ref(
             tcx.indices()
-                .filter(|ty| *ty != TyCtxt::UNIT)
+                .filter(|ty| {
+                    *ty != TyCtxt::UNIT
+                        && (!tcx.no_128_bit_ints() || !(*ty == TyCtxt::U128 || *ty == TyCtxt::I128))
+                })
                 .choose(rng)
                 .unwrap(),
             if rng.gen_bool(0.5) {
@@ -150,7 +164,12 @@ fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
         ),
         3 => TyKind::Array(
             tcx.iter_enumerated()
-                .filter_map(|(ty, kind)| (ty != TyCtxt::UNIT && kind.is_scalar()).then_some(ty))
+                .filter_map(|(ty, kind)| {
+                    (ty != TyCtxt::UNIT
+                        && kind.is_scalar()
+                        && (!tcx.no_128_bit_ints() || !(ty == TyCtxt::U128 || ty == TyCtxt::I128)))
+                        .then_some(ty)
+                })
                 .choose(rng)
                 .unwrap(),
             rng.gen_range(1..=ARRAY_MAX_LEN),
@@ -164,13 +183,17 @@ fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
 
 fn new_adt(tcx: &mut TyCtxt, rng: &mut impl Rng) {
     // TODO: recursive types
-    let variant_count = rng.gen_range(1..=ADT_MAX_VARIANTS);
+    let variant_count = if tcx.no_enums() {
+        1
+    } else {
+        rng.gen_range(1..=ADT_MAX_VARIANTS)
+    };
 
     let variants = (0..variant_count).map(|_| {
             let field_count = rng.gen_range(1..=STRUCT_MAX_FIELDS);
             let field_tys = tcx
                 .indices()
-                .filter(|ty| *ty != TyCtxt::UNIT && /* https://github.com/rust-lang/rust/issues/119940 */ !ty.contains(&tcx, |tcx, ty| ty.is_ref(tcx)))
+                .filter(|ty| *ty != TyCtxt::UNIT && /* https://github.com/rust-lang/rust/issues/119940 */ !ty.contains(tcx, |tcx, ty| ty.is_ref(tcx)) && (!tcx.no_128_bit_ints() || !(*ty == TyCtxt::U128 || *ty == TyCtxt::I128)))
                 .choose_multiple(rng, field_count);
             VariantDef {
                 fields: IndexVec::from_iter(field_tys.into_iter()),
@@ -191,9 +214,9 @@ fn new_adt(tcx: &mut TyCtxt, rng: &mut impl Rng) {
     tcx.push_adt(adt, meta);
 }
 
-pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
+pub fn seed_tys<R: Rng>(rng: &mut R, no_enums: bool,no_128_bit_ints:bool) -> TyCtxt {
     // Seed with primitives
-    let mut tcx: TyCtxt = TyCtxt::from_primitives();
+    let mut tcx: TyCtxt = TyCtxt::from_primitives(no_enums,no_128_bit_ints);
 
     #[derive(Clone, Copy)]
     enum Kind {
@@ -227,7 +250,12 @@ mod tests {
     #[test]
     fn tys_unique() {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-        let tcx = seed_tys(&mut rng);
+        let tcx = seed_tys(&mut rng, false);
+        let set: HashSet<TyId> = tcx.indices().collect();
+        assert!(set.len() == tcx.len());
+        // Test without enums
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
+        let tcx = seed_tys(&mut rng, true);
         let set: HashSet<TyId> = tcx.indices().collect();
         assert!(set.len() == tcx.len())
     }

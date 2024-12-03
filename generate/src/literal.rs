@@ -32,10 +32,17 @@ impl Distribution<isize> for Sombrero {
 
 pub trait GenLiteral: Rng {
     fn is_literalble(ty: TyId, tcx: &TyCtxt) -> bool {
-        match ty.kind(tcx) {
+        let res = match ty.kind(tcx) {
             TyKind::Unit => false,
-            _ => ty.is_scalar(tcx),
-        }
+            _ => {
+                if tcx.no_128_bit_ints() && (ty == TyCtxt::U128 || ty == TyCtxt::I128) {
+                    false
+                } else {
+                    ty.is_scalar(tcx)
+                }
+            }
+        };
+        res
     }
     fn gen_literal(&mut self, ty: TyId, tcx: &TyCtxt) -> Option<Literal> {
         let lit: Literal = match ty.kind(tcx) {
