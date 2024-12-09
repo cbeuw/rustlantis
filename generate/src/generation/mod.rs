@@ -13,6 +13,7 @@ use mir::syntax::{
     SwitchTargets, Terminator, TyId, TyKind, UnOp, VariantIdx,
 };
 use mir::tyctxt::TyCtxt;
+use mir::VarDumper;
 use rand::seq::SliceRandom;
 use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
 use rand_distr::{Distribution, WeightedError, WeightedIndex};
@@ -300,40 +301,80 @@ impl GenerationCtx {
         let target_ty = lhs.ty(self.current_decls(), &self.tcx);
         let source_tys = match target_ty.kind(&self.tcx) {
             // TODO: no int to ptr cast for now
-            TyKind::Int(..) | TyKind::Uint(..) => &[
-                TyCtxt::ISIZE,
-                TyCtxt::I8,
-                TyCtxt::I16,
-                TyCtxt::I32,
-                TyCtxt::I64,
-                TyCtxt::I128,
-                TyCtxt::USIZE,
-                TyCtxt::U8,
-                TyCtxt::U16,
-                TyCtxt::U32,
-                TyCtxt::U64,
-                TyCtxt::U128,
-                TyCtxt::F32,
-                TyCtxt::F64,
-                TyCtxt::CHAR,
-                TyCtxt::BOOL,
-            ][..],
-            TyKind::Float(..) => &[
-                TyCtxt::ISIZE,
-                TyCtxt::I8,
-                TyCtxt::I16,
-                TyCtxt::I32,
-                TyCtxt::I64,
-                TyCtxt::I128,
-                TyCtxt::USIZE,
-                TyCtxt::U8,
-                TyCtxt::U16,
-                TyCtxt::U32,
-                TyCtxt::U64,
-                TyCtxt::U128,
-                TyCtxt::F32,
-                TyCtxt::F64,
-            ][..],
+            TyKind::Int(..) | TyKind::Uint(..) => {
+                if self.tcx.no_128_bit_ints() {
+                    &[
+                        TyCtxt::ISIZE,
+                        TyCtxt::I8,
+                        TyCtxt::I16,
+                        TyCtxt::I32,
+                        TyCtxt::I64,
+                        TyCtxt::USIZE,
+                        TyCtxt::U8,
+                        TyCtxt::U16,
+                        TyCtxt::U32,
+                        TyCtxt::U64,
+                        TyCtxt::F32,
+                        TyCtxt::F64,
+                        TyCtxt::CHAR,
+                        TyCtxt::BOOL,
+                    ][..]
+                } else {
+                    &[
+                        TyCtxt::ISIZE,
+                        TyCtxt::I8,
+                        TyCtxt::I16,
+                        TyCtxt::I32,
+                        TyCtxt::I64,
+                        TyCtxt::I128,
+                        TyCtxt::USIZE,
+                        TyCtxt::U8,
+                        TyCtxt::U16,
+                        TyCtxt::U32,
+                        TyCtxt::U64,
+                        TyCtxt::U128,
+                        TyCtxt::F32,
+                        TyCtxt::F64,
+                        TyCtxt::CHAR,
+                        TyCtxt::BOOL,
+                    ][..]
+                }
+            }
+            TyKind::Float(..) => {
+                if self.tcx.no_128_bit_ints() {
+                    &[
+                        TyCtxt::ISIZE,
+                        TyCtxt::I8,
+                        TyCtxt::I16,
+                        TyCtxt::I32,
+                        TyCtxt::I64,
+                        TyCtxt::USIZE,
+                        TyCtxt::U8,
+                        TyCtxt::U16,
+                        TyCtxt::U32,
+                        TyCtxt::U64,
+                        TyCtxt::F32,
+                        TyCtxt::F64,
+                    ][..]
+                } else {
+                    &[
+                        TyCtxt::ISIZE,
+                        TyCtxt::I8,
+                        TyCtxt::I16,
+                        TyCtxt::I32,
+                        TyCtxt::I64,
+                        TyCtxt::I128,
+                        TyCtxt::USIZE,
+                        TyCtxt::U8,
+                        TyCtxt::U16,
+                        TyCtxt::U32,
+                        TyCtxt::U64,
+                        TyCtxt::U128,
+                        TyCtxt::F32,
+                        TyCtxt::F64,
+                    ][..]
+                }
+            }
             _ => &[][..],
         };
         let rvalue = self.make_choice(
@@ -990,7 +1031,10 @@ impl GenerationCtx {
         for vars in dumpped.chunks(Program::DUMPER_ARITY) {
             let new_bb = self.add_new_bb();
 
-            let args = if self.program.use_debug_dumper {
+            let args = if matches!(
+                self.program.var_dumper,
+                VarDumper::StdVarDumper | VarDumper::PrintfVarDumper { .. }
+            ) {
                 let mut args = Vec::with_capacity(1 + Program::DUMPER_ARITY * 2);
                 args.push(Operand::Constant(
                     self.cursor.function.index().try_into().unwrap(),
@@ -1182,9 +1226,36 @@ impl GenerationCtx {
         }
     }
 
-    pub fn new(seed: u64, debug_dump: bool) -> Self {
+    fn make_choice_mut<T, F, R>(
+        &mut self,
+        choices: impl Iterator<Item = T> + Clone,
+        mut use_choice: F,
+    ) -> Result<R>
+    where
+        F: FnMut(&mut Self, T) -> Result<R>,
+        T: Clone,
+    {
+        let mut failed: Vec<usize> = vec![];
+        loop {
+            let (i, choice) = choices
+                .clone()
+                .enumerate()
+                .filter(|(i, _)| !failed.contains(i))
+                .choose(&mut *self.rng.borrow_mut())
+                .ok_or(SelectionError::Exhausted)?;
+            let res = use_choice(self, choice.clone());
+            match res {
+                Ok(val) => return Ok(val),
+                Err(_) => {
+                    failed.push(i);
+                }
+            }
+        }
+    }
+
+    pub fn new(seed: u64, debug_dump: VarDumper, no_enums: bool,no_128_bit_ints:bool) -> Self {
         let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(seed)));
-        let tcx = Rc::new(seed_tys(&mut *rng.borrow_mut()));
+        let tcx = Rc::new(seed_tys(&mut *rng.borrow_mut(), no_enums,no_128_bit_ints));
         let ty_weights = TySelect::new(&tcx);
         // TODO: don't zero-initialize current_function and current_bb
         Self {
@@ -1238,7 +1309,7 @@ impl GenerationCtx {
         let arg_tys: Vec<TyId> = self
             .tcx
             .indices()
-            .filter(|ty| <dyn RngCore>::is_literalble(*ty, &self.tcx))
+            .filter(|ty| <dyn RngCore>::is_literalble(*ty, &self.tcx) )
             .choose_multiple(&mut *self.rng.borrow_mut(), args_count);
         let arg_literals: Vec<Literal> = arg_tys
             .iter()

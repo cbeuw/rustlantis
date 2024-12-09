@@ -1,4 +1,4 @@
-use crate::{syntax::*, tyctxt::TyCtxt};
+use crate::{syntax::*, tyctxt::TyCtxt, VarDumper};
 
 #[derive(Debug, Clone, Copy)]
 pub enum CallSynatx {
@@ -368,11 +368,18 @@ impl Body {
 
 impl Program {
     pub fn serialize(&self, tcx: &TyCtxt, call_syntax: CallSynatx) -> String {
-        let mut program = Program::HEADER.to_string();
-        if self.use_debug_dumper {
-            program += Program::DEBUG_DUMPER;
-        } else {
-            program += Program::DUMPER;
+        let mut program = match self.var_dumper {
+            VarDumper::PrintfVarDumper { rust_gpu: true } => Program::NOSTD_HEADER.to_string(),
+            _ => Program::HEADER.to_string(),
+        };
+        program += match self.var_dumper {
+            VarDumper::HashDumper => Program::DUMPER,
+            VarDumper::StdVarDumper => Program::DEBUG_DUMPER,
+            VarDumper::PrintfVarDumper { rust_gpu: false } => Program::PRINTF_DUMPER,
+            VarDumper::PrintfVarDumper { rust_gpu: true } => Program::RUSTGPU_PRINTF_DUMPER,
+        };
+        if let VarDumper::PrintfVarDumper { rust_gpu: true } = self.var_dumper {
+            program += "use spirv_std::{spirv,macros::debug_printf};\n";
         }
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
             let args_list: String = body
@@ -401,7 +408,7 @@ impl Program {
         let arg_list: String = self
             .entry_args
             .iter()
-            .map(|arg| format!("std::hint::black_box({})", arg.serialize(tcx)))
+            .map(|arg| format!("core::hint::black_box({})", arg.serialize(tcx)))
             .intersperse(", ".to_string())
             .collect();
 
@@ -412,7 +419,7 @@ impl Program {
             .expect("program has functions")
             .identifier();
 
-        let hash_printer = if self.use_debug_dumper {
+        let hash_printer = if self.var_dumper != VarDumper::HashDumper {
             ""
         } else {
             r#"
@@ -421,13 +428,23 @@ impl Program {
                 }
             "#
         };
+        if let VarDumper::PrintfVarDumper { rust_gpu: true } = self.var_dumper {
+            program.push_str(&format!(
+                "#[spirv(compute(threads(1)))]
+                pub fn main() {{
+                    {first_fn}({arg_list});
+                    {hash_printer}
+                }}"
+            ));
+        } else {
+            program.push_str(&format!(
+                "pub fn main() {{
+                    {first_fn}({arg_list});
+                    {hash_printer}
+                }}"
+            ));
+        }
 
-        program.push_str(&format!(
-            "pub fn main() {{
-                {first_fn}({arg_list});
-                {hash_printer}
-            }}"
-        ));
         program
     }
 }

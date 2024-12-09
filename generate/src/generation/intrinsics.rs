@@ -127,7 +127,9 @@ impl CoreIntrinsic for Transmute {
     fn dest_type(&self, ty: TyId, tcx: &TyCtxt) -> bool {
         if ty.contains(tcx, |tcx, ty| match ty.kind(tcx) {
             // Tys with value validity contstraints
-            TyKind::Unit | TyKind::Bool | TyKind::Char | TyKind::RawPtr(..) | TyKind::Ref(..) => true, // TODO: pointer transmute
+            TyKind::Unit | TyKind::Bool | TyKind::Char | TyKind::RawPtr(..) | TyKind::Ref(..) => {
+                true
+            } // TODO: pointer transmute
             _ => false,
         }) {
             return false;

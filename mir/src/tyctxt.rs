@@ -5,6 +5,7 @@ use index_vec::IndexVec;
 use crate::{
     serialize::Serialize,
     syntax::{Adt, TyId, TyKind},
+    VarDumper,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -32,6 +33,8 @@ impl AdtMeta {
 pub struct TyCtxt {
     tys: IndexVec<TyId, TyKind>,
     adt_meta: HashMap<TyId, AdtMeta>,
+    no_enums: bool,
+    no_128_bit_ints: bool,
 }
 
 impl TyCtxt {
@@ -53,7 +56,7 @@ impl TyCtxt {
     pub const F32: TyId = TyId::from_usize_unchecked(15);
     pub const F64: TyId = TyId::from_usize_unchecked(16);
 
-    pub fn from_primitives() -> Self {
+    pub fn from_primitives(no_enums: bool,no_128_bit_ints:bool) -> Self {
         let primitives: [TyKind; 17] = [
             TyKind::Unit,
             TyKind::Bool,
@@ -77,6 +80,8 @@ impl TyCtxt {
         Self {
             tys,
             adt_meta: HashMap::new(),
+            no_enums,
+            no_128_bit_ints,
         }
     }
 
@@ -115,13 +120,19 @@ impl TyCtxt {
         self.tys.len()
     }
 
-    pub fn serialize(&self) -> String {
+    pub fn serialize(&self, dumper: VarDumper) -> String {
         let mut str = String::new();
         for (id, adt) in self.tys.iter_enumerated().filter(|(_, kind)| kind.is_adt()) {
             let TyKind::Adt(adt) = adt else {
                 panic!("not an adt");
             };
-            str += &self.adt_meta[&id].derive_attrs();
+            // `Debug` derive is ommited for printf-based dumping. An  implemntation of the PrintFDebug trait is emmited instead.
+            str += &match dumper {
+                VarDumper::HashDumper | VarDumper::StdVarDumper => {
+                    self.adt_meta[&id].derive_attrs()
+                }
+                VarDumper::PrintfVarDumper { rust_gpu } => adt_impl_printf_debug(adt, id, rust_gpu),
+            };
             if adt.is_enum() {
                 let variants: String = adt
                     .variants
@@ -143,4 +154,99 @@ impl TyCtxt {
         }
         str
     }
+
+    pub fn no_enums(&self) -> bool {
+        self.no_enums
+    }
+
+    pub fn no_128_bit_ints(&self) -> bool {
+        self.no_128_bit_ints
+    }
+}
+/// Implements the PrintFDebug trait for an ADT.
+/// This trait is used to dump variables using `printf`
+pub fn adt_impl_printf_debug(adt: &Adt, id: TyId, rust_gpu: bool) -> String {
+    let res = if adt.is_enum() {
+        // Formats an enum
+        let name = id.type_name();
+        let mut res = format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{");
+        if rust_gpu {
+            res.push_str(&format!("unsafe{{debug_printf!(\"{name}::\")}};"));
+        } else {
+            res.push_str(&format!(
+                "unsafe{{printf(\"{name}::\\0\".as_ptr()  as *const c_char)}};"
+            ));
+        }
+
+        res.push_str("match self{\n");
+        // Iterate through variants cratete a match statement
+        for (variant_idx, variant) in adt.variants.iter().enumerate() {
+            res.push_str(&format!("\tSelf::Variant{variant_idx}{{",));
+            // Iterate trough fields to generate match patterns
+            for (field_id, _) in variant.fields.iter().enumerate() {
+                res.push_str(&format!("fld{field_id},"));
+            }
+            res.push_str("}=>{\n");
+            if rust_gpu {
+                res.push_str(&format!(
+                    "unsafe{{debug_printf!(\"Variant{variant_idx}{{\")}};\n"
+                ));
+            } else {
+                res.push_str(&format!(
+                    "unsafe{{printf(\"Variant{variant_idx}{{\\0\".as_ptr() as *const c_char)}};\n"
+                ));
+            }
+
+            // Iterate trough fields to print values of fields of variant
+            for (field_id, _) in variant.fields.iter().enumerate() {
+                if rust_gpu {
+                    res.push_str(&format!(
+                        "\t\tunsafe{{debug_printf!(\"fld{field_id}:\")}};\n"
+                    ));
+                    res.push_str(&format!("\t\tfld{field_id}.printf_debug();\n"));
+                    res.push_str("unsafe{debug_printf!(\",\")};\n");
+                } else {
+                    res.push_str(&format!(
+                        "\t\tunsafe{{printf(\"fld{field_id}:\\0\".as_ptr() as *const c_char)}};\n"
+                    ));
+                    res.push_str(&format!("\t\tfld{field_id}.printf_debug();\n"));
+                    res.push_str("unsafe{printf(\",\\0\".as_ptr() as *const c_char)};\n");
+                }
+            }
+            res.push_str("},\n")
+        }
+        res.push_str("\t\t}\n");
+        if rust_gpu {
+            res.push_str("unsafe{debug_printf!(\"}\")};\n");
+        } else {
+            res.push_str("unsafe{printf(\"\\0}\".as_ptr() as *const c_char)};\n");
+        }
+
+        res.push_str("\t}\n}");
+        res
+    } else {
+        // Formats a struct
+        let mut res = if rust_gpu {
+            format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{debug_printf!(\"{name}{{\")}};",name = id.type_name())
+        } else {
+            format!("impl PrintFDebug for {name}{{\n\tunsafe fn printf_debug(&self){{\n\tunsafe{{printf(\"{name}{{\\0\".as_ptr()  as *const c_char)}};",name = id.type_name())
+        };
+        // Iterate trough fields to print values of fields of stuct
+        for (field_id, _) in adt.variants[0].fields.iter().enumerate() {
+            if rust_gpu {
+                res.push_str(&format!(
+                    "\n\tdebug_printf!(\"fld{field_id}:\");\n\tself.fld{field_id}.printf_debug();"
+                ));
+            } else {
+                res.push_str(&format!("\n\tprintf(\"fld{field_id}:\\0\".as_ptr() as *const c_char);\n\tself.fld{field_id}.printf_debug();"));
+            }
+        }
+        if rust_gpu {
+            res.push_str("\n\tunsafe{debug_printf!(\"}\")};}\n}");
+        } else {
+            res.push_str("\n\tunsafe{printf(\"}\\0\".as_ptr() as *const c_char)};}\n}");
+        }
+        res
+    };
+    format!("{res}\n#[derive(Copy,Clone)]")
 }
