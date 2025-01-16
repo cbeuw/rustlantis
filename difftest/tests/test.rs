@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf, str::FromStr};
 use config::Config;
 use difftest::{
     backends::{Backend, Cranelift, Miri, OptLevel, LLVM},
-    run_diff_test,
+    run_diff_test, Source,
 };
 
 #[test]
@@ -38,7 +38,7 @@ fn correct_mir() {
     );
 
     let results = run_diff_test(
-        &PathBuf::from_str("tests/inputs/simple.rs").unwrap(),
+        &Source::File(PathBuf::from_str("tests/inputs/simple.rs").unwrap()),
         backends,
     );
     assert!(results.all_same());

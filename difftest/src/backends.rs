@@ -2,11 +2,14 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     hash::{Hash, Hasher},
+    io::Write,
     path::{Path, PathBuf},
-    process::{self, Command, ExitStatus},
+    process::{self, Command, ExitStatus, Stdio},
 };
 
 use log::debug;
+
+use crate::Source;
 
 trait ClearEnv {
     fn clear_env(&mut self, preserve: &[&str]) -> &mut Command;
@@ -73,24 +76,57 @@ pub type ExecResult = Result<ProcessOutput, CompExecError>;
 pub struct BackendInitError(pub String);
 
 pub trait Backend: Send + Sync {
-    fn compile(&self, _: &Path, _: &Path) -> ProcessOutput {
+    fn compile(&self, _: &Source, _: &Path) -> ProcessOutput {
         panic!("not implemented")
     }
 
-    fn execute(&self, source: &Path, target: &Path) -> ExecResult {
-        debug!("Compiling {}", source.to_string_lossy());
-        let source = source.canonicalize().expect("source path valid");
-        let compile_out = self.compile(&source, target);
+    fn execute(&self, source: &Source, target: &Path) -> ExecResult {
+        debug!("Compiling {source}");
+        let compile_out = self.compile(source, target);
         if !compile_out.status.success() {
             return Err(CompExecError(compile_out));
         }
 
-        debug!("Executing compiled {}", source.to_string_lossy());
+        debug!("Executing compiled {source}");
         let exec_out = Command::new(target)
             .output()
             .expect("can execute target program and get output");
         Ok(exec_out.into())
     }
+}
+
+fn run_compile_command(mut command: Command, source: &Source) -> process::Output {
+    let compiler = match source {
+        Source::File(path) => {
+            command.arg(path.canonicalize().expect("path is correct"));
+            command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("can spawn compiler")
+        }
+        Source::Stdin(code) => {
+            command.arg("-").stdin(Stdio::piped());
+            let mut child = command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("can spawn compiler");
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(code.as_bytes())
+                .unwrap();
+            child
+        }
+    };
+
+    let compile_out = compiler
+        .wait_with_output()
+        .expect("can execute rustc and get output");
+
+    compile_out
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,14 +168,13 @@ impl LLVM {
 }
 
 impl Backend for LLVM {
-    fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
+    fn compile(&self, source: &Source, target: &Path) -> ProcessOutput {
         let mut command = Command::new("rustc");
         if let Some(toolchain) = &self.toolchain {
             command.arg(format!("+{}", toolchain));
         }
 
-        let compile_out = command
-            .arg(source)
+        command
             .args(["-o", target.to_str().unwrap()])
             .args([
                 "-C",
@@ -149,11 +184,8 @@ impl Backend for LLVM {
             .args([
                 "-Z",
                 &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
-            ])
-            .output()
-            .expect("can execute rustc and get output");
-
-        compile_out.into()
+            ]);
+        run_compile_command(command, source).into()
     }
 }
 
@@ -275,8 +307,8 @@ impl Miri {
 }
 
 impl Backend for Miri {
-    fn execute(&self, source: &Path, _: &Path) -> ExecResult {
-        debug!("Executing {} with Miri", source.to_string_lossy());
+    fn execute(&self, source: &Source, _: &Path) -> ExecResult {
+        debug!("Executing with Miri {source}");
         let mut command = match &self.miri {
             BackendSource::Path(binary) => Command::new(binary),
             BackendSource::Rustup(toolchain) => {
@@ -295,9 +327,10 @@ impl Backend for Miri {
         }
         command
             .clear_env(&["PATH", "DEVELOPER_DIR"])
-            .args([OsStr::new("--sysroot"), self.sysroot.as_os_str()])
-            .arg(source);
-        let miri_out = command.output().expect("can run miri and get output");
+            .args([OsStr::new("--sysroot"), self.sysroot.as_os_str()]);
+
+        let miri_out = run_compile_command(command, source);
+
         // FIXME: we assume the source always exits with 0, and any non-zero return code
         // came from Miri itself (e.g. UB and type check errors)
         if !miri_out.status.success() {
@@ -383,7 +416,7 @@ impl Cranelift {
 }
 
 impl Backend for Cranelift {
-    fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
+    fn compile(&self, source: &Source, target: &Path) -> ProcessOutput {
         let mut command = match &self.clif {
             BackendSource::Path(binary) => Command::new(binary),
             BackendSource::Rustup(toolchain) => {
@@ -393,8 +426,7 @@ impl Backend for Cranelift {
                 cmd
             }
         };
-        let compile_out = command
-            .arg(source)
+        command
             .args(["-o", target.to_str().unwrap()])
             .args([
                 "-C",
@@ -403,10 +435,8 @@ impl Backend for Cranelift {
             .args([
                 "-Z",
                 &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
-            ])
-            .output()
-            .expect("can run rustc-clif and get output");
-        compile_out.into()
+            ]);
+        run_compile_command(command, source).into()
     }
 }
 
@@ -452,11 +482,11 @@ impl GCC {
     }
 }
 impl Backend for GCC {
-    fn compile(&self, source: &Path, target: &Path) -> ProcessOutput {
-        let compile_out = Command::new("rustc")
+    fn compile(&self, source: &Source, target: &Path) -> ProcessOutput {
+        let mut command = Command::new("rustc");
+        command
             .clear_env(&["PATH", "DEVELOPER_DIR", "LD_LIBRARY_PATH"])
             .current_dir(&self.repo)
-            .arg(source)
             .args([
                 "-Z",
                 &format!("codegen-backend={}", self.library.to_str().unwrap()),
@@ -471,9 +501,7 @@ impl Backend for GCC {
             .args([
                 "-Z",
                 &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
-            ])
-            .output()
-            .expect("can run rustc-clif and get output");
-        compile_out.into()
+            ]);
+        run_compile_command(command, source).into()
     }
 }

@@ -6,9 +6,9 @@ pub mod backends;
 // pub use backend;
 use std::{
     collections::{HashMap, HashSet},
-    fmt,
+    fmt::{self, Display},
     ops::Index,
-    path::Path,
+    path::PathBuf,
     time::Instant,
 };
 
@@ -18,6 +18,20 @@ use log::{debug, log_enabled};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
 pub type BackendName = &'static str;
+
+pub enum Source {
+    File(PathBuf),
+    Stdin(String),
+}
+
+impl Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Source::File(path) => f.write_str(&path.to_string_lossy()),
+            Source::Stdin(_) => f.write_str("[stdin]"),
+        }
+    }
+}
 
 pub struct ExecResults {
     // Equivalence classes of exec results and backends
@@ -36,11 +50,12 @@ impl ExecResults {
         'outer: for (&name, result) in map {
             for (class_result, names) in &mut eq_classes {
                 // Put into an existing equivalence class
-                let eq = if let Ok(class_out) = class_result && let Ok(out) = result {
+                let eq = if let Ok(class_out) = class_result
+                    && let Ok(out) = result
+                {
                     class_out.stdout == out.stdout
                 } else {
                     result == class_result
-
                 };
                 if eq {
                     names.insert(name);
@@ -134,7 +149,7 @@ impl fmt::Display for ExecResults {
 }
 
 pub fn run_diff_test<'a>(
-    source_file: &Path,
+    source: &Source,
     backends: HashMap<BackendName, Box<dyn Backend + 'a>>,
 ) -> ExecResults {
     let target_dir = tempfile::tempdir().unwrap();
@@ -144,12 +159,12 @@ pub fn run_diff_test<'a>(
             let target_path = target_dir.path().join(name);
             let result = if log_enabled!(log::Level::Debug) {
                 let time = Instant::now();
-                let result = b.execute(source_file, &target_path);
+                let result = b.execute(source, &target_path);
                 let dur = time.elapsed();
                 debug!("{name} took {}s", dur.as_secs_f32());
                 result
             } else {
-                b.execute(source_file, &target_path)
+                b.execute(source, &target_path)
             };
             (name, result)
         })

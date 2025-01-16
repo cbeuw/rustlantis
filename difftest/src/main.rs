@@ -1,13 +1,13 @@
 #![feature(iter_intersperse)]
 
 use core::panic;
-use std::{collections::HashMap, path::PathBuf, process::ExitCode, str::FromStr};
+use std::{collections::HashMap, io::{self, Read}, path::PathBuf, process::ExitCode, str::FromStr};
 
 use clap::{Arg, Command};
 use config::Config;
 use difftest::{
     backends::{Backend, Cranelift, Miri, OptLevel, GCC, LLVM},
-    run_diff_test, BackendName,
+    run_diff_test, BackendName, Source,
 };
 use log::{debug, error, info};
 
@@ -18,7 +18,6 @@ fn main() -> ExitCode {
         .arg(Arg::new("file").required(true))
         .get_matches();
     let source = matches.get_one::<String>("file").expect("required");
-    let source = PathBuf::from_str(source).expect("source is a valid path");
 
     // Initialise backends
     // TODO: extract this out into a function
@@ -87,25 +86,34 @@ fn main() -> ExitCode {
         )),
     );
 
+    let source = if source == "-" {
+        let mut code = String::new();
+        io::stdin().read_to_string(&mut code).expect("can read source code from stdin");
+        Source::Stdin(code)
+    } else {
+        Source::File(PathBuf::from_str(source).expect("is valid path"))
+    };
+
     info!(
         "Difftesting {} with {}",
-        source.as_os_str().to_string_lossy(),
+        source,
         backends
             .keys()
             .copied()
             .intersperse(", ")
             .collect::<String>()
     );
+
     let results = run_diff_test(&source, backends);
     if results.all_same() && results.all_success() {
-        info!("{} is all the same", source.as_os_str().to_string_lossy());
+        info!("{} is all the same", source);
         debug!("{}", results);
         ExitCode::SUCCESS
     } else {
         let results = results.to_string();
         error!(
             "{} didn't pass:\n{results}",
-            source.as_os_str().to_string_lossy(),
+            source,
         );
         ExitCode::FAILURE
     }
