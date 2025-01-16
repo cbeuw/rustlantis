@@ -1162,13 +1162,13 @@ impl PlaceGraph {
     }
 
     /// To be called when a place is written to. Invalidates (removes) all references and raw pointers after the first
-    /// shared reference on the stack, and other tags after the mutable reference tag used to write
+    /// shared reference on the stack, and tags after the mutable reference tag used to write
     pub fn place_written(&mut self, p: impl ToPlaceIndex, tag: Option<Tag>) {
         let target = p.to_place_index(&self).expect("place exists");
         self.update_transitive_subfields(target, |this, place| {
             if let Some(run) = this.places[place].run_ptr {
                 let invalidated = if let Some(tag) = tag {
-                    this.memory.other_tags_above(run, tag)
+                    this.memory.tags_above(run, tag)
                 } else {
                     this.memory.above_first_ref(run)
                 };

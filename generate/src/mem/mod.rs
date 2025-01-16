@@ -108,21 +108,15 @@ impl Run {
         }
     }
 
-    /// Returns a list of other tags above a certain tag
-    pub fn other_tags_above(&self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
+    /// Returns a list of tags above a certain tag
+    pub fn tags_above(&self, offset: Size, len: Size, tag: Tag) -> Vec<Tag> {
         let mut edges = BTreeSet::new();
         for (_, stack) in self.ref_stack.iter(offset, len) {
             let index = stack
                 .iter()
                 .position(|borrow| borrow.tag == tag)
                 .expect("tag exists");
-            edges.extend(stack.iter().skip(index + 1).filter_map(|borrow| {
-                if borrow.tag != tag {
-                    Some(borrow.tag)
-                } else {
-                    None
-                }
-            }));
+            edges.extend(stack[index + 1..].iter().map(|borrow| borrow.tag));
         }
         edges.iter().copied().collect()
     }
@@ -499,8 +493,8 @@ impl BasicMemory {
         !self.pointers.contains_key(&tag)
     }
 
-    pub fn other_tags_above(&self, run_ptr: RunPointer, tag: Tag) -> Vec<Tag> {
-        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].other_tags_above(
+    pub fn tags_above(&self, run_ptr: RunPointer, tag: Tag) -> Vec<Tag> {
+        self.allocations[run_ptr.alloc_id].runs[run_ptr.run()].tags_above(
             run_ptr.offset(),
             run_ptr.size,
             tag,
