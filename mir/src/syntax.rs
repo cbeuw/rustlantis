@@ -718,7 +718,7 @@ impl Program {
     pub const FUNCTION_ATTRIBUTE: &'static str =
         "#[custom_mir(dialect = \"runtime\", phase = \"initial\")]";
     pub const HEADER: &'static str = "#![recursion_limit = \"1024\"]
-    #![feature(custom_mir, core_intrinsics, const_hash)]
+    #![feature(custom_mir, core_intrinsics, lazy_get)]
     #![allow(unused_parens, unused_assignments, overflowing_literals)]
     extern crate core;
     use core::intrinsics::mir::*;\n";
@@ -726,8 +726,9 @@ impl Program {
     pub const DUMPER: &'static str = r#"
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
+    use std::sync::LazyLock;
 
-    static mut H: DefaultHasher = DefaultHasher::new();
+    static mut H: LazyLock<DefaultHasher> = LazyLock::new(|| DefaultHasher::new());
 
     #[inline(never)]
     fn dump_var(
@@ -737,10 +738,10 @@ impl Program {
         val3: impl Hash,
     ) {
         unsafe {
-            val0.hash(&mut H);
-            val1.hash(&mut H);
-            val2.hash(&mut H);
-            val3.hash(&mut H);
+            val0.hash(LazyLock::force_mut(&mut H));
+            val1.hash(LazyLock::force_mut(&mut H));
+            val2.hash(LazyLock::force_mut(&mut H));
+            val3.hash(LazyLock::force_mut(&mut H));
         }
     }
     "#;
