@@ -2,7 +2,6 @@
 
 pub mod backends;
 
-// pub use backend;
 use std::{
     collections::{HashMap, HashSet},
     fmt::{self, Display},
@@ -14,9 +13,7 @@ use std::{
 use backends::{Backend, CompExecError, ExecResult};
 use colored::Colorize;
 use log::{debug, log_enabled};
-use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-
-pub type BackendName = &'static str;
+use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 
 pub enum Source {
     File(PathBuf),
@@ -34,27 +31,25 @@ impl Display for Source {
 
 pub struct ExecResults {
     // Equivalence classes of exec results and backends
-    results: HashMap<ExecResult, HashSet<BackendName>>,
+    results: HashMap<ExecResult, HashSet<String>>,
 }
 
 impl ExecResults {
-    pub fn from_exec_results<'a>(
-        map: impl Iterator<Item = (&'a BackendName, &'a ExecResult)>,
-    ) -> Self {
+    fn from_exec_results<'a>(map: impl Iterator<Item = (String, ExecResult)>) -> Self {
         //TODO: optimisation here to check if all results are equal directly, since most should be
 
         // Split execution results into equivalent classes
-        let mut eq_classes: HashMap<ExecResult, HashSet<BackendName>> = HashMap::new();
+        let mut eq_classes: HashMap<ExecResult, HashSet<String>> = HashMap::new();
 
-        'outer: for (&name, result) in map {
+        'outer: for (name, result) in map {
             for (class_result, names) in &mut eq_classes {
                 // Put into an existing equivalence class
                 let eq = if let Ok(class_out) = class_result
-                    && let Ok(out) = result
+                    && let Ok(ref out) = result
                 {
                     class_out.stdout == out.stdout
                 } else {
-                    result == class_result
+                    result == *class_result
                 };
                 if eq {
                     names.insert(name);
@@ -98,12 +93,22 @@ impl ExecResults {
                 })
             })
     }
+
+    pub fn miri_result(&self) -> Option<&ExecResult> {
+        self.results.iter().find_map(|(result, backends)| {
+            if backends.contains("miri") {
+                Some(result)
+            } else {
+                None
+            }
+        })
+    }
 }
 
-impl Index<BackendName> for ExecResults {
+impl Index<&str> for ExecResults {
     type Output = ExecResult;
 
-    fn index(&self, index: BackendName) -> &Self::Output {
+    fn index(&self, index: &str) -> &Self::Output {
         for (result, names) in &self.results {
             if names.contains(index) {
                 return result;
@@ -120,7 +125,7 @@ impl fmt::Display for ExecResults {
                 "{} produced the following output:\n",
                 names
                     .iter()
-                    .copied()
+                    .map(String::as_str)
                     .intersperse(", ")
                     .collect::<String>()
                     .blue()
@@ -149,13 +154,13 @@ impl fmt::Display for ExecResults {
 
 pub fn run_diff_test<'a>(
     source: &Source,
-    backends: HashMap<BackendName, Box<dyn Backend + 'a>>,
+    backends: HashMap<String, Box<dyn Backend + 'a>>,
 ) -> ExecResults {
     let target_dir = tempfile::tempdir().unwrap();
-    let exec_results: HashMap<BackendName, ExecResult> = backends
-        .par_iter()
-        .map(|(&name, b)| {
-            let target_path = target_dir.path().join(name);
+    let exec_results: HashMap<String, ExecResult> = backends
+        .into_par_iter()
+        .map(|(name, b)| {
+            let target_path = target_dir.path().join(&name);
             let result = if log_enabled!(log::Level::Debug) {
                 let time = Instant::now();
                 let result = b.execute(source, &target_path);
@@ -165,9 +170,9 @@ pub fn run_diff_test<'a>(
             } else {
                 b.execute(source, &target_path)
             };
-            (name, result)
+            (name.clone(), result)
         })
         .collect();
 
-    ExecResults::from_exec_results(exec_results.iter())
+    ExecResults::from_exec_results(exec_results.into_iter())
 }

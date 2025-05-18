@@ -15,9 +15,9 @@ use mir::{
     tyctxt::TyCtxt,
 };
 use petgraph::{
-    prelude::EdgeIndex, prelude::NodeIndex, stable_graph::StableGraph, visit::EdgeRef, Direction,
+    Direction, prelude::EdgeIndex, prelude::NodeIndex, stable_graph::StableGraph, visit::EdgeRef,
 };
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 
 use crate::mem::{
     AbstractByte, AllocId, AllocationBuilder, BasicMemory, BorrowType, RunPointer, Tag,
@@ -1500,6 +1500,7 @@ where
 mod tests {
     use std::rc::Rc;
 
+    use config::TyConfig;
     use mir::{
         syntax::{
             BinOp, FieldIdx, Literal, Local, Mutability, Operand, Place, ProjectionElem, Rvalue,
@@ -1525,7 +1526,7 @@ mod tests {
                 d     e
         */
 
-        let mut tcx = TyCtxt::from_primitives();
+        let mut tcx = TyCtxt::from_primitives(TyConfig::default());
         let t_i16_i32 = tcx.push(TyKind::Tuple(vec![TyCtxt::I16, TyCtxt::I32]));
         let t_root = tcx.push(TyKind::Tuple(vec![TyCtxt::I8, t_i16_i32, TyCtxt::I64]));
 
@@ -1587,7 +1588,7 @@ mod tests {
 
     #[test]
     fn pointers() {
-        let mut tcx = TyCtxt::from_primitives();
+        let mut tcx = TyCtxt::from_primitives(TyConfig::default());
         // *const i32
         let ptr = tcx.push(TyKind::RawPtr(TyCtxt::I32, Mutability::Not));
         // (*const i32,)
@@ -1632,7 +1633,7 @@ mod tests {
 
     #[test]
     fn tuple_projection() {
-        let mut tcx = TyCtxt::from_primitives();
+        let mut tcx = TyCtxt::from_primitives(TyConfig::default());
         let ty = tcx.push(TyKind::Tuple(vec![TyCtxt::I8, TyCtxt::I32]));
 
         let mut pt = PlaceGraph::new(Rc::new(tcx));
@@ -1715,7 +1716,7 @@ mod tests {
 
     #[test]
     fn prim_arrays() {
-        let mut tcx = TyCtxt::from_primitives();
+        let mut tcx = TyCtxt::from_primitives(TyConfig::default());
         let ty = tcx.push(TyKind::Array(TyCtxt::I32, 4));
 
         let mut pt = PlaceGraph::new(Rc::new(tcx));
@@ -1750,7 +1751,7 @@ mod tests {
     }
     #[test]
     fn composite_arrays() {
-        let mut tcx = TyCtxt::from_primitives();
+        let mut tcx = TyCtxt::from_primitives(TyConfig::default());
         let elem_ty = tcx.push(TyKind::Tuple(vec![TyCtxt::I32, TyCtxt::I64]));
         let ty = tcx.push(TyKind::Array(elem_ty, 4));
         let mut pt = PlaceGraph::new(Rc::new(tcx));
@@ -1776,7 +1777,7 @@ mod tests {
 
     #[test]
     fn shared_reference() {
-        let mut tcx = TyCtxt::from_primitives();
+        let mut tcx = TyCtxt::from_primitives(TyConfig::default());
 
         let t_i16_i32 = tcx.push(TyKind::Tuple(vec![TyCtxt::I16, TyCtxt::I32]));
         let t_ref = tcx.push(TyKind::Ref(t_i16_i32, Mutability::Not));
@@ -1849,7 +1850,7 @@ mod tests {
 
     #[test]
     fn reborrow() {
-        let mut tcx = TyCtxt::from_primitives();
+        let mut tcx = TyCtxt::from_primitives(TyConfig::default());
 
         let t_ref = tcx.push(TyKind::Ref(TyCtxt::I32, Mutability::Not));
 

@@ -13,32 +13,17 @@ use mir::syntax::{
     SwitchTargets, Terminator, TyId, TyKind, UnOp, VariantIdx,
 };
 use mir::tyctxt::TyCtxt;
-use rand::seq::SliceRandom;
-use rand::{seq::IteratorRandom, Rng, RngCore, SeedableRng};
-use rand_distr::{Distribution, WeightedError, WeightedIndex};
+use rand::{Rng, RngCore, SeedableRng, seq::IteratorRandom};
+use rand_distr::{Distribution, weighted::Error, weighted::WeightedIndex};
 
 use crate::literal::GenLiteral;
 use crate::pgraph::{HasComplexity, PlaceGraph, PlaceIndex, PlaceOperand, ToPlaceIndex};
 use crate::place_select::{PlaceSelector, Weight};
-use crate::ty::{seed_tys, TySelect};
+use crate::ty::{TySelect, seed_tys};
 
 use self::intrinsics::{ArithOffset, Transmute};
 use crate::generation::intrinsics::CoreIntrinsic;
-
-/// Max. number of statements & declarations in a bb
-const BB_MAX_LEN: usize = 32;
-/// Max. number of switch targets in a SwitchInt terminator
-const MAX_SWITCH_TARGETS: usize = 8;
-/// Max. number of BB in a function if RET is init (a Return must be generated)
-const MAX_BB_COUNT: usize = 50;
-/// Max. number of BB in a function before giving up this function
-const MAX_BB_COUNT_HARD: usize = 100;
-/// Max. number of functions in the program Call generator stops being a possible candidate
-const MAX_FN_COUNT: usize = 20;
-/// Max. number of arguments a function can have
-const MAX_ARGS_COUNT: usize = 12;
-/// Expected proportion of variables to be dumped
-const VAR_DUMP_CHANCE: f32 = 0.5;
+use config::{Config, GenerationConfig};
 
 #[derive(Debug)]
 pub enum SelectionError {
@@ -80,6 +65,7 @@ pub struct GenerationCtx {
     return_stack: Vec<Cursor>,
     saved_ctx: Vec<SavedCtx>,
     cursor: Cursor,
+    config: GenerationConfig,
 }
 
 // Operand
@@ -402,7 +388,7 @@ impl GenerationCtx {
             }
             TyKind::Adt(adt) => {
                 let variant = if adt.is_enum() {
-                    let variant = self.rng.borrow_mut().gen_range(0..adt.variants.len());
+                    let variant = self.rng.borrow_mut().random_range(0..adt.variants.len());
                     VariantIdx::new(variant)
                 } else {
                     VariantIdx::new(0)
@@ -550,7 +536,7 @@ impl GenerationCtx {
             };
 
             let variant_count = adt.variants.len() as u32;
-            let discr = self.rng.borrow_mut().gen_range(0..variant_count);
+            let discr = self.rng.borrow_mut().random_range(0..variant_count);
             let statement = Statement::SetDiscriminant(place.clone(), discr);
             Ok(statement)
         })
@@ -637,7 +623,10 @@ impl GenerationCtx {
         // -1 to avoid the current bb
         let available = self.current_fn().basic_blocks.len().saturating_sub(2);
 
-        let pick_from_existing = self.rng.get_mut().gen_range(0..=cmp::min(available, count));
+        let pick_from_existing = self
+            .rng
+            .get_mut()
+            .random_range(0..=cmp::min(available, count));
         let new = count - pick_from_existing;
 
         let mut picked = self
@@ -711,7 +700,10 @@ impl GenerationCtx {
     }
 
     fn add_switch_int(&mut self, discr: Place, discr_val: Literal) {
-        let decoy_count = self.rng.get_mut().gen_range(1..=MAX_SWITCH_TARGETS);
+        let decoy_count = self
+            .rng
+            .get_mut()
+            .random_range(1..=self.config.max_switch_targets);
         let mut targets = self.decoy_bbs(decoy_count);
         let otherwise = targets.pop().unwrap();
 
@@ -764,7 +756,10 @@ impl GenerationCtx {
             })?;
 
         // TODO: if return place has a ref, don't generate 0 argument as this can never be valid
-        let args_count = self.rng.borrow_mut().gen_range(0..=MAX_ARGS_COUNT);
+        let args_count = self
+            .rng
+            .borrow_mut()
+            .random_range(0..=self.config.max_args_count);
         let mut selector = PlaceSelector::for_argument(self.tcx.clone())
             .having_moved(return_place.to_place_index(&self.pt).unwrap());
         let mut args = vec![];
@@ -815,7 +810,7 @@ impl GenerationCtx {
             basic_block: target_bb,
         });
 
-        let public = self.rng.get_mut().gen_bool(0.5);
+        let public = self.rng.get_mut().random_bool(0.5);
 
         // We don't know the name of the new function here, so we save the current cursor and write the terminator after frame switch
         let caller_cursor = self.cursor;
@@ -927,7 +922,7 @@ impl GenerationCtx {
         assert!(matches!(self.current_bb().terminator(), Terminator::Hole));
         if self.pt.can_return() {
             if Place::RETURN_SLOT.complexity(&self.pt) > 10
-                || self.current_fn().basic_blocks.len() >= MAX_BB_COUNT
+                || self.current_fn().basic_blocks.len() >= self.config.max_bb_count
             {
                 return self.add_return();
             }
@@ -939,7 +934,9 @@ impl GenerationCtx {
             (Self::generate_intrinsic_call_params, 20),
             (
                 Self::generate_call_params,
-                MAX_FN_COUNT.saturating_sub(self.program.functions.len()),
+                self.config
+                    .max_fn_count
+                    .saturating_sub(self.program.functions.len()),
             ),
         ];
         let (choices, weights): (
@@ -979,12 +976,11 @@ impl GenerationCtx {
                 (decl.ty.hashable(&self.tcx) && self.pt.is_place_init(local)).then_some(local)
             })
             .collect();
-        let dump_count = (dumpable.len() as f32 * VAR_DUMP_CHANCE) as usize;
+        let dump_count = (dumpable.len() as f32 * self.config.var_dump_chance) as usize;
         // TODO: weight this?
         let dumpped: Vec<Local> = dumpable
-            .choose_multiple(self.rng.get_mut(), dump_count)
-            .copied()
-            .collect();
+            .into_iter()
+            .choose_multiple(self.rng.get_mut(), dump_count);
 
         let new_bb = self.add_new_bb();
         self.current_bb_mut()
@@ -1151,7 +1147,7 @@ impl GenerationCtx {
                 Ok(val) => return Ok(val),
                 Err(_) => {
                     weights.update_weights(&[(i, &0)]).map_err(|err| {
-                        assert_eq!(err, WeightedError::AllWeightsZero);
+                        assert_eq!(err, Error::InsufficientNonZero);
                         SelectionError::Exhausted
                     })?;
                 }
@@ -1186,9 +1182,11 @@ impl GenerationCtx {
         }
     }
 
-    pub fn new(seed: u64, debug_dump: bool) -> Self {
+    pub fn new(config: Config, seed: u64, debug_dump: bool) -> Self {
         let rng = RefCell::new(Box::new(rand::rngs::SmallRng::seed_from_u64(seed)));
-        let tcx = Rc::new(seed_tys(&mut *rng.borrow_mut()));
+        let mut tcx = TyCtxt::from_primitives(config.ty);
+        seed_tys(&mut tcx, &mut *rng.borrow_mut());
+        let tcx = Rc::new(tcx);
         let ty_weights = TySelect::new(&tcx);
         // TODO: don't zero-initialize current_function and current_bb
         Self {
@@ -1203,6 +1201,7 @@ impl GenerationCtx {
                 basic_block: BasicBlock::new(0),
             },
             saved_ctx: vec![],
+            config: config.generation,
         }
     }
 
@@ -1238,7 +1237,10 @@ impl GenerationCtx {
 
     fn generate_fn0(&mut self) {
         self.save_ctx();
-        let args_count = self.rng.get_mut().gen_range(0..=MAX_ARGS_COUNT);
+        let args_count = self
+            .rng
+            .get_mut()
+            .random_range(0..=self.config.max_args_count);
         let arg_tys: Vec<TyId> = self
             .tcx
             .indices()
@@ -1271,7 +1273,7 @@ impl GenerationCtx {
 
         // Main loop
         loop {
-            let statement_count = self.rng.get_mut().gen_range(1..=BB_MAX_LEN);
+            let statement_count = self.rng.get_mut().random_range(1..=self.config.bb_max_len);
             trace!("Generating a bb with {statement_count} statements");
             for _ in 0..statement_count {
                 self.choose_statement();
@@ -1279,7 +1281,7 @@ impl GenerationCtx {
             if !self.choose_terminator() {
                 break;
             }
-            if self.current_fn().basic_blocks.len() >= MAX_BB_COUNT_HARD {
+            if self.current_fn().basic_blocks.len() >= self.config.max_bb_count_hard {
                 debug!(
                     "{} -> {} is too long, retrying",
                     self.cursor.function.identifier(),

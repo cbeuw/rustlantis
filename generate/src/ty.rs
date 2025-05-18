@@ -8,23 +8,10 @@ use mir::{
     tyctxt::{AdtMeta, TyCtxt},
 };
 use rand::{
-    seq::{IteratorRandom, SliceRandom},
     Rng,
+    seq::{IteratorRandom, SliceRandom},
 };
-use rand_distr::{Distribution, Poisson, WeightedIndex};
-
-/// Max. arity of tuple
-const TUPLE_MAX_LEN: usize = 4;
-/// Max. len of array
-pub const ARRAY_MAX_LEN: usize = 8;
-/// Max. number of fields in a struct or enum variant
-const STRUCT_MAX_FIELDS: usize = 8;
-/// Max. number of variants in an enum
-const ADT_MAX_VARIANTS: usize = 4;
-/// Number of composite structural types
-const COMPOSITE_COUNT: usize = 64;
-/// Number of ADTs
-const ADT_COUNT: usize = 8;
+use rand_distr::{Distribution, Poisson, weighted::WeightedIndex};
 
 #[derive(Clone)]
 pub struct TySelect {
@@ -65,9 +52,7 @@ impl TySelect {
                 TyKind::Int(..) => Some(p_ints / TyKind::INTS.len() as f32),
                 TyKind::Uint(..) => Some(p_ints / TyKind::INTS.len() as f32),
                 TyKind::Float(..) => Some(p_floats / TyKind::FLOATS.len() as f32),
-                TyKind::RawPtr(..) | TyKind::Ref(..) => {
-                    Some(p_pointers / num_ptrs as f32)
-                }
+                TyKind::RawPtr(..) | TyKind::Ref(..) => Some(p_pointers / num_ptrs as f32),
                 _ => None,
             };
             if let Some(rate) = p {
@@ -111,10 +96,10 @@ impl TySelect {
 }
 
 fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
-    let new_ty = match rng.gen_range(0..=3) {
+    let new_ty = match rng.random_range(0..=3) {
         0 => TyKind::Tuple({
             let dist = Poisson::<f32>::new(2.7).unwrap();
-            let length = dist.sample(rng).clamp(1., TUPLE_MAX_LEN as f32) as usize;
+            let length = dist.sample(rng).clamp(1., tcx.config.tuple_max_len as f32) as usize;
             (0..length)
                 .map(|_| {
                     tcx.indices()
@@ -129,7 +114,7 @@ fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
                 .filter(|ty| *ty != TyCtxt::UNIT)
                 .choose(rng)
                 .unwrap(),
-            if rng.gen_bool(0.5) {
+            if rng.random_bool(0.5) {
                 Mutability::Mut
             } else {
                 Mutability::Not
@@ -140,7 +125,7 @@ fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
                 .filter(|ty| *ty != TyCtxt::UNIT)
                 .choose(rng)
                 .unwrap(),
-            if rng.gen_bool(0.5) {
+            if rng.random_bool(0.5) {
                 Mutability::Mut
             } else {
                 Mutability::Not
@@ -151,7 +136,7 @@ fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
                 .filter_map(|(ty, kind)| (ty != TyCtxt::UNIT && kind.is_scalar()).then_some(ty))
                 .choose(rng)
                 .unwrap(),
-            rng.gen_range(1..=ARRAY_MAX_LEN),
+            rng.random_range(1..=tcx.config.array_max_len),
         ),
         _ => unreachable!(),
     };
@@ -162,10 +147,10 @@ fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
 
 fn new_adt(tcx: &mut TyCtxt, rng: &mut impl Rng) {
     // TODO: recursive types
-    let variant_count = rng.gen_range(1..=ADT_MAX_VARIANTS);
+    let variant_count = rng.random_range(1..=tcx.config.adt_max_variants);
 
     let variants = (0..variant_count).map(|_| {
-            let field_count = rng.gen_range(1..=STRUCT_MAX_FIELDS);
+            let field_count = rng.random_range(1..=tcx.config.struct_max_fields);
             let field_tys = tcx
                 .indices()
                 .filter(|ty| *ty != TyCtxt::UNIT && /* https://github.com/rust-lang/rust/issues/119940 */ !ty.contains(&tcx, |tcx, ty| ty.is_ref(tcx)))
@@ -179,7 +164,7 @@ fn new_adt(tcx: &mut TyCtxt, rng: &mut impl Rng) {
     };
 
     let copy = if adt.copy_derivable(&tcx) {
-        rng.gen_bool(0.5)
+        rng.random_bool(0.5)
     } else {
         false
     };
@@ -189,10 +174,7 @@ fn new_adt(tcx: &mut TyCtxt, rng: &mut impl Rng) {
     tcx.push_adt(adt, meta);
 }
 
-pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
-    // Seed with primitives
-    let mut tcx: TyCtxt = TyCtxt::from_primitives();
-
+pub fn seed_tys<R: Rng>(tcx: &mut TyCtxt, rng: &mut R) {
     #[derive(Clone, Copy)]
     enum Kind {
         Adt,
@@ -200,24 +182,24 @@ pub fn seed_tys<R: Rng>(rng: &mut R) -> TyCtxt {
     }
 
     let mut choices: Vec<Kind> = iter::repeat(Kind::Structural)
-        .take(COMPOSITE_COUNT)
-        .chain(iter::repeat(Kind::Adt).take(ADT_COUNT))
+        .take(tcx.config.composite_count)
+        .chain(iter::repeat(Kind::Adt).take(tcx.config.adt_count))
         .collect();
     choices.shuffle(rng);
     for choice in choices {
         match choice {
-            Kind::Adt => new_adt(&mut tcx, rng),
-            Kind::Structural => new_composite(&mut tcx, rng),
+            Kind::Adt => new_adt(tcx, rng),
+            Kind::Structural => new_composite(tcx, rng),
         }
     }
-    tcx
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 
-    use mir::syntax::TyId;
+    use config::TyConfig;
+    use mir::{syntax::TyId, tyctxt::TyCtxt};
     use rand::SeedableRng;
 
     use crate::ty::seed_tys;
@@ -225,7 +207,8 @@ mod tests {
     #[test]
     fn tys_unique() {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
-        let tcx = seed_tys(&mut rng);
+        let mut tcx = TyCtxt::from_primitives(TyConfig::default());
+        seed_tys(&mut tcx, &mut rng);
         let set: HashSet<TyId> = tcx.indices().collect();
         assert!(set.len() == tcx.len())
     }

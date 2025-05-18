@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     ffi::{OsStr, OsString},
     hash::{Hash, Hasher},
@@ -10,6 +11,8 @@ use std::{
 use log::debug;
 
 use crate::Source;
+use config::BackendConfig;
+use config::Config;
 
 trait ClearEnv {
     fn clear_env(&mut self, preserve: &[&str]) -> &mut Command;
@@ -65,6 +68,35 @@ impl From<process::Output> for ProcessOutput {
             stderr,
         }
     }
+}
+
+pub fn from_config(config: Config) -> HashMap<String, Box<dyn Backend>> {
+    let mut backends = HashMap::new();
+    for (name, config) in config.backends {
+        let backend: Box<dyn Backend> = match config {
+            BackendConfig::Miri { toolchain, flags } => {
+                Box::new(Miri::from_rustup(toolchain, flags).unwrap())
+            }
+            BackendConfig::MiriRepo { path, flags } => {
+                Box::new(Miri::from_repo(path, flags).unwrap())
+            }
+            BackendConfig::LLVM { toolchain, flags } => Box::new(LLVM::new(toolchain, flags)),
+            BackendConfig::Cranelift { toolchain, flags } => {
+                Box::new(Cranelift::from_rustup(toolchain, flags))
+            }
+            BackendConfig::CraneliftRepo { path, flags } => {
+                Box::new(Cranelift::from_repo(path, flags).unwrap())
+            }
+            BackendConfig::CraneliftBinary { path, flags } => {
+                Box::new(Cranelift::from_binary(path, flags))
+            }
+            BackendConfig::GCC { path, flags } => {
+                Box::new(GCC::from_built_repo(path, flags).unwrap())
+            }
+        };
+        backends.insert(name, backend);
+    }
+    backends
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
@@ -129,62 +161,28 @@ fn run_compile_command(mut command: Command, source: &Source) -> process::Output
     compile_out
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum OptLevel {
-    Unoptimised,
-    Optimised,
-}
-
-impl OptLevel {
-    fn codegen_opt_level(&self) -> usize {
-        match self {
-            OptLevel::Unoptimised => 0,
-            OptLevel::Optimised => 3,
-        }
-    }
-
-    fn mir_opt_level(&self) -> usize {
-        match self {
-            OptLevel::Unoptimised => 0,
-            OptLevel::Optimised => 4,
-        }
-    }
-}
-
-pub struct LLVM {
-    toolchain: Option<String>,
-    codegen_opt: OptLevel,
-    mir_opt: OptLevel,
+struct LLVM {
+    toolchain: String,
+    flags: Vec<String>,
 }
 
 impl LLVM {
-    pub fn new(toolchain: Option<String>, codegen_opt: OptLevel, mir_opt: OptLevel) -> Self {
-        Self {
-            codegen_opt,
-            mir_opt,
-            toolchain,
-        }
+    fn new(toolchain: String, flags: Vec<String>) -> Self {
+        Self { toolchain, flags }
     }
 }
 
 impl Backend for LLVM {
     fn compile(&self, source: &Source, target: &Path) -> ProcessOutput {
         let mut command = Command::new("rustc");
-        if let Some(toolchain) = &self.toolchain {
-            command.arg(format!("+{}", toolchain));
-        }
+
+        command.arg(format!("+{}", self.toolchain));
 
         command
             .args(["-o", target.to_str().unwrap()])
-            .args([
-                "-C",
-                &format!("opt-level={}", self.codegen_opt.codegen_opt_level()),
-            ])
             .args(["-C", "llvm-args=-protect-from-escaped-allocas=true"]) // https://github.com/rust-lang/rust/issues/112213
-            .args([
-                "-Z",
-                &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
-            ]);
+            .args(self.flags.clone());
+
         run_compile_command(command, source).into()
     }
 }
@@ -194,10 +192,10 @@ enum BackendSource {
     Rustup(String),
 }
 
-pub struct Miri {
+struct Miri {
     miri: BackendSource,
     sysroot: PathBuf,
-    check_ub: bool,
+    flags: Vec<String>,
 }
 
 impl Miri {
@@ -248,9 +246,9 @@ impl Miri {
         Ok(sysroot)
     }
 
-    pub fn from_repo<P: AsRef<Path>>(
+    fn from_repo<P: AsRef<Path>>(
         miri_dir: P,
-        check_ub: bool,
+        flags: Vec<String>,
     ) -> Result<Self, BackendInitError> {
         let miri_dir = miri_dir.as_ref();
 
@@ -292,16 +290,17 @@ impl Miri {
         Ok(Self {
             miri: BackendSource::Path(miri_dir.join("target/release/miri")),
             sysroot,
-            check_ub,
+            flags,
         })
     }
 
-    pub fn from_rustup(toolchain: &str, check_ub: bool) -> Result<Self, BackendInitError> {
+    fn from_rustup(toolchain: String, flags: Vec<String>) -> Result<Self, BackendInitError> {
         let sysroot = Self::find_sysroot(&BackendSource::Rustup(toolchain.to_owned()))?;
+
         Ok(Self {
-            miri: BackendSource::Rustup(toolchain.to_owned()),
+            miri: BackendSource::Rustup(toolchain),
             sysroot,
-            check_ub,
+            flags,
         })
     }
 }
@@ -317,14 +316,8 @@ impl Backend for Miri {
                 cmd
             }
         };
-        if self.check_ub {
-            command.arg("-Zmiri-tree-borrows");
-        } else {
-            command
-                .arg("-Zmiri-disable-stacked-borrows")
-                .arg("-Zmiri-disable-validation")
-                .arg("-Zmiri-disable-alignment-check");
-        }
+        command.args(self.flags.clone());
+
         command
             .clear_env(&["PATH", "DEVELOPER_DIR"])
             .args([OsStr::new("--sysroot"), self.sysroot.as_os_str()]);
@@ -340,17 +333,15 @@ impl Backend for Miri {
     }
 }
 
-pub struct Cranelift {
+struct Cranelift {
     clif: BackendSource,
-    codegen_opt: OptLevel,
-    mir_opt: OptLevel,
+    flags: Vec<String>,
 }
 
 impl Cranelift {
-    pub fn from_repo<P: AsRef<Path>>(
+    fn from_repo<P: AsRef<Path>>(
         clif_dir: P,
-        codegen_opt: OptLevel,
-        mir_opt: OptLevel,
+        flags: Vec<String>,
     ) -> Result<Self, BackendInitError> {
         let clif_dir = clif_dir.as_ref();
 
@@ -385,33 +376,22 @@ impl Cranelift {
 
         Ok(Cranelift {
             clif: BackendSource::Path(clif_dir.join("dist/rustc-clif")),
-            codegen_opt,
-            mir_opt,
+            flags,
         })
     }
 
-    pub fn from_binary<P: AsRef<Path>>(
-        binary_path: P,
-        codegen_opt: OptLevel,
-        mir_opt: OptLevel,
-    ) -> Self {
+    fn from_binary<P: AsRef<Path>>(binary_path: P, flags: Vec<String>) -> Self {
         Self {
             clif: BackendSource::Path(binary_path.as_ref().to_owned()),
-            codegen_opt,
-            mir_opt,
+            flags,
         }
     }
 
-    pub fn from_rustup(
-        toolchain: &str,
-        codegen_opt: OptLevel,
-        mir_opt: OptLevel,
-    ) -> Result<Self, BackendInitError> {
-        Ok(Self {
-            clif: BackendSource::Rustup(toolchain.to_owned()),
-            codegen_opt,
-            mir_opt,
-        })
+    fn from_rustup(toolchain: String, flags: Vec<String>) -> Self {
+        Self {
+            clif: BackendSource::Rustup(toolchain),
+            flags,
+        }
     }
 }
 
@@ -428,31 +408,22 @@ impl Backend for Cranelift {
         };
         command
             .args(["-o", target.to_str().unwrap()])
-            .args([
-                "-C",
-                &format!("opt-level={}", self.codegen_opt.codegen_opt_level()),
-            ])
-            .args([
-                "-Z",
-                &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
-            ]);
+            .args(self.flags.clone());
         run_compile_command(command, source).into()
     }
 }
 
-pub struct GCC {
+struct GCC {
     library: PathBuf,
     sysroot: PathBuf,
     repo: PathBuf,
-    codegen_opt: OptLevel,
-    mir_opt: OptLevel,
+    flags: Vec<String>,
 }
 
 impl GCC {
-    pub fn from_built_repo<P: AsRef<Path>>(
+    fn from_built_repo<P: AsRef<Path>>(
         cg_gcc: P,
-        codegen_opt: OptLevel,
-        mir_opt: OptLevel,
+        flags: Vec<String>,
     ) -> Result<Self, BackendInitError> {
         let Ok(cg_gcc) = cg_gcc.as_ref().to_owned().canonicalize() else {
             return Err(BackendInitError(
@@ -476,11 +447,11 @@ impl GCC {
             library,
             sysroot,
             repo: cg_gcc,
-            codegen_opt,
-            mir_opt,
+            flags,
         })
     }
 }
+
 impl Backend for GCC {
     fn compile(&self, source: &Source, target: &Path) -> ProcessOutput {
         let mut command = Command::new("rustc");
@@ -494,14 +465,7 @@ impl Backend for GCC {
             .arg("--sysroot")
             .arg(&self.sysroot)
             .args(["-o", target.to_str().unwrap()])
-            .args([
-                "-C",
-                &format!("opt-level={}", self.codegen_opt.codegen_opt_level()),
-            ])
-            .args([
-                "-Z",
-                &format!("mir-opt-level={}", self.mir_opt.mir_opt_level()),
-            ]);
+            .args(self.flags.clone());
         run_compile_command(command, source).into()
     }
 }

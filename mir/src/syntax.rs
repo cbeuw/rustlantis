@@ -1,6 +1,6 @@
 use std::num::TryFromIntError;
 
-use index_vec::{define_index_type, IndexVec};
+use index_vec::{IndexVec, define_index_type};
 use smallvec::SmallVec;
 
 use crate::tyctxt::TyCtxt;

@@ -5,7 +5,7 @@ use mir::{
     syntax::{Literal, Place, TyId},
     tyctxt::TyCtxt,
 };
-use rand_distr::WeightedIndex;
+use rand_distr::weighted::WeightedIndex;
 
 use crate::{
     mem::BasicMemory,
@@ -367,26 +367,29 @@ mod tests {
     extern crate test;
     use std::rc::Rc;
 
+    use config::TyConfig;
     use mir::{
         syntax::{Local, Place},
         tyctxt::TyCtxt,
     };
     use rand::{
-        rngs::SmallRng,
-        seq::{IteratorRandom, SliceRandom},
         Rng, SeedableRng,
+        rngs::SmallRng,
+        seq::{IndexedRandom, IteratorRandom},
     };
     use test::Bencher;
 
     use crate::{
         pgraph::PlaceGraph,
-        ty::{seed_tys, TySelect},
+        ty::{TySelect, seed_tys},
     };
 
     use super::PlaceSelector;
 
     fn build_pt(rng: &mut impl Rng) -> (PlaceGraph, Rc<TyCtxt>) {
-        let tcx = Rc::new(seed_tys(rng));
+        let mut tcx = TyCtxt::from_primitives(TyConfig::default());
+        seed_tys(&mut tcx, rng);
+        let tcx = Rc::new(tcx);
         let mut pt = PlaceGraph::new(tcx.clone());
         let ty_weights = TySelect::new(&tcx);
         for i in 0..=32 {
