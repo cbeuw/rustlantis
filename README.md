@@ -98,6 +98,12 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 - 🐉 `GVNPass` forgets to remove poison generating flags: https://github.com/llvm/llvm-project/issues/82884
 - 🏗️ Misoptimization of imul + ireduce: https://github.com/rust-lang/rustc_codegen_cranelift/issues/1460 & https://github.com/bytecodealliance/wasmtime/issues/7999
 - 🐉 `InstCombine` calculates wrong `insertelement` instructions: https://github.com/rust-lang/rust/issues/121996 & https://github.com/llvm/llvm-project/issues/84025
+- 🐉 Funnel shifts by a constant 0 are lowered wrong on AArch64: https://github.com/llvm/llvm-project/issues/139866
+- 🦀 `GVN` misunderstands aliasing, can create overlapping assignments: https://github.com/rust-lang/rust/issues/141038
+- 🦀 `ReferencePropagation` misunderstands aliasing, can add reads of uninitialized memory: https://github.com/rust-lang/rust/issues/141101
+- 🦀 `CopyProp` doesn't always respect Tree Borrows aliasing: https://github.com/rust-lang/rust/issues/141122
+- 🦀 `EarlyOtherwiseBranch` can insert storage markers incorrectly, creating use of a dead local https://github.com/rust-lang/rust/issues/141212
+- 🦀 `GVN` makes an incorrect index access: https://github.com/rust-lang/rust/issues/141251
 
 ### Previously known bugs
 - 🦀 Const eval gives `x % x` wrong sign when `x` is a negative float: https://github.com/rust-lang/rust/issues/109567 (first reported https://github.com/rust-lang/rust/issues/102403)
