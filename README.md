@@ -104,6 +104,8 @@ The Space Shuttle *Atlantis* docked with *Mir* space station seven times: https:
 - 🦀 `CopyProp` doesn't always respect Tree Borrows aliasing: https://github.com/rust-lang/rust/issues/141122
 - 🦀 `EarlyOtherwiseBranch` can insert storage markers incorrectly, creating use of a dead local https://github.com/rust-lang/rust/issues/141212
 - 🦀 `GVN` makes an incorrect index access: https://github.com/rust-lang/rust/issues/141251
+- 🐉 `CorrelatedValuePropagation` miscompilation: https://github.com/llvm/llvm-project/issues/142286
+- 🐉 `InstCombine` miscompilation: https://github.com/llvm/llvm-project/issues/142518
 
 ### Previously known bugs
 - 🦀 Const eval gives `x % x` wrong sign when `x` is a negative float: https://github.com/rust-lang/rust/issues/109567 (first reported https://github.com/rust-lang/rust/issues/102403)
