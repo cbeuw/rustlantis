@@ -73,6 +73,7 @@ impl Run {
         }
     }
 
+    #[allow(dead_code)]
     pub fn size(&self) -> Size {
         Size::from_bytes(self.bytes.len())
     }
@@ -235,6 +236,7 @@ struct Allocation {
     live: bool,
 }
 
+#[allow(dead_code)]
 impl Allocation {
     fn runs_and_sizes(&self) -> impl Iterator<Item = (RunId, Size)> + '_ {
         self.runs
@@ -322,6 +324,7 @@ impl RunPointer {
         self.run_and_offset.1
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> Size {
         self.size
     }

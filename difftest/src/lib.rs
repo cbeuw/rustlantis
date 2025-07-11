@@ -1,5 +1,4 @@
 #![feature(iter_intersperse)]
-#![feature(let_chains)]
 
 pub mod backends;
 

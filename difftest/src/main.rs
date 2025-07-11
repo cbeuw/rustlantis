@@ -1,7 +1,13 @@
 #![feature(iter_intersperse)]
 
 use core::panic;
-use std::{collections::HashMap, io::{self, Read}, path::PathBuf, process::ExitCode, str::FromStr};
+use std::{
+    collections::HashMap,
+    io::{self, Read},
+    path::PathBuf,
+    process::ExitCode,
+    str::FromStr,
+};
 
 use clap::{Arg, Command};
 use config::Config;
@@ -88,7 +94,9 @@ fn main() -> ExitCode {
 
     let source = if source == "-" {
         let mut code = String::new();
-        io::stdin().read_to_string(&mut code).expect("can read source code from stdin");
+        io::stdin()
+            .read_to_string(&mut code)
+            .expect("can read source code from stdin");
         Source::Stdin(code)
     } else {
         Source::File(PathBuf::from_str(source).expect("is valid path"))
@@ -111,10 +119,7 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     } else {
         let results = results.to_string();
-        error!(
-            "{} didn't pass:\n{results}",
-            source,
-        );
+        error!("{} didn't pass:\n{results}", source,);
         ExitCode::FAILURE
     }
 }

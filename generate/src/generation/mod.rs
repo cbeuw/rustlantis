@@ -495,6 +495,7 @@ impl GenerationCtx {
         local
     }
 
+    #[allow(dead_code)]
     fn generate_storage_live(&self) -> Result<Statement> {
         let local = self
             .current_decls()
@@ -505,6 +506,7 @@ impl GenerationCtx {
         Ok(Statement::StorageLive(local))
     }
 
+    #[allow(dead_code)]
     fn generate_storage_dead(&self) -> Result<Statement> {
         let local = self
             .current_decls()
@@ -515,6 +517,7 @@ impl GenerationCtx {
         Ok(Statement::StorageDead(local))
     }
 
+    #[allow(dead_code)]
     fn generate_deinit(&self) -> Result<Statement> {
         let place = PlaceSelector::for_operand(self.tcx.clone())
             .into_iter_place(&self.pt)
@@ -523,6 +526,7 @@ impl GenerationCtx {
         Ok(Statement::Deinit(place))
     }
 
+    #[allow(dead_code)]
     fn generate_set_discriminant(&self) -> Result<Statement> {
         let enum_tys: Vec<TyId> = self
             .tcx
