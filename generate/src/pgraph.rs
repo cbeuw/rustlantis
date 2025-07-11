@@ -208,6 +208,7 @@ impl PlaceGraph {
 
     /// Returns whether the selection of function call arguments will not cause
     /// UB. Must be called while we are still in the Caller
+    #[allow(dead_code)]
     pub fn arguments_ok(&self, args: &[Operand], return_dest: &Place) -> bool {
         // Check if the move of any places would invalidate any reference
         let mut ok = true;
@@ -1142,6 +1143,7 @@ impl PlaceGraph {
         }
     }
 
+    #[allow(dead_code)]
     pub fn place_count(&self) -> usize {
         self.places.node_count()
     }
@@ -1564,8 +1566,8 @@ mod tests {
                 root_ty,     // (i8, (i16, i32), i64)
                 TyCtxt::I8,  // i8
                 b_ty,        // (i16, 132)
-                TyCtxt::I16, // i16
                 TyCtxt::I32, // i32
+                TyCtxt::I16, // i16
                 TyCtxt::I64, // i64
             ]
         );

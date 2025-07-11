@@ -2,7 +2,6 @@
 #![feature(iter_advance_by)]
 #![feature(variant_count)]
 #![feature(test)]
-#![feature(let_chains)]
 #![feature(try_blocks)]
 #![feature(box_patterns)]
 
