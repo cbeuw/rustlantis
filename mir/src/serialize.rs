@@ -369,11 +369,13 @@ impl Body {
 impl Program {
     pub fn serialize(&self, tcx: &TyCtxt, call_syntax: CallSynatx) -> String {
         let mut program = Program::HEADER.to_string();
+
         if self.use_debug_dumper {
             program += Program::DEBUG_DUMPER;
         } else {
             program += Program::DUMPER;
         }
+
         program.extend(self.functions.iter_enumerated().map(|(idx, body)| {
             let args_list: String = body
                 .args_iter()
@@ -434,9 +436,9 @@ impl Program {
 
 #[cfg(test)]
 mod tests {
-    use crate::{syntax::*, tyctxt::TyCtxt};
-
     use super::Serialize;
+    use crate::{syntax::*, tyctxt::TyCtxt};
+    use config::TyConfig;
 
     #[test]
     fn serialize_body() {
@@ -453,7 +455,7 @@ mod tests {
 
     #[test]
     fn serialize_literal() {
-        let tcx = TyCtxt::from_primitives();
+        let tcx = TyCtxt::from_primitives(TyConfig::default());
         let nan = Literal::Float(f32::NAN as f64, FloatTy::F32);
         assert_eq!(nan.serialize(&tcx), "f32::NAN");
 

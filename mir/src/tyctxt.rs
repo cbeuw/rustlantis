@@ -1,3 +1,4 @@
+use config::TyConfig;
 use std::{collections::HashMap, slice};
 
 use index_vec::IndexVec;
@@ -32,6 +33,7 @@ impl AdtMeta {
 pub struct TyCtxt {
     tys: IndexVec<TyId, TyKind>,
     adt_meta: HashMap<TyId, AdtMeta>,
+    pub config: TyConfig,
 }
 
 impl TyCtxt {
@@ -53,7 +55,7 @@ impl TyCtxt {
     pub const F32: TyId = TyId::from_usize_unchecked(15);
     pub const F64: TyId = TyId::from_usize_unchecked(16);
 
-    pub fn from_primitives() -> Self {
+    pub fn from_primitives(config: TyConfig) -> Self {
         let primitives: [TyKind; 17] = [
             TyKind::Unit,
             TyKind::Bool,
@@ -77,6 +79,7 @@ impl TyCtxt {
         Self {
             tys,
             adt_meta: HashMap::new(),
+            config,
         }
     }
 

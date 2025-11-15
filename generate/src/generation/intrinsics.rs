@@ -4,7 +4,7 @@ use mir::{
     syntax::{Callee, Mutability, Operand, Place, TyId, TyKind},
     tyctxt::TyCtxt,
 };
-use rand::{seq::IteratorRandom, Rng};
+use rand::{Rng, seq::IteratorRandom};
 
 use crate::{literal::GenLiteral, mem::BasicMemory, place_select::PlaceSelector};
 
@@ -79,7 +79,7 @@ impl CoreIntrinsic for ArithOffset {
             Some(0) => {
                 return None;
             }
-            Some(existing) if existing.checked_neg().is_some() && rng.gen_bool(0.5) => {
+            Some(existing) if existing.checked_neg().is_some() && rng.random_bool(0.5) => {
                 Operand::Constant((-existing).try_into().unwrap())
             }
             _ => PlaceSelector::for_known_val(ctx.tcx.clone())
@@ -127,7 +127,9 @@ impl CoreIntrinsic for Transmute {
     fn dest_type(&self, ty: TyId, tcx: &TyCtxt) -> bool {
         if ty.contains(tcx, |tcx, ty| match ty.kind(tcx) {
             // Tys with value validity contstraints
-            TyKind::Unit | TyKind::Bool | TyKind::Char | TyKind::RawPtr(..) | TyKind::Ref(..) => true, // TODO: pointer transmute
+            TyKind::Unit | TyKind::Bool | TyKind::Char | TyKind::RawPtr(..) | TyKind::Ref(..) => {
+                true
+            } // TODO: pointer transmute
             _ => false,
         }) {
             return false;

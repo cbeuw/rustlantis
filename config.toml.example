@@ -1,8 +1,63 @@
-# Fuzz using rustup distributed miri
-miri_toolchain = "nightly"
+bb_max_len = 32
+max_switch_targets = 8
+max_bb_count = 50
+max_bb_count_hard = 100
+max_fn_count = 20
+max_args_count = 12
+var_dump_chance = 0.5
+tuple_max_len = 4
+array_max_len = 8
+struct_max_fields = 8
+adt_max_variants = 4
+composite_count = 64
+adt_count = 8
 
-# Fuzz using rustup distributed cranelift
-cranelift_toolchain = "nightly"
+[backends.miri]
+type = "miri"
+toolchain = "nightly"
+flags = ["-Zmiri-tree-borrows"]
 
-# Override toolchain for default rustc backend
-llvm_toolchain = "nightly"
+[backends.miri-opt]
+type = "miri"
+toolchain = "nightly"
+flags = ["-Zmiri-tree-borrows", "-Zmir-opt-level=4"]
+
+[backends.miri-unchecked]
+type = "miri"
+toolchain = "nightly"
+flags = ["-Zmiri-disable-stacked-borrows", "-Zmiri-disable-validation", "-Zmiri-disable-alignment-check"]
+
+[backends.miri-repo]
+type = "miri-repo"
+path = "/home/ben/miri"
+flags = ["-Zmiri-tree-borrows"]
+
+[backends.llvm]
+type = "llvm"
+toolchain = "nightly"
+flags = ["-Zmir-opt-level=0"]
+
+[backends.llvm-opt]
+type = "llvm"
+toolchain = "nightly"
+flags = ["-Zmir-opt-level=0", "-Copt-level=3", "-Ctarget-cpu=native"]
+
+[backends.cranelift]
+type = "cranelift"
+toolchain = "nightly"
+flags = ["-Zmir-opt-level=0", "-Copt-level=3"]
+
+[backends.cranelift-repo]
+type = "cranelift-repo"
+path = "/home/ben/rustc_codegen_cranelift"
+flags = ["-Zmir-opt-level=0", "-Copt-level=3"]
+
+[backends.cranelift-binary]
+type = "cranelift-binary"
+path = "/usr/local/bin/clif"
+flags = ["-Zmir-opt-level=0", "-Copt-level=3"]
+
+[backends.gcc]
+type = "gcc"
+path = "/home/ben/rustc_codegen_gcc"
+flags = ["-Zmir-opt-level=0", "-Copt-level=3"]

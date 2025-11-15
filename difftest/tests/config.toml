@@ -1,0 +1,17 @@
+max_fn_count = 100
+max_args_count = 0
+
+[backends.miri]
+type = "miri"
+toolchain = "nightly"
+flags = ["-Zmiri-tree-borrows"]
+
+[backends.llvm]
+type = "llvm"
+toolchain = "nightly"
+flags = ["-Zmir-opt-level=0"]
+
+[backends.llvm-opt]
+type = "llvm"
+toolchain = "nightly"
+flags = ["-Zmir-opt-level=0", "-Copt-level=3", "-Ctarget-cpu=native"]

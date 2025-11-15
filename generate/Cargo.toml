@@ -9,11 +9,12 @@ edition = "2024"
 mir = { path = "../mir" }
 abi = { path = "../abi" }
 rangemap = { path = "../rangemap" }
+config = { path = "../config" }
 petgraph = "0.6.3"
-rand = { version = "0.8.5", features = ["small_rng"] }
+rand = { version = "0.9", features = ["small_rng"] }
 log = "0.4.17"
 env_logger = "0.11.3"
-rand_distr = "0.4.3"
+rand_distr = "0.5"
 smallvec = "1.10.0"
 bimap = "0.6.3"
 index_vec = "0.1.3"

@@ -5,7 +5,7 @@ use std::{
 };
 
 use abi::size::Size;
-use index_vec::{define_index_type, IndexVec};
+use index_vec::{IndexVec, define_index_type};
 use mir::{
     syntax::{TyId, TyKind},
     tyctxt::TyCtxt,
@@ -432,7 +432,7 @@ impl BasicMemory {
                 TyKind::Ref(..) => Self::PTR_SIZE,
                 TyKind::Array(ty, len) => {
                     return Self::ty_size(*ty, tcx)
-                        .map(|elem| Size::from_bytes(elem.bytes_usize() * len))
+                        .map(|elem| Size::from_bytes(elem.bytes_usize() * len));
                 }
                 _ => return None,
             },

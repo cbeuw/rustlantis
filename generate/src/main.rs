@@ -1,20 +1,16 @@
-#![feature(exact_size_is_empty)]
-#![feature(iter_advance_by)]
-#![feature(variant_count)]
 #![feature(test)]
 #![feature(try_blocks)]
-#![feature(box_patterns)]
 
 mod generation;
 mod literal;
 mod mem;
-mod place_select;
 mod pgraph;
+mod place_select;
 mod ty;
 
 use std::time::Instant;
 
-use clap::{arg, command, value_parser, Arg};
+use clap::{Arg, arg, command, value_parser};
 use log::{debug, info};
 
 use crate::generation::GenerationCtx;
@@ -36,10 +32,11 @@ fn main() {
     let seed: u64 = *matches
         .get_one::<u64>("seed")
         .expect("need an integer as seed");
-    let debug_dump = matches.get_one::<bool>("debug").copied().unwrap_or(false);
     info!("Generating a program with seed {seed}");
+    let debug_dump = matches.get_one::<bool>("debug").copied().unwrap_or(false);
+    let config = config::load("config.toml");
     let call_syntax = matches.get_one::<String>("call-syntax").unwrap();
-    let genctxt = GenerationCtx::new(seed, debug_dump);
+    let genctxt = GenerationCtx::new(config, seed, debug_dump);
     let time = Instant::now();
     let (program, tcx) = genctxt.generate();
     println!("{}", program.serialize(&tcx, call_syntax.as_str().into()));
