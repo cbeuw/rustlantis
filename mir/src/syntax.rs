@@ -3,6 +3,7 @@ use std::num::TryFromIntError;
 use index_vec::{IndexVec, define_index_type};
 use smallvec::SmallVec;
 
+use crate::serialize::Serialize;
 use crate::tyctxt::TyCtxt;
 
 #[derive(Clone)]
@@ -195,7 +196,7 @@ pub enum Terminator {
 
 #[derive(Clone)]
 pub struct SwitchTargets {
-    pub branches: Vec<(u128, BasicBlock)>,
+    pub branches: Vec<(Literal, BasicBlock)>,
     pub otherwise: BasicBlock,
 }
 
@@ -225,7 +226,7 @@ pub enum AggregateKind {
     Adt(TyId, VariantIdx),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Literal {
     Uint(u128, UintTy),
     Int(i128, IntTy),
@@ -790,11 +791,11 @@ impl Function {
 }
 
 impl SwitchTargets {
-    pub fn match_arms(&self) -> String {
+    pub fn match_arms(&self, tcx: &TyCtxt) -> String {
         let mut arms: String = self
             .branches
             .iter()
-            .map(|(val, bb)| format!("{val} => {},\n", bb.identifier()))
+            .map(|(val, bb)| format!("{} => {},\n", val.serialize(tcx), bb.identifier()))
             .collect();
         arms.push_str(&format!("_ => {}", self.otherwise.identifier()));
         arms

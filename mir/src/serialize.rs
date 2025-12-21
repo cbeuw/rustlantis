@@ -306,7 +306,7 @@ impl Terminator {
                 }
             }
             Terminator::SwitchInt { discr, targets } => {
-                let arms = targets.match_arms();
+                let arms = targets.match_arms(tcx);
                 format!("match {} {{\n{}\n}}", discr.serialize(tcx), arms)
             }
             Terminator::Hole => unreachable!("hole"),

@@ -709,28 +709,32 @@ impl GenerationCtx {
 
         let target_bb = self.add_new_bb();
         targets.push(target_bb);
-        let target_discr = match discr_val {
-            Literal::Uint(i, _) => i,
-            Literal::Int(i, _) => i as u128,
-            // Literal::Bool(b) => b as u128,
-            // Literal::Char(c) => c as u128,
-            _ => unreachable!("invalid switchint discriminant"),
-        };
 
-        let branches: Vec<(u128, BasicBlock)> = targets
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &bb)| {
-                if bb == target_bb {
-                    Some((target_discr, bb))
-                } else if i as u128 == target_discr {
-                    // Prevent duplicate
-                    None
-                } else {
-                    Some((i as u128, bb))
+        let mut branches = Vec::new();
+        for bb in targets {
+            if bb == target_bb {
+                branches.push((discr_val, bb));
+            } else {
+                // If this is a decoy bb, try a few times to generate a literal that is not already
+                // in the targets array.
+                for _ in 0..8 {
+                    let val = self
+                        .rng
+                        .borrow_mut()
+                        .gen_literal(discr_val.ty(), &self.tcx)
+                        .unwrap();
+                    // We cannot reuse the non-decoy value, even if it's not in the array because
+                    // it might be on a later iteration.
+                    if val == discr_val {
+                        continue;
+                    }
+                    if !branches.iter().any(|(arm_val, _bb)| *arm_val == val) {
+                        branches.push((val, bb));
+                        break;
+                    }
                 }
-            })
-            .collect();
+            }
+        }
 
         let term = Terminator::SwitchInt {
             discr: Operand::Copy(discr),
