@@ -1,5 +1,6 @@
 mod intrinsics;
 
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::{cmp, fmt, vec};
@@ -66,6 +67,7 @@ pub struct GenerationCtx {
     saved_ctx: Vec<SavedCtx>,
     cursor: Cursor,
     config: GenerationConfig,
+    previous_lhs: Cell<Option<Place>>,
 }
 
 // Operand
@@ -448,11 +450,23 @@ impl GenerationCtx {
 // Statement
 impl GenerationCtx {
     fn generate_assign(&self) -> Result<Statement> {
-        let (lhs_choices, weights) = PlaceSelector::for_lhs(self.tcx.clone())
+        let (lhs_choices, mut weights) = PlaceSelector::for_lhs(self.tcx.clone())
             .into_weighted(&self.pt)
             .ok_or(SelectionError::Exhausted)?;
 
-        self.make_choice_weighted(lhs_choices.into_iter(), weights, |ppath| {
+        if let Some(prev) = self.previous_lhs.take() {
+            for (i, choice) in lhs_choices.iter().enumerate() {
+                let choice = choice.to_place(&self.pt);
+                if choice == prev {
+                    weights
+                        .update_weights(&[(i, &0)])
+                        .map_err(|_| SelectionError::Exhausted)?;
+                    break;
+                }
+            }
+        }
+
+        let stmt = self.make_choice_weighted(lhs_choices.into_iter(), weights, |ppath| {
             let lhs = ppath.to_place(&self.pt);
             trace!(
                 "generating an assignment statement with lhs {}: {}",
@@ -460,9 +474,13 @@ impl GenerationCtx {
                 lhs.ty(self.current_decls(), &self.tcx).serialize(&self.tcx)
             );
 
+            self.previous_lhs.set(Some(lhs.clone()));
+
             let statement = Statement::Assign(lhs.clone(), self.generate_rvalue(&lhs)?);
             Ok(statement)
-        })
+        });
+
+        stmt
     }
 
     // Hack to take &self
@@ -919,6 +937,7 @@ impl GenerationCtx {
 
     /// Terminates the current BB, and moves the generation context to the new BB
     fn choose_terminator(&mut self) -> bool {
+        self.previous_lhs.set(None);
         assert!(matches!(self.current_bb().terminator(), Terminator::Hole));
         if self.pt.can_return() {
             if Place::RETURN_SLOT.complexity(&self.pt) > 10
@@ -1202,6 +1221,7 @@ impl GenerationCtx {
             },
             saved_ctx: vec![],
             config: config.generation,
+            previous_lhs: Cell::new(None),
         }
     }
 
