@@ -481,6 +481,16 @@ impl GenerationCtx {
         local
     }
 
+    // Declare a bunch of variables when we first start a function
+    fn declare_seed_vars(&mut self) {
+        for tyid in self
+            .ty_weights
+            .choose_tys(self.rng.get_mut(), &self.tcx, self.tcx.len() / 3)
+        {
+            self.declare_new_var(Mutability::Mut, tyid);
+        }
+    }
+
     #[allow(dead_code)]
     fn generate_storage_live(&self) -> Result<Statement> {
         let local = self
@@ -1084,6 +1094,9 @@ impl GenerationCtx {
             args,
             return_dest,
         );
+
+        self.declare_seed_vars();
+
         new_fn
     }
 
@@ -1108,6 +1121,8 @@ impl GenerationCtx {
 
         self.pt
             .enter_fn0(&self.program.functions[self.cursor.function]);
+
+        self.declare_seed_vars();
     }
 
     // Returns from the currnt function. Returns false if we're returning from

@@ -179,6 +179,11 @@ impl PlaceSelector {
         pt.reachable_nodes().filter(move |ppath| {
             let index = ppath.target_index();
 
+            // Don't generate anything of unit type
+            if pt.ty(index) == TyCtxt::UNIT {
+                return false;
+            }
+
             // Well-typedness
             if let Some(tys) = &self.tys
                 && !tys.contains(&pt.ty(index))

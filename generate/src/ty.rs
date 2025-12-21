@@ -93,6 +93,14 @@ impl TySelect {
             .nth(self.weights.sample(rng))
             .expect("tyctxt isn't empty")
     }
+
+    pub fn choose_tys(&self, rng: &mut impl Rng, tcx: &TyCtxt, count: usize) -> Vec<TyId> {
+        (&self.weights)
+            .sample_iter(rng)
+            .take(count)
+            .map(|tyid| tcx.indices().nth(tyid).expect("tyctxt isn't empty"))
+            .collect()
+    }
 }
 
 fn new_composite(tcx: &mut TyCtxt, rng: &mut impl Rng) {
