@@ -6,7 +6,7 @@ fn correct_mir() {
     let config = config::load("tests/config.toml");
     let backends = backends::from_config(config);
 
-    let results = run_diff_test(&Source::File("tests/inputs/simple.rs".into()), backends);
+    let results = run_diff_test(&Source::File("tests/inputs/simple.rs".into()), backends, true);
     println!("{}", results);
     assert!(results.all_same());
     assert!(
@@ -24,6 +24,7 @@ fn invalid_mir() {
     let results = run_diff_test(
         &Source::File("tests/inputs/invalid_mir.rs".into()),
         backends,
+        false,
     );
     println!("{}", results);
     assert!(results.all_same());
@@ -36,7 +37,7 @@ fn ub() {
     let config = config::load("tests/config.toml");
     let backends = backends::from_config(config);
 
-    let results = run_diff_test(&Source::File("tests/inputs/ub.rs".into()), backends);
+    let results = run_diff_test(&Source::File("tests/inputs/ub.rs".into()), backends, false);
     println!("{}", results);
     assert_eq!(results.has_ub(), Some(true));
 }

@@ -1,3 +1,4 @@
+parallel_difftest = true
 bb_max_len = 32
 max_switch_targets = 8
 max_bb_count = 50

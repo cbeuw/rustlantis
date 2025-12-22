@@ -1,3 +1,4 @@
+parallel_difftest = true
 max_fn_count = 100
 max_args_count = 0
 

@@ -155,24 +155,28 @@ impl fmt::Display for ExecResults {
 pub fn run_diff_test<'a>(
     source: &Source,
     backends: HashMap<String, Box<dyn Backend + 'a>>,
+    parallel: bool,
 ) -> ExecResults {
     let target_dir = tempfile::tempdir().unwrap();
-    let exec_results: HashMap<String, ExecResult> = backends
-        .into_par_iter()
-        .map(|(name, b)| {
-            let target_path = target_dir.path().join(&name);
-            let result = if log_enabled!(log::Level::Debug) {
-                let time = Instant::now();
-                let result = b.execute(source, &target_path);
-                let dur = time.elapsed();
-                debug!("{name} took {}s", dur.as_secs_f32());
-                result
-            } else {
-                b.execute(source, &target_path)
-            };
-            (name.clone(), result)
-        })
-        .collect();
 
-    ExecResults::from_exec_results(exec_results.into_iter())
+    let run_test = |(name, backend): (String, Box<dyn Backend>)| -> (String, ExecResult) {
+        let target_path = target_dir.path().join(&name);
+        let result = if log_enabled!(log::Level::Debug) {
+            let time = Instant::now();
+            let result = backend.execute(source, &target_path);
+            let dur = time.elapsed();
+            debug!("{name} took {}s", dur.as_secs_f32());
+            result
+        } else {
+            backend.execute(source, &target_path)
+        };
+        (name, result)
+    };
+
+    let results: HashMap<String, ExecResult> = if parallel {
+        backends.into_par_iter().map(run_test).collect()
+    } else {
+        backends.into_iter().map(run_test).collect()
+    };
+    ExecResults::from_exec_results(results.into_iter())
 }

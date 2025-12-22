@@ -22,6 +22,7 @@ fn main() -> ExitCode {
 
     let config_path = std::env::var("RUSTLANTIS_CONFIG").unwrap_or("config.toml".to_string());
     let config = config::load(config_path);
+    let parallel = config.parallel_difftest;
     let backends = backends::from_config(config);
 
     let source = if source == "-" {
@@ -44,7 +45,7 @@ fn main() -> ExitCode {
             .collect::<String>()
     );
 
-    let results = run_diff_test(&source, backends);
+    let results = run_diff_test(&source, backends, parallel);
     if results.all_same() && results.all_success() {
         info!("{} is all the same", source);
         debug!("{}", results);

@@ -9,6 +9,7 @@ pub fn load(path: impl AsRef<Path>) -> Config {
 
 #[derive(Deserialize, Clone)]
 pub struct Config {
+    pub parallel_difftest: bool,
     #[serde(flatten)]
     pub generation: GenerationConfig,
     #[serde(flatten)]

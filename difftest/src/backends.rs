@@ -174,9 +174,14 @@ impl LLVM {
 
 impl Backend for LLVM {
     fn compile(&self, source: &Source, target: &Path) -> ProcessOutput {
-        let mut command = Command::new("rustc");
-
-        command.arg(format!("+{}", self.toolchain));
+        let mut command = if let Ok(path) = std::env::var("RUSTLANTIS_RUSTC_PATH") {
+            debug!("Compiling with rustc from RUSTLANTIS_RUSTC_PATH");
+            Command::new(path)
+        } else {
+            let mut command = Command::new("rustc");
+            command.arg(format!("+{}", self.toolchain));
+            command
+        };
 
         command
             .args(["-o", target.to_str().unwrap()])
@@ -307,13 +312,18 @@ impl Miri {
 
 impl Backend for Miri {
     fn execute(&self, source: &Source, _: &Path) -> ExecResult {
-        debug!("Executing with Miri {source}");
-        let mut command = match &self.miri {
-            BackendSource::Path(binary) => Command::new(binary),
-            BackendSource::Rustup(toolchain) => {
-                let mut cmd = Command::new("rustup");
-                cmd.args(["run", &toolchain, "miri"]);
-                cmd
+        let mut command = if let Ok(path) = std::env::var("RUSTLANTIS_MIRI_PATH") {
+            debug!("Executing with Miri from RUSTLANTIS_MIRI_PATH");
+            Command::new(path)
+        } else {
+            debug!("Executing with Miri {source}");
+            match &self.miri {
+                BackendSource::Path(binary) => Command::new(binary),
+                BackendSource::Rustup(toolchain) => {
+                    let mut cmd = Command::new("rustup");
+                    cmd.args(["run", &toolchain, "miri"]);
+                    cmd
+                }
             }
         };
         command.args(self.flags.clone());
