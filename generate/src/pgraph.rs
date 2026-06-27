@@ -781,7 +781,9 @@ impl PlaceGraph {
         let Some(target) = self.pointee(r) else {
             return false;
         };
-        self.is_place_init(target)
+        // Note that since typed copies produce retags, this must also check
+        // if the reference is valid to retag.
+        self.is_place_init(target) && self.can_read_through(r, target)
     }
 
     /// Whether all refs contained in a place are all valid

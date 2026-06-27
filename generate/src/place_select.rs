@@ -166,6 +166,15 @@ impl PlaceSelector {
             .chain(pt.return_dest_stack()) // Don't touch anything that overlaps with any RET in the stack
             .chain(pt.moved_in_args_stack()) // Don't touch anything that overlaps with moved in args in the stack
             .collect();
+        // The explicit exclusions are the places this operation writes (e.g. the
+        // assignment destination). A read operand must not contain a reference
+        // pointing into one of these, since it may be moved at any time and thus
+        // still require validity.
+        let dest_indices: Vec<PlaceIndex> = self
+            .exclusions
+            .iter()
+            .map(|place| place.to_place_index(pt).expect("excluded place exists"))
+            .collect();
         let moved: Vec<PlaceIndex> = self
             .moved
             .iter()
@@ -233,6 +242,16 @@ impl PlaceSelector {
                 return false;
             }
 
+            // Don't read an operand that holds a reference pointing into a place
+            // this operation writes; the write would invalidate that reference.
+            if self.usage != PlaceUsage::LHS
+                && dest_indices
+                    .iter()
+                    .any(|excl| pt.contains_ref_to(index, *excl))
+            {
+                return false;
+            }
+
             // Has the right size
             if self.size.is_some() && BasicMemory::ty_size(pt.ty(index), &self.tcx) != self.size {
                 return false;
@@ -263,6 +282,11 @@ impl PlaceSelector {
             // Function arguments
             if self.usage == PlaceUsage::Argument {
                 if moved.iter().any(|excl| pt.overlap(index, excl)) {
+                    return false;
+                }
+                // Passing a self-referential argument by value will not work, because the retagging
+                // will protect the argument while we are moving it.
+                if pt.contains_ref_to(index, index) {
                     return false;
                 }
                 // If this contains a ref, then it cannot point to an already-picked moved arg
