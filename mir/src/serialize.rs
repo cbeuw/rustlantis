@@ -437,8 +437,12 @@ impl Program {
 #[cfg(test)]
 mod tests {
     use super::Serialize;
-    use crate::{syntax::*, tyctxt::TyCtxt};
+    use crate::{
+        syntax::*,
+        tyctxt::{AdtMeta, TyCtxt},
+    };
     use config::TyConfig;
+    use index_vec::IndexVec;
 
     #[test]
     fn serialize_body() {
@@ -461,5 +465,75 @@ mod tests {
 
         let inf = Literal::Float(f32::INFINITY as f64, FloatTy::F32);
         assert_eq!(inf.serialize(&tcx), "f32::INFINITY");
+    }
+
+    fn derive_attrs_for<'a>(serialized: &'a str, type_name: &str) -> &'a str {
+        let declaration = format!("pub struct {type_name}");
+        let declaration_offset = serialized
+            .find(&declaration)
+            .expect("serialized ADT declaration");
+
+        serialized[..declaration_offset]
+            .lines()
+            .next_back()
+            .expect("derive attribute before ADT declaration")
+    }
+
+    #[test]
+    fn serialize_hashable_adts() {
+        let mut tcx = TyCtxt::from_primitives(TyConfig::default());
+
+        let hashable = tcx.push_adt(
+            Adt {
+                variants: IndexVec::from_iter([VariantDef {
+                    fields: IndexVec::from_iter([TyCtxt::U8]),
+                }]),
+            },
+            AdtMeta { copy: false },
+        );
+
+        let nested = tcx.push_adt(
+            Adt {
+                variants: IndexVec::from_iter([VariantDef {
+                    fields: IndexVec::from_iter([hashable]),
+                }]),
+            },
+            AdtMeta { copy: false },
+        );
+
+        let contains_float = tcx.push_adt(
+            Adt {
+                variants: IndexVec::from_iter([VariantDef {
+                    fields: IndexVec::from_iter([TyCtxt::F32]),
+                }]),
+            },
+            AdtMeta { copy: false },
+        );
+
+        let pointer = tcx.push(TyKind::RawPtr(TyCtxt::U8, Mutability::Not));
+
+        let contains_pointer = tcx.push_adt(
+            Adt {
+                variants: IndexVec::from_iter([VariantDef {
+                    fields: IndexVec::from_iter([pointer]),
+                }]),
+            },
+            AdtMeta { copy: false },
+        );
+
+        assert!(hashable.hashable(&tcx));
+        assert!(nested.hashable(&tcx));
+        assert!(!contains_float.hashable(&tcx));
+        assert!(!contains_pointer.hashable(&tcx));
+
+        let serialized = tcx.serialize();
+
+        assert!(derive_attrs_for(&serialized, &hashable.type_name()).contains("Hash"));
+
+        assert!(derive_attrs_for(&serialized, &nested.type_name()).contains("Hash"));
+
+        assert!(!derive_attrs_for(&serialized, &contains_float.type_name()).contains("Hash"));
+
+        assert!(!derive_attrs_for(&serialized, &contains_pointer.type_name()).contains("Hash"));
     }
 }
