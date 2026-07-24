@@ -14,11 +14,14 @@ pub struct AdtMeta {
 }
 
 impl AdtMeta {
-    fn derive_attrs(&self) -> String {
+    fn derive_attrs(&self, hashable: bool) -> String {
         let mut attrs = vec!["Debug"];
         if self.copy {
             attrs.push("Copy");
             attrs.push("Clone");
+        }
+        if hashable {
+            attrs.push("Hash");
         }
 
         let list: String = attrs.iter().intersperse(&",").copied().collect();
@@ -124,7 +127,7 @@ impl TyCtxt {
             let TyKind::Adt(adt) = adt else {
                 panic!("not an adt");
             };
-            str += &self.adt_meta[&id].derive_attrs();
+            str += &self.adt_meta[&id].derive_attrs(id.hashable(self));
             if adt.is_enum() {
                 let variants: String = adt
                     .variants

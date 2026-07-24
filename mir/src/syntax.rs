@@ -428,12 +428,8 @@ impl TyId {
     }
 
     pub fn hashable(self, tcx: &TyCtxt) -> bool {
-        // TODO: hash Adts maybe
-        self.kind(tcx).is_structural()
-            && self.determ_printable(tcx)
-            && !self.contains(tcx, |_, ty| {
-                ty == TyCtxt::F32 || ty == TyCtxt::F64 || ty.kind(tcx).is_adt()
-            })
+        self.determ_printable(tcx)
+            && !self.contains(tcx, |_, ty| ty == TyCtxt::F32 || ty == TyCtxt::F64)
             && self != TyCtxt::UNIT
     }
 
